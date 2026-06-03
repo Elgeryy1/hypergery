@@ -36,6 +36,7 @@ from ..labs import LabStore
 from ..templates import TemplateStore
 from .dialogs import (
     CloneDialog,
+    CreateLabFromTemplateDialog,
     DeleteConfirmationDialog,
     DeleteLabDialog,
     DeleteLabTemplateDialog,
@@ -278,9 +279,8 @@ class MainWindow(QMainWindow):
         self.export_vm_template_button = self._button("Export", self.export_vm_template)
         self.import_vm_template_button = self._button("Import", self.import_vm_template)
         self.refresh_vm_templates_button = self._button("Refresh", self.refresh_templates)
-        self.create_vm_from_template_button = self._button("Create VM from Template", lambda: None)
+        self.create_vm_from_template_button = self._button("Create VM from Template", self.create_vm_from_template, primary=True)
         self.create_vm_from_template_button.setEnabled(False)
-        self.create_vm_from_template_button.setToolTip("Coming in next release")
 
         vm_template_actions.addWidget(self.new_vm_template_button, 0, 0)
         vm_template_actions.addWidget(self.import_vm_template_button, 0, 1)
@@ -324,9 +324,8 @@ class MainWindow(QMainWindow):
         self.export_lab_template_button = self._button("Export", self.export_action_lab_template)
         self.import_lab_template_button = self._button("Import", self.import_action_lab_template)
         self.refresh_lab_templates_button = self._button("Refresh", self.refresh_templates)
-        self.create_lab_from_template_button = self._button("Create Lab from Template", lambda: None)
+        self.create_lab_from_template_button = self._button("Create Lab from Template", self.create_lab_from_template, primary=True)
         self.create_lab_from_template_button.setEnabled(False)
-        self.create_lab_from_template_button.setToolTip("Coming in next release")
 
         lab_template_actions.addWidget(self.new_lab_template_button, 0, 0)
         lab_template_actions.addWidget(self.import_lab_template_button, 0, 1)
@@ -601,6 +600,14 @@ class MainWindow(QMainWindow):
         self.duplicate_lab_button.setEnabled(has_lab)
         self.export_lab_button.setEnabled(has_lab)
         self.new_vm_in_lab_button.setEnabled(has_lab)
+        has_vm_tmpl = self.selected_vm_template is not None
+        self.create_vm_from_template_button.setEnabled(has_vm_tmpl)
+        self.delete_vm_template_button.setEnabled(has_vm_tmpl)
+        self.export_vm_template_button.setEnabled(has_vm_tmpl)
+        has_lab_tmpl = self.selected_lab_template is not None
+        self.create_lab_from_template_button.setEnabled(has_lab_tmpl)
+        self.delete_lab_template_button.setEnabled(has_lab_tmpl)
+        self.export_lab_template_button.setEnabled(has_lab_tmpl)
 
     def refresh_all(self) -> None:
         self.status.showMessage("Loading host state...")
@@ -1272,6 +1279,7 @@ class MainWindow(QMainWindow):
             row = indexes[0].row()
             self.selected_vm_template = self.vm_templates[row] if 0 <= row < len(self.vm_templates) else None
         self.render_vm_template_detail()
+        self.update_actions()
 
     def on_lab_template_selection_changed(self) -> None:
         indexes = self.lab_template_table.selectionModel().selectedRows()
@@ -1281,6 +1289,7 @@ class MainWindow(QMainWindow):
             row = indexes[0].row()
             self.selected_lab_template = self.lab_templates[row] if 0 <= row < len(self.lab_templates) else None
         self.render_lab_template_detail()
+        self.update_actions()
 
     def render_vm_template_detail(self) -> None:
         tmpl = self.selected_vm_template
@@ -1518,4 +1527,89 @@ class MainWindow(QMainWindow):
             self.log_activity(f"Import lab template failed: {exc}")
             return
         self.log_activity(f"Imported lab template {template['template_id']} from {path}")
+        self.refresh_templates()
+
+    def create_vm_from_template(self) -> None:
+        if self.selected_vm_template is None:
+            self.show_error("Select a VM template first.")
+            return
+        tmpl = self.selected_vm_template
+        template_id = str(tmpl["template_id"])
+        wizard = VMWizard(self, defaults=tmpl)
+        wizard.setWindowTitle(f"Create VM from Template: {template_id}")
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = wizard.values()
+        if (
+            QMessageBox.question(
+                self,
+                "Create VM from Template",
+                (
+                    f"Create {values['name']} from template {template_id}?\n\n"
+                    f"ISO: {values['iso_path']}\n"
+                    f"RAM: {values['ram_mib']} MiB\n"
+                    f"vCPUs: {values['vcpus']}\n"
+                    f"Disk: {values['disk_gb']} GiB\n"
+                    f"Network: {values['network_mode']}\n"
+                    f"Lab: {values['lab_id']}"
+                ),
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+
+        lab_id = values["lab_id"]
+
+        def record_template_used(_result: Any) -> None:
+            try:
+                lab = self.lab_store().get_lab(lab_id)
+                used: list[str] = list(lab.get("templates_used", []))
+                if template_id not in used:
+                    used.append(template_id)
+                lab["templates_used"] = used
+                self.backend.write_lab(lab)
+            except Exception:
+                pass
+
+        self.log_activity(f"Creating VM {values['name']} from template {template_id}")
+        self.run_operation(
+            f"Creating {values['name']} from template",
+            lambda: self.backend.create_vm(**values),
+            on_success=record_template_used,
+        )
+
+    def create_lab_from_template(self) -> None:
+        if self.selected_lab_template is None:
+            self.show_error("Select a lab template first.")
+            return
+        tmpl = self.selected_lab_template
+        template_id = str(tmpl["template_id"])
+        dialog = CreateLabFromTemplateDialog(
+            tmpl,
+            self.existing_lab_ids(),
+            self.existing_lab_subnets(),
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            lab = self.lab_store().create_lab(
+                values["name"],
+                values["description"],
+                values["network_mode"],
+                lab_id=values.get("lab_id"),
+            )
+            used: list[str] = list(lab.get("templates_used", []))
+            if template_id not in used:
+                used.append(template_id)
+            lab["templates_used"] = used
+            self.backend.write_lab(lab)
+        except Exception as exc:
+            self.log_activity(f"Create lab from template failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.selected_lab = lab
+        self.log_activity(f"Created lab {lab['lab_id']} from template {template_id}")
+        self.refresh_labs()
         self.refresh_templates()

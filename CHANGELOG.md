@@ -51,11 +51,13 @@ Cambios implementados:
 - Dialogo `Delete VM Template` con confirmacion escribiendo template_id.
 - Dialogo `Delete Lab Template` con confirmacion escribiendo template_id.
 - Export/Import de VM Templates y Lab Templates con `QFileDialog`, validacion JSON y manejo de colisiones.
-- Boton `Create VM from Template` deshabilitado con tooltip "Coming in next release".
-- Boton `Create Lab from Template` deshabilitado con tooltip "Coming in next release".
 - Activity log registra todas las operaciones de plantillas.
 - `refresh_all` carga plantillas junto con VMs y labs en el arranque.
 - Tests unitarios para validacion de template_id, conteo de VMs en lab template, validacion de campos, import invalido, delete inexistente y no sobreescritura en import.
+- Tests Qt (`test_qt_ui`) se saltan limpiamente si PySide6 no esta disponible en el Python del sistema; se ejecutan dentro del venv con PySide6.
+- Flujo `Create VM from Template`: abre wizard con valores prellenados (os_type, ram_mib, vcpus, disk_gb, network_mode, display); usuario elige nombre, ISO y lab; tras crear la VM se registra la plantilla en `templates_used` del manifiesto de lab.
+- Flujo `Create Lab from Template`: dialogo con nombre, descripcion y modo de red prellenados desde la plantilla, preview de lab_id/network/bridge/subnet y lista de VMs planificadas; crea el lab real via `LabStore` y registra `templates_used`; las VMs planificadas no se crean automaticamente.
+- Tests para mapeo template → defaults de wizard: presencia de campos, capitalizacion de os_type, tipos numericos, roundtrip de template real.
 
 ## v0.2.0 - Modern PySide6 UI
 

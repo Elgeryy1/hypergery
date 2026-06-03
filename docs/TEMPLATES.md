@@ -26,6 +26,28 @@ Fields: Name, Template ID (auto-preview, read-only), OS Type, RAM MiB, vCPUs, Di
 
 Fields: Name, Template ID (auto-preview), Description, Network, Notes. Initial VM list is empty; VM composition is planned for a future sub-task.
 
+### Create VM from Template
+
+Select a VM template and click **Create VM from Template**. The wizard opens with pre-filled values:
+
+- OS type, RAM MiB, vCPUs, Disk GiB, Network mode, Display — from the template.
+- Name and Boot ISO — entered by the user (ISO is required; no VM is created without one).
+- Lab ID — editable (defaults to `default-lab`).
+
+After the VM is created successfully, the template's `template_id` is appended to the lab manifest's `templates_used` list.
+
+### Create Lab from Template
+
+Select a lab template and click **Create Lab from Template**. A dialog opens with:
+
+- Template name/id shown for reference.
+- New lab name (required), Description (pre-filled from template, editable).
+- Network mode pre-filled from template, editable.
+- Live preview of lab_id, libvirt network, bridge, subnet.
+- Planned VMs listed (informational only — VMs are **not created automatically**).
+
+The lab is created via `LabStore`. Its `templates_used` field records the source template. VMs listed in the template are shown but must be created individually via **New VM** or **Create VM from Template**.
+
 ### Delete dialogs
 
 Both VM and Lab delete dialogs require typing the exact `template_id` before enabling the Delete button. Only the JSON file is removed — no VMs or labs are affected.

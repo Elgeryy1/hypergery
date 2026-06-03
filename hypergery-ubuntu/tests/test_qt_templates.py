@@ -246,5 +246,76 @@ class TemplateStoreOperationsTests(unittest.TestCase):
             self.store.create_lab_template("Classroom", "training")
 
 
+class VmWizardDefaultsTests(unittest.TestCase):
+    """Verify the fields a VM template exposes as wizard defaults (non-GUI)."""
+
+    def _make_template(self, **overrides):
+        base = {
+            "os_type": "linux",
+            "ram_mib": 4096,
+            "vcpus": 2,
+            "disk_gb": 40,
+            "network_mode": "nat",
+            "display": "spice",
+        }
+        base.update(overrides)
+        return base
+
+    def test_all_wizard_default_keys_present_in_template(self):
+        tmpl = self._make_template()
+        for key in ("os_type", "ram_mib", "vcpus", "disk_gb", "network_mode", "display"):
+            self.assertIn(key, tmpl, f"Missing wizard default key: {key}")
+
+    def test_os_type_capitalize_maps_to_wizard_combo(self):
+        for raw, expected in (("linux", "Linux"), ("windows", "Windows"), ("other", "Other")):
+            self.assertEqual(raw.capitalize(), expected)
+
+    def test_network_mode_passthrough(self):
+        for mode in ("nat", "isolated"):
+            tmpl = self._make_template(network_mode=mode)
+            self.assertEqual(tmpl["network_mode"], mode)
+
+    def test_display_passthrough(self):
+        for display in ("spice", "vnc"):
+            tmpl = self._make_template(display=display)
+            self.assertEqual(tmpl["display"], display)
+
+    def test_numeric_fields_are_int(self):
+        tmpl = validate_vm_template(
+            {
+                "template_id": "ubuntu-base",
+                "name": "Ubuntu Base",
+                "os_type": "linux",
+                "ram_mib": "2048",
+                "vcpus": "2",
+                "disk_gb": "20",
+                "network_mode": "nat",
+                "display": "spice",
+            }
+        )
+        self.assertIsInstance(tmpl["ram_mib"], int)
+        self.assertIsInstance(tmpl["vcpus"], int)
+        self.assertIsInstance(tmpl["disk_gb"], int)
+
+    def test_create_vm_from_template_defaults_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TemplateStore(Path(tmp))
+            tmpl = store.create_vm_template(
+                "HG v03 Ubuntu Template",
+                os_type="linux",
+                ram_mib=4096,
+                vcpus=2,
+                disk_gb=40,
+                network_mode="nat",
+                display="spice",
+            )
+            self.assertEqual(tmpl["ram_mib"], 4096)
+            self.assertEqual(tmpl["vcpus"], 2)
+            self.assertEqual(tmpl["disk_gb"], 40)
+            self.assertEqual(tmpl["network_mode"], "nat")
+            self.assertEqual(tmpl["display"], "spice")
+            self.assertEqual(tmpl["os_type"].capitalize(), "Linux")
+
+
 if __name__ == "__main__":
     unittest.main()

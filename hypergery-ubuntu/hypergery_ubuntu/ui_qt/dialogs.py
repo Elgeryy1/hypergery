@@ -203,7 +203,7 @@ class ReviewPage(QWizardPage):
 
 
 class VMWizard(QWizard):
-    def __init__(self, parent=None, *, default_lab_id: str = "default-lab") -> None:
+    def __init__(self, parent=None, *, default_lab_id: str = "default-lab", defaults: dict | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Create Virtual Machine")
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
@@ -217,6 +217,28 @@ class VMWizard(QWizard):
         self.addPage(self.review_page)
         self.setButtonText(QWizard.WizardButton.FinishButton, "Create")
         self.resize(760, 520)
+        if defaults:
+            self._apply_defaults(defaults)
+
+    def _apply_defaults(self, defaults: dict) -> None:
+        if "os_type" in defaults:
+            idx = self.identity_page.os_type.findText(str(defaults["os_type"]).capitalize())
+            if idx >= 0:
+                self.identity_page.os_type.setCurrentIndex(idx)
+        if "ram_mib" in defaults:
+            self.resources_page.ram.setValue(int(defaults["ram_mib"]))
+        if "vcpus" in defaults:
+            self.resources_page.vcpus.setValue(int(defaults["vcpus"]))
+        if "disk_gb" in defaults:
+            self.resources_page.disk.setValue(int(defaults["disk_gb"]))
+        if "network_mode" in defaults:
+            idx = self.integration_page.network.findText(str(defaults["network_mode"]))
+            if idx >= 0:
+                self.integration_page.network.setCurrentIndex(idx)
+        if "display" in defaults:
+            idx = self.integration_page.display.findText(str(defaults["display"]))
+            if idx >= 0:
+                self.integration_page.display.setCurrentIndex(idx)
 
     def values(self) -> dict:
         return {
@@ -937,3 +959,105 @@ class DeleteLabTemplateDialog(QDialog):
             self.error_label.setText("Type the exact template ID to confirm deletion.")
             return
         super().accept()
+
+
+class CreateLabFromTemplateDialog(QDialog):
+    def __init__(self, template: dict, existing_lab_ids: set[str], existing_subnets: set[str], parent=None) -> None:
+        super().__init__(parent)
+        self.template = template
+        self.existing_lab_ids = existing_lab_ids
+        self.existing_subnets = existing_subnets
+        self.setWindowTitle(f"Create Lab from Template: {template.get('template_id', '')}")
+
+        vms = template.get("vms", [])
+        if vms:
+            vm_names = ", ".join(str(v.get("name", "?")) for v in vms[:5])
+            suffix = f" (+{len(vms) - 5} more)" if len(vms) > 5 else ""
+            planned_text = f"Planned VMs ({len(vms)}): {vm_names}{suffix}"
+        else:
+            planned_text = "No VMs defined in this template."
+        planned_label = QLabel(planned_text)
+        planned_label.setObjectName("mutedLabel")
+        planned_label.setWordWrap(True)
+
+        caveat = QLabel(
+            "VMs are not created automatically. "
+            "After the lab is set up, create each VM manually or via a VM template."
+        )
+        caveat.setObjectName("mutedLabel")
+        caveat.setWordWrap(True)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText(str(template.get("name", "Lab")) + " Instance")
+        self.description_edit = QLineEdit(str(template.get("description", "")))
+        self.network_mode = QComboBox()
+        self.network_mode.addItems(["nat", "isolated"])
+        tmpl_net = str(template.get("network_mode", "nat"))
+        net_idx = self.network_mode.findText(tmpl_net)
+        if net_idx >= 0:
+            self.network_mode.setCurrentIndex(net_idx)
+
+        self.preview_label = QLabel("")
+        self.preview_label.setObjectName("mutedLabel")
+        self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.preview_label.setWordWrap(True)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.create_button = buttons.addButton("Create Lab", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.create_button.setObjectName("primaryButton")
+        self.create_button.clicked.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        form = QFormLayout()
+        form.addRow("Template", QLabel(f"{template.get('name', '')} ({template.get('template_id', '')})"))
+        form.addRow("New lab name", self.name_edit)
+        form.addRow("Description", self.description_edit)
+        form.addRow("Network mode", self.network_mode)
+        form.addRow("Preview", self.preview_label)
+        form.addRow("", self.error_label)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(planned_label)
+        layout.addWidget(caveat)
+        layout.addWidget(buttons)
+
+        self.name_edit.textChanged.connect(self.update_preview)
+        self.network_mode.currentTextChanged.connect(self.update_preview)
+        self.update_preview()
+        self.resize(640, 420)
+
+    def current_preview(self) -> dict:
+        return build_lab_preview(
+            self.name_edit.text(),
+            self.network_mode.currentText(),
+            self.existing_lab_ids,
+            self.existing_subnets,
+        )
+
+    def update_preview(self) -> None:
+        preview = self.current_preview()
+        self.create_button.setEnabled(bool(preview["valid"]))
+        self.error_label.setText(preview["error"])
+        if preview["valid"]:
+            self.preview_label.setText(
+                details_block(
+                    ("Lab ID", preview["lab_id"]),
+                    ("Network", preview["network_id"]),
+                    ("Bridge", preview["bridge_name"]),
+                    ("Subnet", preview["subnet"]),
+                )
+            )
+        else:
+            self.preview_label.setText("Enter a valid lab name to preview network resources.")
+
+    def values(self) -> dict:
+        preview = self.current_preview()
+        return {
+            "name": self.name_edit.text().strip(),
+            "description": self.description_edit.text().strip(),
+            "network_mode": self.network_mode.currentText(),
+            "lab_id": preview["lab_id"],
+        }

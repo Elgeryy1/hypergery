@@ -35,9 +35,9 @@ Manual validation recommended before cutting v0.3.0:
 - Import the exported JSON with another lab ID.
 - Delete the temporary labs.
 
-Not yet implemented:
+Not yet implemented in that pass (now done):
 
-- Full Templates UI.
+- Full Templates UI with Create VM / Create Lab from Template flows.
 - Lab VM cloning from the Duplicate Lab dialog.
 - Delete Lab with VM deletion.
 
@@ -123,9 +123,27 @@ Repeat CLI acceptance:
 ./scripts/acceptance-ubuntu.sh --iso /path/to/ubuntu-or-debian.iso --name hg-acceptance-ubuntu-test
 ```
 
+## Running tests
+
+### System Python (no PySide6)
+
+```bash
+python3 -m unittest discover -s hypergery-ubuntu/tests
+```
+
+Expected: all non-Qt tests pass; `test_qt_ui` and `test_qt_lab_helpers` classes that require PySide6 are **skipped** (not errors). Overall result: `OK (skipped=N)`.
+
+### Venv with PySide6
+
+```bash
+/home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
+```
+
+Expected: all tests pass including Qt UI tests.
+
 ## Templates Manager smoke test (v0.3.0)
 
-Run this after starting the Qt UI (`python -m hypergery_ubuntu`).
+Run this after starting the Qt UI (`python -m hypergery_ubuntu` inside the venv).
 
 1. Open the **Templates** tab in the left panel.
 
@@ -144,28 +162,38 @@ Run this after starting the Qt UI (`python -m hypergery_ubuntu`).
    - Click **Create** — template appears in the Lab Templates table.
 
 4. **Select and inspect**
-   - Click on `hg-v03-ubuntu-template` — detail panel shows all fields.
-   - Click on `hg-v03-asr-template` — detail panel updates.
+   - Click on `hg-v03-ubuntu-template` — detail panel shows all fields, **Create VM from Template** button activates.
+   - Click on `hg-v03-asr-template` — detail panel updates, **Create Lab from Template** button activates.
 
-5. **Export VM template**
+5. **Create VM from Template**
+   - Select `hg-v03-ubuntu-template`.
+   - Click **Create VM from Template**.
+   - Wizard opens with RAM=4096, vCPUs=2, Disk=40, Network=nat, Display=spice pre-filled.
+   - Enter a VM name and a valid local ISO path.
+   - Complete the wizard — VM is created; activity log shows "Creating VM … from template".
+   - Open the Instances tab — VM appears in the list.
+   - (Optional) Open the lab manifest JSON and verify `templates_used` contains `hg-v03-ubuntu-template`.
+
+6. **Create Lab from Template**
+   - Select `hg-v03-asr-template`.
+   - Click **Create Lab from Template**.
+   - Dialog opens with network=isolated pre-filled, preview shows lab_id/bridge/subnet.
+   - Enter a lab name (e.g. `ASR Instance 01`).
+   - Click **Create Lab** — lab appears in the Labs table; activity log shows "Created lab … from template".
+   - Verify `templates_used` in the lab manifest.
+
+7. **Export VM template**
    - Select `hg-v03-ubuntu-template`.
    - Click **Export** — choose a path like `/tmp/hg-v03-ubuntu-template.json`.
    - File is created with valid JSON.
 
-6. **Import VM template**
-   - Delete `hg-v03-ubuntu-template` (type the ID in the confirm dialog).
-   - Click **Import** — select `/tmp/hg-v03-ubuntu-template.json`.
-   - Template reappears in the table.
-
-7. **Import collision**
+8. **Import VM template (collision)**
    - With `hg-v03-ubuntu-template` present, click **Import** and select the same file.
    - An error is shown: "VM template already exists" — no silent overwrite.
 
-8. **Delete templates**
-   - Select each test template and delete it by typing the template_id.
+9. **Delete test artifacts**
+   - Delete `hg-v03-ubuntu-template` and `hg-v03-asr-template` by typing their IDs.
+   - Delete the lab created in step 6.
    - Tables are empty after deletion.
-
-9. **Refresh**
-   - Click **Refresh** — tables show the current state from disk.
 
 Expected: no tracebacks, activity log records each operation, UI stays responsive.

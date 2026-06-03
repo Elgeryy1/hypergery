@@ -81,6 +81,11 @@ Available now:
 - Export/import portable lab manifests through file dialogs.
 - VM list filter: `All VMs` or `Selected Lab`.
 - `New VM in Lab` opens the VM wizard with the selected `lab_id` prefilled.
+- `Create Lab from Template` in the Templates tab creates a lab from a lab template: name, description, network mode pre-filled; `templates_used` recorded in the manifest; VMs in the template are listed but not created automatically.
+
+### `templates_used` field
+
+When a VM or lab is created from a template, the source `template_id` is appended to the lab manifest's `templates_used` list. This field tracks which templates contributed to the lab and is preserved on export/import and duplication.
 
 Manual smoke flow:
 
