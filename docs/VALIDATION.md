@@ -1,8 +1,68 @@
 # HyperGery Validation
 
-## v0.3.0 Labs & Templates Backend Foundation
+## v0.3.0 RC — Automated Tests Status
 
-Validated in the v0.3.0 development branch:
+Run with system Python (PySide6 not required):
+
+```bash
+python3 -m unittest discover -s hypergery-ubuntu/tests
+# Expected: Ran 101 tests — OK (skipped=4)
+```
+
+Run inside the venv (all tests including Qt):
+
+```bash
+/home/gerard/.venvs/hypergery/bin/python -m unittest discover -s hypergery-ubuntu/tests
+# Expected: Ran 101 tests — OK
+```
+
+The 4 skipped tests are the Qt widget tests that require PySide6 in the runtime environment. They pass cleanly in the venv.
+
+## v0.3.0 RC — Manual Smoke Checklist
+
+Run from the Qt UI (`python -m hypergery_ubuntu` inside the venv).
+
+### Lab Manager
+
+- [ ] Create lab `hg-v03-asr` with network=isolated
+- [ ] Create lab `hg-v03-par` with network=nat
+- [ ] Confirm subnets differ in Lab Details panel
+- [ ] Rename `hg-v03-par` display name (lab_id unchanged)
+- [ ] Export `hg-v03-asr` to `/tmp/hg-v03-asr.json`
+- [ ] Import `/tmp/hg-v03-asr.json` with new id `hg-v03-asr-copy`
+- [ ] Verify `hg-v03-asr-copy` appears in the lab list with a different subnet
+- [ ] Delete all temporary labs
+
+### Templates Manager
+
+- [ ] Create VM template `hg-v03-ubuntu-template` (OS=linux, RAM=4096, vCPUs=2, Disk=40, Net=nat, Display=spice)
+- [ ] Verify detail panel shows all fields including Notes
+- [ ] Create Lab template `hg-v03-asr-template` (Network=isolated)
+- [ ] Verify planned VMs count = 0 (no VMs defined in this template)
+- [ ] Export `hg-v03-ubuntu-template` to `/tmp/hg-v03-ubuntu-template.json`
+- [ ] Delete `hg-v03-ubuntu-template`, then import it back from `/tmp/`
+- [ ] Attempt import again with template present — error shown, no overwrite
+- [ ] Select `hg-v03-ubuntu-template` — **Create VM from Template** button activates
+- [ ] Click **Create VM from Template** — wizard opens with RAM/vCPUs/Disk/Net/Display pre-filled
+- [ ] Cancel the wizard (no ISO available or test without creating real VM)
+- [ ] Select `hg-v03-asr-template` — **Create Lab from Template** button activates
+- [ ] Click **Create Lab from Template** — dialog shows network=isolated, empty planned VMs list
+- [ ] Enter name `ASR Instance 01` — preview shows lab_id, bridge, subnet
+- [ ] Create the lab — appears in Instances tab with `templates_used = hg-v03-asr-template`
+- [ ] Delete `ASR Instance 01`, `hg-v03-ubuntu-template`, `hg-v03-asr-template`
+
+### Activity Log
+
+- [ ] All above operations appear in the Activity Log panel
+- [ ] Copy log to clipboard works
+
+### Pending (not smoke-tested, requires real ISO or KVM host)
+
+- Create VM from Template end-to-end with a real ISO
+- Verify `templates_used` in the lab JSON after VM creation
+- Console, snapshots, clone on a real VM
+
+## v0.3.0 Backend — Already Validated by Tests
 
 - Lab ID validation and normalization.
 - Lab create/list/show/rename/delete/export/import.
@@ -10,36 +70,27 @@ Validated in the v0.3.0 development branch:
 - Portable lab export without private disk/ISO paths.
 - Lab bridge generation with Linux interface length limits.
 - Lab subnet allocation avoiding `192.168.122.0/24` and collisions.
-- VM template create/list/show/delete.
+- VM template create/list/show/delete/export/import.
 - Lab template create/list/show/delete/export/import.
-- CLI coverage for minimal `lab` and `template` commands.
+- Template ID preview/normalization.
+- Wizard defaults mapping (os_type, ram_mib, vcpus, disk_gb, network_mode, display).
+- Import collision rejection (no silent overwrite).
+- Delete non-existent template raises clear error.
+- CLI coverage for `lab` and `template` commands.
 
-## v0.3.0 Qt Lab Manager First Pass
-
-Implemented and covered by lightweight tests where possible:
+## v0.3.0 Qt Lab Manager — Validated by Unit Tests
 
 - Lab preview helper generates `lab_id`, network ID, bridge, and subnet before creation.
 - Preview validation rejects duplicate lab IDs.
 - VM filter helper supports `All VMs` and `Selected Lab`.
 - VM count combines live libvirt summaries and manifest entries.
-- Qt main window now loads real labs from `LabStore`, shows details, and exposes create/rename/delete/duplicate/export/import actions.
-- `New VM in Lab` opens the VM wizard with the selected `lab_id` prefilled.
 
-Manual validation recommended before cutting v0.3.0:
+## Not yet implemented (v0.4 target)
 
-- Create `hg-v03-asr`.
-- Create `hg-v03-par`.
-- Confirm subnets differ.
-- Rename one lab.
-- Export one lab.
-- Import the exported JSON with another lab ID.
-- Delete the temporary labs.
-
-Not yet implemented in that pass (now done):
-
-- Full Templates UI with Create VM / Create Lab from Template flows.
-- Lab VM cloning from the Duplicate Lab dialog.
-- Delete Lab with VM deletion.
+- Auto-create planned VMs from lab template.
+- Edit templates in place.
+- Clone VM disks during lab duplicate.
+- Delete Lab with VMs included.
 
 ## v0.2.0 PySide6 UI Validation Status
 

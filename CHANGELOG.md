@@ -1,37 +1,19 @@
 # Changelog
 
-## v0.3.0 - En desarrollo
+## v0.3.0 - Release Candidate
 
-HyperGery v0.3.0 - Labs & Templates
+HyperGery v0.3.0 — Lab Manager & Templates Manager.
 
-Objetivo: convertir HyperGery en gestor de laboratorios, no solo gestor de VMs sueltas.
+Convierte HyperGery en un gestor de entornos de laboratorio reutilizables, manteniendo el backend real KVM/QEMU/libvirt de v0.1.0 y la UI PySide6/Qt de v0.2.0.
 
-Roadmap v0.3:
+No implementado en v0.3 (dejado para v0.4):
 
-- Base backend de labs con manifiestos schema v2 y migracion de manifiestos antiguos.
-- Validacion y normalizacion de `lab_id`.
-- Helpers de red por lab: nombre libvirt, bridge Linux y subred sin colision.
-- Backend de plantillas de VM y plantillas de lab.
-- CLI minima `lab` y `template`.
-- Lab manager visual.
-- Crear/renombrar/borrar labs.
-- Plantillas de VM.
-- Crear VM desde plantilla.
-- Duplicar laboratorio.
-- Exportar/importar manifiesto de laboratorio.
-- Mejorar aislamiento por lab.
-- Vista de redes por laboratorio.
+- Auto-crear VMs desde lab template (requiere seleccion de ISO por cada VM planificada).
+- Editar plantillas in-place (workaround: delete + recrear).
+- Clonar discos de VMs durante `duplicate_lab` (disabled explicitamente en UI).
+- Android Hub, NAS, IsardVDI, P2P, live migration, GPU shadowing.
 
-No implementar todavia en v0.3:
-
-- Android Hub.
-- NAS.
-- IsardVDI.
-- P2P.
-- Migracion en caliente.
-- GPU shadowing.
-
-Cambios implementados:
+Cambios implementados en v0.3:
 
 - Nuevo modulo `hypergery_ubuntu.labs` con `LabStore`, migracion a `schema_version: 2`, export/import portable y duplicacion segura de labs.
 - Nuevo modulo `hypergery_ubuntu.templates` con `TemplateStore`, plantillas de VM y plantillas de laboratorio.

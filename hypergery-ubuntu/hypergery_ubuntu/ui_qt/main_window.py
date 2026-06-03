@@ -792,6 +792,7 @@ class MainWindow(QMainWindow):
         if lab is None:
             self.lab_details_text.setPlainText("No lab selected.")
             return
+        templates_used = lab.get("templates_used", [])
         self.lab_details_text.setPlainText(
             details_block(
                 ("Name", str(lab.get("name") or lab.get("lab_id", ""))),
@@ -802,6 +803,7 @@ class MainWindow(QMainWindow):
                 ("Subnet", str(lab.get("subnet", ""))),
                 ("Bridge", str(lab.get("bridge_name", ""))),
                 ("VM count", str(vm_count_for_lab(lab, self.all_vms))),
+                ("Templates used", ", ".join(templates_used) if templates_used else "none"),
                 ("Created", str(lab.get("created_at", ""))),
                 ("Updated", str(lab.get("updated_at", ""))),
                 ("Notes", str(lab.get("notes", ""))),
