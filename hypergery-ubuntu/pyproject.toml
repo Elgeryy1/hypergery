@@ -1,0 +1,17 @@
+[project]
+name = "hypergery-ubuntu"
+version = "0.1.0"
+description = "HyperGery v0.1 desktop VM manager for Ubuntu KVM/QEMU/libvirt"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+hypergery = "hypergery_ubuntu.app:main"
+hypergery-cli = "hypergery_ubuntu.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["hypergery_ubuntu"]

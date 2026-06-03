@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Build/cache
+build/
+dist/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor/system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local task notes
+goal.md
+
+# HyperGery runtime
+*.qcow2
+*.img
+*.iso
+*.hgd
+*.vdi
+*.vmdk
+*.ova
+*.ovf
+vms/
+labs/
+logs/
+state/
+.local/
+
+# Logs
+*.log
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+*.crt
+*.p12
+*.token
+secrets.*
+*secret*
+firebase*.json
