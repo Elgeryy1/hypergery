@@ -1,11 +1,11 @@
 # Changelog
 
-## v0.2.0 - Preparacion de release
+## v0.2.0 - Modern PySide6 UI
 
 - Inicio de la rama `develop` para la siguiente iteracion sin modificar `main` ni la release `v0.1.0`.
 - Migracion inicial de la UI principal a PySide6/Qt como interfaz por defecto.
 - Capa Qt separada en `hypergery_ubuntu/ui_qt/`, reutilizando el backend real existente.
-- UI Tkinter conservada temporalmente como `hypergery_ubuntu.app_tk` durante la migracion.
+- UI Tkinter conservada temporalmente como `hypergery_ubuntu.app_tk` durante la migracion y mantenida una version mas como legacy fallback.
 - Pulido visual del dashboard PySide6: preflight compacto, empty states, chips de estado, logs menos invasivos y cards de accion rapida.
 - UI principal revisada para parecer mas una herramienta de gestion de VMs real: cabecera de producto, acciones principales separadas, estados de VM mas legibles y resumen de seleccion.
 - Lista de VMs ampliada con estado, lab, CPU y RAM visibles.
@@ -26,11 +26,7 @@
 - Verificada creacion real desde la UI PySide6 con permisos `libvirt` efectivos mediante `sg libvirt`: wizard New VM, `qemu-img`, `virsh define`, VM en estado `shut off` y limpieza posterior.
 - Corregida la carga de estados cuando `virsh domstate` devuelve texto localizado como `ejecutando`; los comandos externos se ejecutan con locale `C` y el backend normaliza estados conocidos.
 - Documentacion y scripts preparados para cierre de v0.2.0: PySide6 como UI principal, Tkinter como legacy temporal, venv externo recomendado para NAS y checklist de validacion real UI Qt.
-
-Pendiente antes de publicar v0.2.0:
-
-- Validar desde la UI Qt el flujo completo Start, Console, ACPI/Force Off, Snapshot create/list/revert/delete, Clone y Delete seguro con `hg-v02-qt-test` y `hg-v02-qt-clone`.
-- Merge a `main`, tag `v0.2.0` y GitHub release solo cuando esa validacion este completa.
+- Validacion manual final de UI Qt en `develop`: app arranca, preflight OK, creacion de `hg-v02-qt-test` desde ISO real, Start a running, Console con `virt-viewer`, apagado por ACPI o Force Off segun respuesta del guest, snapshots create/list/revert/delete, clone a `hg-v02-qt-clone`, delete seguro de test y clone, y sin VMs/discos de prueba restantes.
 
 Limitaciones intencionales mantenidas en v0.2.0:
 
