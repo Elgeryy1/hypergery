@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 - Lab Automation (en desarrollo)
+## v0.4.0 - Lab Automation
 
 HyperGery v0.4.0 — automatización de entornos de laboratorio.
 

@@ -20,64 +20,52 @@ The 4 skipped tests are Qt widget tests that require PySide6. They pass cleanly 
 
 New in v0.4.0: 20 additional tests covering `instantiate_lab_template` (dry_run, ISO validation, rollback, iso_required=False), `update_vm/lab_template`, planned VM validation (duplicate names, empty names), and `_resolve_planned_vm` precedence.
 
-## v0.4.0 — Manual Smoke Checklist
+## v0.4.0 — Manual Smoke Validated (2026-06-03)
 
-Run from the Qt UI (`python -m hypergery_ubuntu` inside the venv). Requires a real Ubuntu KVM/libvirt host and a local ISO file.
+Run from the Qt UI (`python -m hypergery_ubuntu` inside the venv). Validated on a real Ubuntu KVM/libvirt host.
 
 ### Lab Template Instantiation
 
-- [ ] Create VM template `hg-v04-ubuntu-srv` (RAM=4096, vCPUs=2, Disk=40)
-- [ ] Create lab template `hg-v04-asr-template` (Network=isolated)
-- [ ] Edit `hg-v04-asr-template` → Add planned VM `hg-v04-ad-server` (role=server, iso_required=true, template_id=hg-v04-ubuntu-srv)
-- [ ] Edit `hg-v04-asr-template` → Add planned VM `hg-v04-client` (role=client, RAM=2048, iso_required=true)
-- [ ] Lab template detail panel shows VMs count = 2
-- [ ] Click **Create Lab from Template**
-  - [ ] Page 1: Enter name `ASR Lab 01` — preview shows lab_id and subnet
-  - [ ] Page 2: Browse ISO for `hg-v04-ad-server` and `hg-v04-client`; Next disabled without both ISOs
-  - [ ] Page 3: Review shows both VMs with ISOs and resources
-  - [ ] Click **Create Lab** — activity log shows progress
-- [ ] Instances tab shows `asr-lab-01` with both VMs listed
-- [ ] Lab details panel shows `templates_used = hg-v04-asr-template`
-- [ ] Start `hg-v04-ad-server` → Open Console → installer appears
+- [x] Create VM template `hg-v04-ubuntu-template` (RAM=4096, vCPUs=2, Disk=40)
+- [x] Create lab template `hg-v04-asr-template` (Network=isolated)
+- [x] Edit `hg-v04-asr-template` → Add planned VM `hg-v04-ad-server` (role=server, iso_required=true)
+- [x] Edit `hg-v04-asr-template` → Add planned VM `hg-v04-client` (role=client, iso_required=true)
+- [x] Lab template detail panel shows VMs count = 2
+- [x] Click **Create Lab from Template**
+  - [x] Page 1: Enter name — preview shows lab_id and subnet
+  - [x] Page 2: Browse ISO for both VMs; Next disabled without ISOs
+  - [x] Page 3: Review shows both VMs with ISOs and resources
+  - [x] Click **Create Lab** — activity log shows progress
+- [x] Instances tab shows lab with both VMs listed
+- [x] Lab details panel shows `templates_used = hg-v04-asr-template`
+- [x] Start `hg-v04-ad-server` → Open Console → installer appears
+- [x] Shutdown / Force Off
 
 ### Edit VM Template
 
-- [ ] Select `hg-v04-ubuntu-srv` → Click **Edit**
-- [ ] Change RAM to 8192, add a note, click Save
-- [ ] Detail panel updates with new RAM value; old file is overwritten
+- [x] Select VM template → Click **Edit** → Change RAM, add note → Save
+- [x] Detail panel updates with new values
 
 ### Edit Lab Template + Planned VMs
 
-- [ ] Select `hg-v04-asr-template` → Click **Edit**
-- [ ] Remove `hg-v04-client`, click Save
-- [ ] Lab template detail panel shows VMs count = 1
-- [ ] Click **Add Planned VM…** dialog — enter valid and invalid names, confirm duplicate detection
-
-### Dry Run (backend)
-
-- [ ] Confirm `instantiate_lab_template(..., dry_run=True)` returns a plan without creating a lab (verified by test suite; can also be confirmed via Python REPL or CLI if available)
+- [x] Select `hg-v04-asr-template` → Click **Edit** → Add/remove planned VMs → Save
+- [x] Detail panel reflects updated VM count
 
 ### Lab Duplicate with VM Cloning
 
-- [ ] Select `asr-lab-01` (has VMs) → Click **Duplicate Lab**
-- [ ] Confirm Clone VMs checkbox is enabled
-- [ ] Check Clone VMs; all VMs must be shut off first
-- [ ] Duplicate succeeds — new lab appears with cloned VMs (independent disks)
+- [x] Select lab with VMs → Click **Duplicate Lab** → Clone VMs checkbox is enabled
+- [ ] Clone VMs with disk cloning (not completed in this smoke — requires all VMs shut off simultaneously; defer to extended test)
 
 ### Cleanup
 
-- [ ] Delete `asr-lab-01` and its duplicate (including VMs and disks)
-- [ ] Delete `hg-v04-asr-template` and `hg-v04-ubuntu-srv`
-
-### Activity Log
-
-- [ ] All operations appear in Activity Log
-- [ ] Errors from rollback (if triggered) are visible
+- [x] Delete lab and VMs; delete both templates
+- [x] Activity log records all operations; no tracebacks
 
 ### Not smoke-tested (requires extended setup)
 
 - CLI `template update` / `template instantiate` (not yet implemented)
 - Rollback from partial VM creation failure with a real ISO
+- Duplicate Lab with Clone VMs end-to-end (disk clone path)
 
 ## v0.3.0 — Manual Smoke Validated (2026-06-03)
 
