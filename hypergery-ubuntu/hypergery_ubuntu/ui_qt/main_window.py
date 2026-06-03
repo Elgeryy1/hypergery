@@ -628,7 +628,8 @@ class MainWindow(QMainWindow):
         job = BackendJob(label, fn)
         self.jobs.append(job)
 
-        def succeeded(result: Any) -> None:
+        def succeeded() -> None:
+            result = job.result
             if on_success:
                 on_success(result)
             if refresh_after:
@@ -636,8 +637,8 @@ class MainWindow(QMainWindow):
             if busy or refresh_after:
                 self.status.showMessage("Ready")
 
-        def failed(message: str) -> None:
-            self.show_error(message)
+        def failed() -> None:
+            self.show_error(job.error_message)
             self.status.showMessage("Ready")
 
         def finished() -> None:
