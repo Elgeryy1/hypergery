@@ -1,16 +1,29 @@
 # HyperGery Architecture
 
-HyperGery v0.1.0 is intentionally small and direct.
+HyperGery v0.2.0 is a real Ubuntu desktop VM manager built around a Python backend and a modern PySide6/Qt desktop UI.
 
 ## UI
 
-The desktop UI is implemented with Python Tkinter. It provides:
+The primary desktop UI is implemented with PySide6/Qt in:
 
-- Toolbar actions similar to common desktop VM managers.
-- A VM list.
-- VM detail tabs.
-- Preflight status.
-- Activity logs.
+```text
+hypergery_ubuntu/ui_qt/
+```
+
+It provides:
+
+- A VM dashboard with state chips, host preflight, lab summary, details, and logs.
+- A multi-page VM creation wizard.
+- VM lifecycle actions: start, ACPI shutdown, force off, console, snapshots, clone, settings, and delete.
+- Qt backend workers so long-running host operations do not block the UI thread.
+
+The old Tkinter UI remains temporarily available in:
+
+```text
+hypergery_ubuntu/app_tk.py
+```
+
+`app_tk.py` is legacy migration fallback only. It is not the v0.2.0 primary UI.
 
 ## Backend
 
@@ -20,7 +33,7 @@ The backend is Python and wraps real host tools:
 - `qemu-img` for qcow2 disk creation and disk information.
 - `virt-viewer` or `remote-viewer` for real graphical consoles.
 
-Commands are executed with argument lists, not shell-concatenated strings.
+Commands are executed with argument lists, not shell-concatenated strings. External command output is forced to locale `C` where possible so VM states remain stable even on localized desktops.
 
 ## Libvirt
 
@@ -32,6 +45,10 @@ HyperGery targets:
 - SPICE or VNC graphics
 
 HyperGery-owned libvirt networks use names like `hg-net-<lab-id>` and Linux bridges like `hgbr<hash>`. HyperGery does not manage the libvirt `default` network.
+
+## Qt Workers
+
+Backend actions run through Qt worker threads to keep the UI responsive. Workers avoid passing arbitrary Python objects through PySide signal payloads; results are stored on the worker object and read by the UI on completion. Completed workers are retained briefly to avoid premature Shiboken destruction crashes.
 
 ## Labs
 

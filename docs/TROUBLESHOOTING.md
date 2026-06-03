@@ -1,5 +1,24 @@
 # Troubleshooting
 
+## Virtualenv Fails on a NAS or Filesystem Without Symlinks
+
+Some NAS mounts and shared filesystems do not handle Python virtualenv symlinks
+reliably. Create the virtual environment on a local Linux filesystem and use
+copies instead of symlinks:
+
+```bash
+python3 -m venv --copies ~/.venvs/hypergery
+source ~/.venvs/hypergery/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ./hypergery-ubuntu
+```
+
+If you are already inside `hypergery-ubuntu`, install the current directory:
+
+```bash
+python -m pip install -e .
+```
+
 ## `qemu-kvm` Has No Installation Candidate
 
 Some Ubuntu versions or derivatives package QEMU differently. Install the explicit packages:
@@ -34,6 +53,24 @@ sudo usermod -aG kvm,libvirt "$USER"
 ```
 
 Log out and back in before rerunning HyperGery.
+
+If `/etc/group` already lists your user in `libvirt` but `id -nG` does not, the current login session has not inherited the new group yet. Log out completely and back in, or use a temporary subsession:
+
+```bash
+sg libvirt -c 'cd /path/to/miversiondevirtualbox && source ~/.venvs/hypergery/bin/activate && ./scripts/dev-run.sh'
+```
+
+## VM State Looks Wrong or Does Not Refresh
+
+HyperGery v0.2.0 forces external commands to locale `C` and normalizes known localized libvirt states such as `ejecutando`. If state still looks wrong, compare:
+
+```bash
+virsh --connect qemu:///system list --all
+cd hypergery-ubuntu
+python -m hypergery_ubuntu.cli list-vms
+```
+
+Then press Refresh in the Qt UI.
 
 ## Conflict with `virbr0` or `192.168.122.0/24`
 

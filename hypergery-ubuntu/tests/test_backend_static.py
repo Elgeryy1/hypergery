@@ -77,6 +77,23 @@ class BackendStaticTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_run_forces_c_locale_for_external_command_output(self):
+        with patch("hypergery_ubuntu.backend.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = ""
+            run.return_value.stderr = ""
+
+            self.backend.run(["true"])
+
+            env = run.call_args.kwargs["env"]
+            self.assertEqual(env["LC_ALL"], "C")
+            self.assertEqual(env["LANG"], "C")
+
+    def test_normalize_vm_state_handles_localized_virsh_output(self):
+        self.assertEqual(self.backend.normalize_vm_state("ejecutando"), "running")
+        self.assertEqual(self.backend.normalize_vm_state("apagado"), "shut off")
+        self.assertEqual(self.backend.normalize_vm_state("paused"), "paused")
+
     def test_default_lab_manifest_shape(self):
         manifest = self.backend.ensure_default_lab()
         self.assertEqual(manifest["lab_id"], "default-lab")

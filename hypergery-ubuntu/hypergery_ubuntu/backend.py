@@ -132,6 +132,9 @@ class HyperGeryBackend:
 
     def run(self, args: list[str], *, timeout: int = 120, check: bool = True) -> CommandResult:
         logging.info("run: %s", " ".join(args))
+        env = os.environ.copy()
+        env["LC_ALL"] = "C"
+        env["LANG"] = "C"
         try:
             proc = subprocess.run(
                 args,
@@ -139,6 +142,7 @@ class HyperGeryBackend:
                 capture_output=True,
                 timeout=timeout,
                 check=False,
+                env=env,
             )
         except FileNotFoundError as exc:
             logging.error("missing executable: %s", args[0])
@@ -666,7 +670,7 @@ class HyperGeryBackend:
         if managed is None and name not in self.manifest_vm_names():
             raise HyperGeryError(f"{name} is not managed by HyperGery.")
         state_result = self.virsh(["domstate", name], check=False)
-        state = state_result.stdout.strip() if state_result.returncode == 0 else "unknown"
+        state = self.normalize_vm_state(state_result.stdout.strip()) if state_result.returncode == 0 else "unknown"
         memory = root.find("./memory")
         vcpu = root.find("./vcpu")
         disk_path = ""
@@ -743,7 +747,23 @@ class HyperGeryBackend:
         result = self.virsh(["domstate", validate_vm_name(name)], check=False)
         if result.returncode != 0:
             raise HyperGeryError(result.stderr.strip() or result.stdout.strip() or f"Cannot read state for {name}.")
-        return result.stdout.strip() or "unknown"
+        return self.normalize_vm_state(result.stdout.strip())
+
+    @staticmethod
+    def normalize_vm_state(state: str) -> str:
+        value = state.strip().lower()
+        localized = {
+            "ejecutando": "running",
+            "en ejecucion": "running",
+            "en ejecución": "running",
+            "pausado": "paused",
+            "pausada": "paused",
+            "apagado": "shut off",
+            "apagada": "shut off",
+            "cerrado": "shut off",
+            "cerrada": "shut off",
+        }
+        return localized.get(value, state.strip() or "unknown")
 
     def wait_for_state(self, name: str, desired_states: set[str], *, timeout_seconds: int = 120, interval_seconds: float = 2.0) -> str:
         name = validate_vm_name(name)
@@ -1030,7 +1050,8 @@ class HyperGeryBackend:
         return "\n".join(
             [
                 "sudo apt update",
-                "sudo apt install qemu-kvm qemu-system-x86 libvirt-daemon-system libvirt-clients virt-viewer qemu-utils ovmf python3-tk",
+                "sudo apt install qemu-kvm qemu-system-x86 libvirt-daemon-system libvirt-clients virt-viewer qemu-utils ovmf python3-tk python3-pip python3-venv",
+                "cd hypergery-ubuntu && python3 -m pip install -e .",
                 "sudo systemctl enable --now libvirtd",
                 "sudo usermod -aG kvm,libvirt $USER",
                 "# Log out and back in after changing groups.",
