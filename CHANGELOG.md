@@ -16,6 +16,8 @@
 - Wizard de creacion de VM dividido en Identity, Resources, Storage & Network y Review, con validacion temprana y confirmacion final.
 - Confirmaciones mas explicitas para force off, delete, clone, settings y operaciones destructivas de snapshots.
 - Documentadas instrucciones para crear el entorno virtual fuera del repositorio cuando este vive en un NAS o filesystem sin soporte fiable de symlinks.
+- Prueba manual real de la UI PySide6 detecto un crash al intentar crear una VM en un entorno GNOME/Wayland con errores de portal DBus.
+- Corregido el flujo de seleccion de ISO/directorio de la UI Qt para usar dialogos de fichero no nativos y evitar el crash del portal.
 
 Limitaciones intencionales mantenidas en v0.2.0:
 

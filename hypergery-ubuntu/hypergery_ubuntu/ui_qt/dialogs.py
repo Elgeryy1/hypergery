@@ -33,6 +33,9 @@ if TYPE_CHECKING:
     from .main_window import MainWindow
 
 
+FILE_DIALOG_OPTIONS = QFileDialog.Option.DontUseNativeDialog
+
+
 class IdentityPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
@@ -69,7 +72,14 @@ class IdentityPage(QWizardPage):
         self.iso_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
 
     def pick_iso(self) -> None:
-        path, _selected_filter = QFileDialog.getOpenFileName(self, "Select boot ISO", "", "ISO images (*.iso);;All files (*)")
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Select boot ISO",
+            "",
+            "ISO images (*.iso);;All files (*)",
+            "",
+            FILE_DIALOG_OPTIONS,
+        )
         if path:
             self.iso_edit.setText(path)
 
@@ -148,7 +158,7 @@ class IntegrationPage(QWizardPage):
         self.registerField("lab_id", self.lab_id)
 
     def pick_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select disk directory")
+        path = QFileDialog.getExistingDirectory(self, "Select disk directory", "", FILE_DIALOG_OPTIONS)
         if path:
             self.disk_dir.setText(path)
 
@@ -270,7 +280,14 @@ class SettingsDialog(QDialog):
         self.resize(640, 360)
 
     def pick_iso(self) -> None:
-        path, _selected_filter = QFileDialog.getOpenFileName(self, "Select boot ISO", "", "ISO images (*.iso);;All files (*)")
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Select boot ISO",
+            "",
+            "ISO images (*.iso);;All files (*)",
+            "",
+            FILE_DIALOG_OPTIONS,
+        )
         if path:
             self.iso.setText(path)
 
