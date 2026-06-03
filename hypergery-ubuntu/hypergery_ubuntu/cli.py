@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from .backend import HyperGeryBackend, HyperGeryError
+from .labs import LabStore
+from .templates import TemplateStore
 
 
 def print_preflight(backend: HyperGeryBackend) -> int:
@@ -108,6 +111,60 @@ def wait_state(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
     return 0
 
 
+def print_json(data: object) -> int:
+    print(json.dumps(data, indent=2, sort_keys=True))
+    return 0
+
+
+def lab_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
+    store = LabStore(backend.data_dir)
+    if args.lab_command == "list":
+        for lab in store.list_labs():
+            print(f"{lab['lab_id']}\t{lab['name']}\t{lab.get('network_mode', 'nat')}\t{len(lab.get('vms', []))}")
+        return 0
+    if args.lab_command == "create":
+        lab = store.create_lab(args.name, args.description, args.network_mode, lab_id=args.lab_id)
+        return print_json(lab)
+    if args.lab_command == "show":
+        return print_json(store.get_lab(args.lab_id))
+    if args.lab_command == "rename":
+        return print_json(store.rename_lab(args.lab_id, args.new_name))
+    if args.lab_command == "delete":
+        store.delete_lab(args.lab_id, delete_vms=args.delete_vms)
+        print(f"deleted_lab={args.lab_id}")
+        print(f"delete_vms={args.delete_vms}")
+        return 0
+    if args.lab_command == "export":
+        output = store.export_lab(args.lab_id, args.output)
+        print(f"exported_lab={args.lab_id}")
+        print(f"path={output}")
+        return 0
+    if args.lab_command == "import":
+        lab = store.import_lab(args.input, new_lab_id=args.new_lab_id)
+        return print_json(lab)
+    return 2
+
+
+def template_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
+    store = TemplateStore(backend.data_dir, backend=backend, lab_store=LabStore(backend.data_dir))
+    if args.template_command == "list":
+        templates = store.list_vm_templates() if args.kind == "vm" else store.list_lab_templates()
+        for template in templates:
+            print(f"{template['template_id']}\t{template['name']}")
+        return 0
+    if args.template_command == "show":
+        template = store.get_vm_template(args.template_id) if args.kind == "vm" else store.get_lab_template(args.template_id)
+        return print_json(template)
+    if args.template_command == "delete":
+        if args.kind == "vm":
+            store.delete_vm_template(args.template_id)
+        else:
+            store.delete_lab_template(args.template_id)
+        print(f"deleted_template={args.kind}:{args.template_id}")
+        return 0
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hypergery-cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -154,6 +211,38 @@ def main(argv: list[str] | None = None) -> int:
         parser_for_command = snapshot_sub.add_parser(snapshot_command)
         parser_for_command.add_argument("name")
         parser_for_command.add_argument("snapshot_name")
+    lab_parser = sub.add_parser("lab", help="Manage HyperGery lab manifests.")
+    lab_sub = lab_parser.add_subparsers(dest="lab_command", required=True)
+    lab_sub.add_parser("list")
+    lab_create = lab_sub.add_parser("create")
+    lab_create.add_argument("name")
+    lab_create.add_argument("--lab-id")
+    lab_create.add_argument("--description", default="")
+    lab_create.add_argument("--network-mode", choices=["nat", "isolated"], default="nat")
+    lab_show = lab_sub.add_parser("show")
+    lab_show.add_argument("lab_id")
+    lab_rename = lab_sub.add_parser("rename")
+    lab_rename.add_argument("lab_id")
+    lab_rename.add_argument("new_name")
+    lab_delete = lab_sub.add_parser("delete")
+    lab_delete.add_argument("lab_id")
+    lab_delete.add_argument("--delete-vms", action="store_true")
+    lab_export = lab_sub.add_parser("export")
+    lab_export.add_argument("lab_id")
+    lab_export.add_argument("output")
+    lab_import = lab_sub.add_parser("import")
+    lab_import.add_argument("input")
+    lab_import.add_argument("--new-lab-id")
+    template_parser = sub.add_parser("template", help="Manage VM and lab templates.")
+    template_sub = template_parser.add_subparsers(dest="template_command", required=True)
+    template_list = template_sub.add_parser("list")
+    template_list.add_argument("kind", choices=["vm", "lab"])
+    template_show = template_sub.add_parser("show")
+    template_show.add_argument("kind", choices=["vm", "lab"])
+    template_show.add_argument("template_id")
+    template_delete = template_sub.add_parser("delete")
+    template_delete.add_argument("kind", choices=["vm", "lab"])
+    template_delete.add_argument("template_id")
     args = parser.parse_args(argv)
 
     try:
@@ -174,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
             return delete_vm(backend, args)
         if args.command == "snapshot":
             return snapshot_action(backend, args)
+        if args.command == "lab":
+            return lab_action(backend, args)
+        if args.command == "template":
+            return template_action(backend, args)
     except HyperGeryError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

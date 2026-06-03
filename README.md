@@ -2,14 +2,14 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v0.2.0--dev-blue)
+![Version](https://img.shields.io/badge/version-v0.3.0--dev-blue)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-HyperGery is a first real version of a desktop virtual machine manager for Ubuntu. It is functionally inspired by VirtualBox workflows, but it is not a VirtualBox frontend: HyperGery uses KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
+HyperGery is a real desktop virtual machine manager for Ubuntu, functionally inspired by VirtualBox workflows but using KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
 
-HyperGery v0.2.0 uses a modern PySide6/Qt desktop UI as the primary interface while keeping the real KVM/QEMU/libvirt backend from v0.1.0. The legacy Tkinter UI remains temporarily available in `hypergery_ubuntu.app_tk` as a migration fallback.
+HyperGery v0.3.0 extends the modern PySide6/Qt desktop UI with Lab Manager and Templates Manager, turning the app into a reusable laboratory environment manager.
 
 ## Screenshots
 
@@ -17,92 +17,87 @@ HyperGery v0.2.0 uses a modern PySide6/Qt desktop UI as the primary interface wh
 
 ## Features
 
-- Real KVM/QEMU/libvirt backend.
-- VM creation from ISO.
-- qcow2 disk creation.
-- NAT and isolated lab networks.
+### VM Management (v0.1.0+)
+
+- Real KVM/QEMU/libvirt backend via `virsh` and `qemu-img`.
+- VM creation from a local ISO with qcow2 disks.
+- NAT and isolated libvirt networks per lab.
 - SPICE/VNC console through `virt-viewer` or `remote-viewer`.
 - Start, ACPI shutdown, and force off.
 - Snapshots: create, list, revert, delete.
 - Clone stopped VMs.
 - Safe delete with disk confirmation.
 - Preflight checks for KVM, libvirt, QEMU tools, viewer tools, and user groups.
-- Logs and lab manifests.
 
-## What Works in v0.1.0
+### Lab Manager (v0.3.0)
 
-HyperGery v0.1.0 was validated on a real Ubuntu host with the acceptance script. The validation covered:
+- Labs are isolated virtual environments with their own libvirt network, bridge, and subnet.
+- Create, rename, delete, duplicate, export, and import labs via the Qt UI or CLI.
+- Each lab gets a deterministic `hg-net-<lab-id>` network and `hgbr<hash>` bridge.
+- Subnets are allocated without collisions against existing labs and `192.168.122.0/24`.
+- VM list can be filtered by lab (All VMs / Selected Lab).
+- Lab manifests are JSON files at `~/.local/share/hypergery/labs/<lab-id>/lab.json`.
+- `templates_used` field tracks which templates contributed to the lab.
 
-- Real preflight against `/dev/kvm`, libvirt, QEMU tools, and viewer tools.
-- Real VM creation from an Ubuntu ISO.
-- Real qcow2 disk creation.
-- Real libvirt network creation for `hg-net-default-lab` with a HyperGery-owned bridge.
-- Real SPICE console opened with `virt-viewer`.
-- Real snapshots: create, list, revert, delete.
-- Real clone of a stopped VM with an independent qcow2 disk.
-- Safe delete of managed test VMs and disks.
+### Templates Manager (v0.3.0)
 
-## Not Included Yet
+- **VM Templates** describe reusable VM resource profiles (OS type, RAM, vCPUs, disk, network, display).
+- **Lab Templates** describe reusable lab structures with a list of planned VMs.
+- Create, delete, export, and import templates via the Qt UI or CLI.
+- **Create VM from Template**: opens the wizard with resource fields pre-filled; user chooses VM name, ISO, and lab.
+- **Create Lab from Template**: creates a lab with name, description, and network mode from the template; planned VMs are listed but not created automatically yet.
+- Template IDs are normalized slugs: 3-64 lowercase alphanumeric characters with dashes.
+- Templates stored at `~/.local/share/hypergery/templates/vm/` and `.../templates/lab/`.
 
-- Android Hub is not included yet.
-- NAS sync is not included yet.
-- IsardVDI integration is not included yet.
-- P2P/offload is not included yet.
-- Live migration is not included yet.
-- GPU shadowing is not included yet.
+### Not yet implemented
+
+- Auto-create planned VMs from a lab template (requires per-VM ISO selection).
+- Edit templates in place (workaround: delete + re-create).
+- Clone VM disks during lab duplicate.
+- Android Hub, NAS, IsardVDI, P2P, live migration, GPU shadowing.
 
 ## Requirements
 
 Target platforms:
 
-- Ubuntu 22.04 LTS.
-- Ubuntu 24.04 LTS.
-- Compatible Ubuntu-based systems with KVM/QEMU/libvirt.
+- Ubuntu 22.04 LTS
+- Ubuntu 24.04 LTS
+- Compatible Ubuntu-based systems with KVM/QEMU/libvirt
 
-Required packages:
+Required system packages:
 
-- `qemu-system-x86`
-- `qemu-utils`
-- `libvirt-daemon-system`
-- `libvirt-clients`
-- `libvirt-daemon-driver-qemu`
-- `libvirt-daemon-config-network`
-- `virt-viewer`
-- `ovmf`
-- `python3-tk`
-- `python3-pip`
-- `python3-venv`
-- `python3-dev`
-- `dnsmasq-base`
-- `libxcb-cursor0`
-- `libxcb-icccm4`
-- `libxcb-image0`
-- `libxcb-keysyms1`
-- `libxcb-render-util0`
-- `libxkbcommon-x11-0`
+```bash
+sudo apt install qemu-system-x86 qemu-utils \
+  libvirt-daemon-system libvirt-clients \
+  libvirt-daemon-driver-qemu libvirt-daemon-config-network \
+  virt-viewer ovmf dnsmasq-base \
+  python3-pip python3-venv python3-dev python3-tk \
+  libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+  libxcb-keysyms1 libxcb-render-util0 libxkbcommon-x11-0
+```
 
-Python package dependencies:
+Python dependency: `PySide6` (installed in the virtualenv, see below).
 
-- `PySide6`
-
-The current user must be able to access KVM and libvirt, normally through the `kvm` and `libvirt` groups.
+The current user must belong to the `kvm` and `libvirt` groups.
 
 ## Installation
 
-Install dependencies:
+Install system dependencies:
 
 ```bash
 ./scripts/install-ubuntu-deps.sh
+sudo systemctl enable --now libvirtd
+sudo usermod -aG kvm,libvirt "$USER"
+# Log out and back in after changing groups
 ```
 
-Install Python dependencies for the Qt UI. If the repository is stored on a normal local Linux filesystem:
+Install HyperGery. If the repository lives on a local filesystem:
 
 ```bash
-cd hypergery-ubuntu
-python3 -m pip install -e .
+cd hypergery-ubuntu && python3 -m pip install -e .
 ```
 
-Recommended setup when the repository is stored on a NAS or on a filesystem that does not support Python virtualenv symlinks reliably:
+Recommended setup when on a NAS or filesystem without reliable symlink support:
 
 ```bash
 python3 -m venv --copies ~/.venvs/hypergery
@@ -110,23 +105,6 @@ source ~/.venvs/hypergery/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ./hypergery-ubuntu
 ```
-
-Then run HyperGery from the activated environment:
-
-```bash
-python -m hypergery_ubuntu
-```
-
-Manual equivalent:
-
-```bash
-sudo apt update
-sudo apt install qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu libvirt-daemon-config-network virt-viewer ovmf dnsmasq-base python3-pip python3-venv python3-dev python3-tk libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxkbcommon-x11-0
-sudo systemctl enable --now libvirtd
-sudo usermod -aG kvm,libvirt "$USER"
-```
-
-Log out and back in after changing groups.
 
 Optional desktop launcher:
 
@@ -142,63 +120,62 @@ Run preflight:
 ./scripts/preflight.sh
 ```
 
-Run the desktop app:
-
-```bash
-./scripts/dev-run.sh
-```
-
-Or directly:
-
-```bash
-cd hypergery-ubuntu
-python3 -m hypergery_ubuntu
-```
-
-The default desktop UI on `develop` is the PySide6/Qt interface. The previous Tkinter UI is kept temporarily in `hypergery_ubuntu.app_tk` during migration.
-
-If PySide6 is installed in a virtualenv, activate it before running:
+Run the Qt desktop app:
 
 ```bash
 source ~/.venvs/hypergery/bin/activate
 ./scripts/dev-run.sh
+# or: python -m hypergery_ubuntu
 ```
 
-Run the acceptance flow with a real ISO:
+Run the CLI:
+
+```bash
+python3 -m hypergery_ubuntu.cli preflight
+python3 -m hypergery_ubuntu.cli lab list
+python3 -m hypergery_ubuntu.cli template list vm
+python3 -m hypergery_ubuntu.cli create-vm --name my-vm --iso /path/to/ubuntu.iso \
+  --ram-mib 4096 --vcpus 2 --disk-gb 40
+```
+
+Run the acceptance script with a real ISO:
 
 ```bash
 ./scripts/acceptance-ubuntu.sh --iso /path/to/ubuntu-or-debian.iso --name hg-acceptance-ubuntu-test
 ```
 
-Use the CLI directly:
+## Tests
+
+System Python (no PySide6 — Qt tests are skipped cleanly):
 
 ```bash
-cd hypergery-ubuntu
-python3 -m hypergery_ubuntu.cli preflight
-python3 -m hypergery_ubuntu.cli create-vm --name hg-acceptance-ubuntu-test --iso /path/to/ubuntu.iso --ram-mib 4096 --vcpus 2 --disk-gb 40
-python3 -m hypergery_ubuntu.cli start hg-acceptance-ubuntu-test
-python3 -m hypergery_ubuntu.cli open-console hg-acceptance-ubuntu-test
-python3 -m hypergery_ubuntu.cli snapshot create hg-acceptance-ubuntu-test before-install
-python3 -m hypergery_ubuntu.cli delete-vm hg-acceptance-ubuntu-test --delete-disks
+python3 -m unittest discover -s hypergery-ubuntu/tests
+```
+
+Full suite inside the venv (all 101 tests pass including Qt tests):
+
+```bash
+/home/gerard/.venvs/hypergery/bin/python -m unittest discover -s hypergery-ubuntu/tests
 ```
 
 ## Safety
 
-HyperGery runtime data is kept outside the repository. By default:
+HyperGery runtime data is kept outside the repository:
 
-- VM disks are created under `~/.local/share/hypergery/vms/`.
-- Lab manifests are stored under `~/.local/share/hypergery/labs/`.
-- Logs are stored under `~/.local/state/hypergery/logs/`.
+- VM disks: `~/.local/share/hypergery/vms/`
+- Lab manifests: `~/.local/share/hypergery/labs/`
+- VM templates: `~/.local/share/hypergery/templates/vm/`
+- Lab templates: `~/.local/share/hypergery/templates/lab/`
+- Logs: `~/.local/state/hypergery/logs/`
 
-The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime folders, `.env` files, credentials, keys, certificates, and common secret file patterns. Do not commit private ISOs, VM disks, credentials, or customer/student data.
+The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime folders, `.env` files, credentials, keys, and certificates. Do not commit private ISOs, VM disks, credentials, or student data.
 
 ## Roadmap
 
-- v0.2.0 UI/UX upgrade.
-- v0.3.0 lab templates.
-- v0.4.0 stronger snapshot/lab workflows.
-- v0.5.0 NAS commit prototype.
-- v1.0.0 stable classroom-ready release.
+- v0.3.0 — Lab Manager + Templates Manager (current develop branch, RC)
+- v0.4.0 — auto-create VMs from lab template, edit templates, clone VM disks in lab duplicate
+- v0.5.0 — NAS commit prototype
+- v1.0.0 — stable classroom-ready release
 
 ## License
 

@@ -1,6 +1,6 @@
 # HyperGery Architecture
 
-HyperGery v0.2.0 is a real Ubuntu desktop VM manager built around a Python backend and a modern PySide6/Qt desktop UI.
+HyperGery is a real Ubuntu desktop VM manager built around a Python backend and a modern PySide6/Qt desktop UI. v0.3.0 adds a Lab Manager and a Templates Manager.
 
 ## UI
 
@@ -12,9 +12,15 @@ hypergery_ubuntu/ui_qt/
 
 It provides:
 
-- A VM dashboard with state chips, host preflight, lab summary, details, and logs.
-- A multi-page VM creation wizard.
-- VM lifecycle actions: start, ACPI shutdown, force off, console, snapshots, clone, settings, and delete.
+- A VM dashboard with state chips, host preflight, lab detail panel, VM detail tabs, and activity log.
+- A multi-page VM creation wizard (Identity → Resources → Storage & Network → Review).
+- VM lifecycle actions: start, ACPI shutdown, force off, console, snapshots, clone, settings, delete.
+- **Lab Manager** (Instances tab): create, rename, delete, duplicate, export, import labs with real `LabStore`; VM filter by lab; lab detail panel showing network resources and `templates_used`.
+- **Templates Manager** (Templates tab):
+  - VM Templates sub-tab: create, delete, export, import VM templates; detail panel per selection.
+  - Lab Templates sub-tab: create, delete, export, import lab templates; detail panel with planned VM count.
+  - **Create VM from Template**: opens the VM wizard with OS type, RAM, vCPUs, disk, network, display pre-filled from the template; user provides VM name, boot ISO, and lab.
+  - **Create Lab from Template**: dialog pre-filled from template name, description, and network mode; planned VMs listed for reference; lab created via `LabStore`; `templates_used` recorded.
 - Qt backend workers so long-running host operations do not block the UI thread.
 
 The old Tkinter UI remains temporarily available in:
@@ -23,7 +29,7 @@ The old Tkinter UI remains temporarily available in:
 hypergery_ubuntu/app_tk.py
 ```
 
-`app_tk.py` is legacy migration fallback only. It is not the v0.2.0 primary UI.
+`app_tk.py` is legacy migration fallback only. It is not the primary UI from v0.2.0 onward.
 
 ## Backend
 
@@ -58,16 +64,38 @@ Labs are represented by JSON manifests under:
 ~/.local/share/hypergery/labs/<lab-id>/lab.json
 ```
 
-Each manifest records:
+v0.3 lab manifests use `schema_version: 2` and record:
 
 - lab id
 - name
+- description
 - created timestamp
+- updated timestamp
 - network id
+- network mode
+- subnet
+- bridge name
 - VMs
-- disks
-- ISO references
+- templates used
 - notes
+
+Old manifests are loaded and migrated in place with missing fields filled.
+
+## Templates
+
+VM templates are stored under:
+
+```text
+~/.local/share/hypergery/templates/vm/
+```
+
+Lab templates are stored under:
+
+```text
+~/.local/share/hypergery/templates/lab/
+```
+
+Templates intentionally avoid private ISO paths by default. They describe reusable resources, display mode, network mode, and per-lab VM shape, leaving actual ISO/media choices to VM creation flows.
 
 ## Storage
 

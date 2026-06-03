@@ -274,42 +274,23 @@ class HyperGeryBackend:
     def ensure_default_lab(self) -> dict:
         return self.ensure_lab("default-lab", "Default Lab", notes="Default HyperGery lab.")
 
+    def lab_store(self):
+        from .labs import LabStore
+
+        return LabStore(self.data_dir)
+
     def ensure_lab(self, lab_id: str, name: str, notes: str = "") -> dict:
-        lab_id = validate_lab_id(lab_id)
-        lab_dir = self.labs_dir / lab_id
-        lab_dir.mkdir(parents=True, exist_ok=True)
-        path = lab_dir / "lab.json"
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-        manifest = {
-            "lab_id": lab_id,
-            "name": name,
-            "created_at": now_iso(),
-            "network_id": self.network_name(lab_id, "nat"),
-            "vms": [],
-            "disks": [],
-            "iso_references": [],
-            "notes": notes,
-        }
-        self.write_lab(manifest)
-        return manifest
+        store = self.lab_store()
+        try:
+            return store.get_lab(lab_id)
+        except HyperGeryError:
+            return store.create_lab(name, lab_id=lab_id, notes=notes)
 
     def write_lab(self, manifest: dict) -> None:
-        lab_id = validate_lab_id(manifest["lab_id"])
-        lab_dir = self.labs_dir / lab_id
-        lab_dir.mkdir(parents=True, exist_ok=True)
-        (lab_dir / "lab.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.lab_store().write_lab(manifest)
 
     def load_labs(self) -> list[dict]:
-        labs: list[dict] = []
-        for path in sorted(self.labs_dir.glob("*/lab.json")):
-            try:
-                labs.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, json.JSONDecodeError) as exc:
-                logging.error("cannot read lab manifest %s: %s", path, exc)
-        if not labs:
-            labs.append(self.ensure_default_lab())
-        return labs
+        return self.lab_store().list_labs()
 
     def update_lab_for_vm(self, lab_id: str, vm_name: str, disk_path: str, iso_path: str, network_id: str) -> None:
         manifest = self.ensure_lab(lab_id, "Default Lab" if lab_id == "default-lab" else lab_id)

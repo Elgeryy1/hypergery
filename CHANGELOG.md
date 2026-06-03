@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.3.0 - Labs and Templates
+
+HyperGery v0.3.0 — Lab Manager & Templates Manager.
+
+Convierte HyperGery en un gestor de entornos de laboratorio reutilizables, manteniendo el backend real KVM/QEMU/libvirt de v0.1.0 y la UI PySide6/Qt de v0.2.0.
+
+No implementado en v0.3 (dejado para v0.4):
+
+- Auto-crear VMs desde lab template (requiere seleccion de ISO por cada VM planificada).
+- Editar plantillas in-place (workaround: delete + recrear).
+- Clonar discos de VMs durante `duplicate_lab` (disabled explicitamente en UI).
+- Android Hub, NAS, IsardVDI, P2P, live migration, GPU shadowing.
+
+Cambios implementados en v0.3:
+
+- Nuevo modulo `hypergery_ubuntu.labs` con `LabStore`, migracion a `schema_version: 2`, export/import portable y duplicacion segura de labs.
+- Nuevo modulo `hypergery_ubuntu.templates` con `TemplateStore`, plantillas de VM y plantillas de laboratorio.
+- CLI minima para `lab list/create/show/rename/delete/export/import` y `template list/show/delete`.
+- Tests unitarios de validacion de lab ids, migracion, subredes, bridges, export/import y plantillas.
+- Primera UI Qt de Lab Manager conectada a `LabStore`: lista real de labs, detalles, seleccion activa y refresco manual.
+- Acciones Qt para crear, renombrar nombre visible/descripcion, borrar, duplicar, exportar e importar labs con dialogos de validacion.
+- Preview de nuevo lab y duplicado con `lab_id`, red libvirt, bridge y subred antes de crear.
+- Filtro de lista de VMs entre `All VMs` y `Selected Lab`, con empty state `No VMs in this lab yet` y acceso a `New VM in Lab`.
+- Clonado/borrado masivo de VMs desde dialogs de labs queda explicitamente deshabilitado hasta conectar el flujo real de discos.
+- Templates Manager UI Qt conectado a `TemplateStore` real: tab `Templates` con sub-tabs `VM Templates` y `Lab Templates`.
+- Lista real de VM Templates con columnas Name, ID, OS, RAM, vCPUs, Disk, Net, Display.
+- Lista real de Lab Templates con columnas Name, ID, Net, VMs, Desc/Notes.
+- Panel de detalles al seleccionar plantilla (nombre, id, recursos, red, notas).
+- Dialogo `New VM Template` con Name, OS type, RAM, vCPUs, Disk, Network, Display, Notes y preview de template_id; Create desactivado si invalido.
+- Dialogo `New Lab Template` con Name, Description, Network, Notes y preview de template_id; Create desactivado si invalido.
+- Dialogo `Delete VM Template` con confirmacion escribiendo template_id.
+- Dialogo `Delete Lab Template` con confirmacion escribiendo template_id.
+- Export/Import de VM Templates y Lab Templates con `QFileDialog`, validacion JSON y manejo de colisiones.
+- Activity log registra todas las operaciones de plantillas.
+- `refresh_all` carga plantillas junto con VMs y labs en el arranque.
+- Tests unitarios para validacion de template_id, conteo de VMs en lab template, validacion de campos, import invalido, delete inexistente y no sobreescritura en import.
+- Tests Qt (`test_qt_ui`) se saltan limpiamente si PySide6 no esta disponible en el Python del sistema; se ejecutan dentro del venv con PySide6.
+- Flujo `Create VM from Template`: abre wizard con valores prellenados (os_type, ram_mib, vcpus, disk_gb, network_mode, display); usuario elige nombre, ISO y lab; tras crear la VM se registra la plantilla en `templates_used` del manifiesto de lab.
+- Flujo `Create Lab from Template`: dialogo con nombre, descripcion y modo de red prellenados desde la plantilla, preview de lab_id/network/bridge/subnet y lista de VMs planificadas; crea el lab real via `LabStore` y registra `templates_used`; las VMs planificadas no se crean automaticamente.
+- Tests para mapeo template → defaults de wizard: presencia de campos, capitalizacion de os_type, tipos numericos, roundtrip de template real.
+
 ## v0.2.0 - Modern PySide6 UI
 
 - Inicio de la rama `develop` para la siguiente iteracion sin modificar `main` ni la release `v0.1.0`.
