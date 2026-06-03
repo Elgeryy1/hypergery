@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.3.0 - En desarrollo
+
+HyperGery v0.3.0 - Labs & Templates
+
+Objetivo: convertir HyperGery en gestor de laboratorios, no solo gestor de VMs sueltas.
+
+Roadmap v0.3:
+
+- Lab manager visual.
+- Crear/renombrar/borrar labs.
+- Plantillas de VM.
+- Crear VM desde plantilla.
+- Duplicar laboratorio.
+- Exportar/importar manifiesto de laboratorio.
+- Mejorar aislamiento por lab.
+- Vista de redes por laboratorio.
+
+No implementar todavia en v0.3:
+
+- Android Hub.
+- NAS.
+- IsardVDI.
+- P2P.
+- Migracion en caliente.
+- GPU shadowing.
+
 ## v0.2.0 - Modern PySide6 UI
 
 - Inicio de la rama `develop` para la siguiente iteracion sin modificar `main` ni la release `v0.1.0`.
