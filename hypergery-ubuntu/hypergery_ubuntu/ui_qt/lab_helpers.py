@@ -58,3 +58,33 @@ def vm_count_for_lab(lab: dict[str, Any], vms: Iterable[VmSummary]) -> int:
     live_names = {vm.name for vm in vms if vm_belongs_to_lab(vm, lab_id)}
     manifest_names = {str(name) for name in lab.get("vms", [])}
     return len(live_names | manifest_names)
+
+
+def build_lab_topology(lab: dict[str, Any], vms: Iterable[VmSummary]) -> dict[str, Any]:
+    lab_id = str(lab.get("lab_id", ""))
+    live = {vm.name: vm for vm in vms if vm_belongs_to_lab(vm, lab_id)}
+    manifest_vm_names = [str(n) for n in lab.get("vms", [])]
+    all_names: list[str] = list(dict.fromkeys(list(live.keys()) + manifest_vm_names))
+    vm_nodes = []
+    for name in all_names:
+        vm = live.get(name)
+        vm_nodes.append({
+            "name": name,
+            "state": (vm.state or "unknown").lower() if vm else "not created",
+            "ram_mib": vm.ram_mib or 0 if vm else 0,
+            "vcpus": vm.vcpus or 0 if vm else 0,
+            "live": vm is not None,
+        })
+    return {
+        "lab_id": lab_id,
+        "lab_name": lab.get("name", lab_id),
+        "network_mode": lab.get("network_mode", "nat"),
+        "network_id": lab.get("network_id", ""),
+        "subnet": lab.get("subnet", ""),
+        "bridge_name": lab.get("bridge_name", ""),
+        "vms": vm_nodes,
+    }
+
+
+def topology_to_json(topology: dict[str, Any]) -> dict[str, Any]:
+    return dict(topology)
