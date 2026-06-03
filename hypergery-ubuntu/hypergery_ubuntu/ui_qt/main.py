@@ -5,10 +5,10 @@ import sys
 
 
 def configure_qt_environment() -> None:
-    if os.environ.get("QT_QPA_PLATFORM"):
-        return
-    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" and os.environ.get("DISPLAY"):
+    if not os.environ.get("QT_QPA_PLATFORM") and os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" and os.environ.get("DISPLAY"):
         os.environ["QT_QPA_PLATFORM"] = "xcb"
+    os.environ.setdefault("QT_QPA_PLATFORMTHEME", "gtk3")
+    os.environ.setdefault("QT_STYLE_OVERRIDE", "Fusion")
 
 
 def configure_qt_application() -> None:
@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_qt_application()
     app = QApplication(argv if argv is not None else sys.argv)
+    app.setStyle("Fusion")
     app.setApplicationName("HyperGery")
     app.setOrganizationName("HyperGery")
     try:

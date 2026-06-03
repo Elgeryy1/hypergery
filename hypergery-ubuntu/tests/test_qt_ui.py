@@ -24,13 +24,23 @@ class QtUiTests(unittest.TestCase):
             configure_qt_environment()
 
             self.assertEqual("xcb", os.environ["QT_QPA_PLATFORM"])
+            self.assertEqual("gtk3", os.environ["QT_QPA_PLATFORMTHEME"])
+            self.assertEqual("Fusion", os.environ["QT_STYLE_OVERRIDE"])
 
     def test_existing_qpa_platform_is_respected(self):
-        env = {"XDG_SESSION_TYPE": "wayland", "DISPLAY": ":0", "QT_QPA_PLATFORM": "wayland"}
+        env = {
+            "XDG_SESSION_TYPE": "wayland",
+            "DISPLAY": ":0",
+            "QT_QPA_PLATFORM": "wayland",
+            "QT_QPA_PLATFORMTHEME": "custom",
+            "QT_STYLE_OVERRIDE": "CustomStyle",
+        }
         with patch.dict("os.environ", env, clear=True):
             configure_qt_environment()
 
             self.assertEqual("wayland", os.environ["QT_QPA_PLATFORM"])
+            self.assertEqual("custom", os.environ["QT_QPA_PLATFORMTHEME"])
+            self.assertEqual("CustomStyle", os.environ["QT_STYLE_OVERRIDE"])
 
 
 if __name__ == "__main__":
