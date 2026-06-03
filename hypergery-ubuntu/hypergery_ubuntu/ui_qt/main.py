@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import os
 import sys
+
+
+def configure_qt_environment() -> None:
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return
+    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" and os.environ.get("DISPLAY"):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 
 def configure_qt_application() -> None:
@@ -11,6 +19,7 @@ def configure_qt_application() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_qt_environment()
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
     except ModuleNotFoundError:
