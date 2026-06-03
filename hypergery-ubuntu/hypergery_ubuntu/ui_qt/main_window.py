@@ -49,6 +49,7 @@ class MainWindow(QMainWindow):
         self.vms: list[VmSummary] = []
         self.selected_vm: VmSummary | None = None
         self.jobs: list[BackendJob] = []
+        self.completed_jobs: list[BackendJob] = []
         self.setWindowTitle(f"HyperGery v{APP_DISPLAY_VERSION}")
         self.resize(1360, 860)
         self.setMinimumSize(1120, 720)
@@ -644,11 +645,12 @@ class MainWindow(QMainWindow):
         def finished() -> None:
             if job in self.jobs:
                 self.jobs.remove(job)
+            self.completed_jobs.append(job)
+            self.completed_jobs = self.completed_jobs[-20:]
             if busy:
                 self.set_busy(False)
             else:
                 self.update_actions()
-            job.deleteLater()
 
         job.succeeded.connect(succeeded)
         job.failed.connect(failed)
