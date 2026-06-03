@@ -42,6 +42,17 @@ class QtUiTests(unittest.TestCase):
             self.assertEqual("custom", os.environ["QT_QPA_PLATFORMTHEME"])
             self.assertEqual("CustomStyle", os.environ["QT_STYLE_OVERRIDE"])
 
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_main_window_constructor_does_not_list_vms(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        window = MainWindow()
+
+        backend_cls.return_value.list_vms.assert_not_called()
+        window.close()
+        self.assertIsNotNone(app)
+
 
 if __name__ == "__main__":
     unittest.main()

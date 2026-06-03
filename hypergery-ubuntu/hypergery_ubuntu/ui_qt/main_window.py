@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1120, 720)
         self.setStyleSheet(APP_STYLESHEET)
         self._build_ui()
-        self.refresh_all()
+        QTimer.singleShot(0, self.refresh_all)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -383,20 +383,66 @@ class MainWindow(QMainWindow):
         self.delete_button.setEnabled(has_vm and shut_off)
 
     def refresh_all(self) -> None:
-        self.refresh_preflight()
-        self.refresh_vms()
-        self.refresh_labs()
-        self.refresh_logs()
+        self.status.showMessage("Loading host state...")
+        self.run_operation(
+            "Loading host state",
+            self.collect_overview,
+            on_success=self.apply_overview,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def collect_overview(self) -> dict[str, Any]:
+        overview: dict[str, Any] = {"errors": {}}
+        jobs: tuple[tuple[str, Callable[[], Any]], ...] = (
+            ("preflight", self.backend.preflight),
+            ("vms", self.backend.list_vms),
+            ("labs", self.backend.load_labs),
+            ("logs", self.backend.recent_logs),
+        )
+        for key, callback in jobs:
+            try:
+                overview[key] = callback()
+            except Exception as exc:
+                overview["errors"][key] = str(exc)
+        return overview
+
+    def apply_overview(self, overview: dict[str, Any]) -> None:
+        errors = overview.get("errors", {})
+        if "preflight" in overview:
+            self.render_preflight(overview["preflight"])
+        elif "preflight" in errors:
+            self.preflight_summary.setText(f"Preflight unavailable: {errors['preflight']}")
+        if "vms" in overview:
+            self.render_vms(overview["vms"])
+        elif "vms" in errors:
+            self.render_vms([])
+            self.status.showMessage(f"VM list unavailable: {errors['vms']}", 5000)
+        if "labs" in overview:
+            self.render_labs(overview["labs"])
+        elif "labs" in errors:
+            self.render_labs_error(errors["labs"])
+        if "logs" in overview:
+            self.render_logs(overview["logs"])
+        elif "logs" in errors:
+            self.render_logs(f"Logs unavailable: {errors['logs']}")
         self.render_selected()
+        if not errors:
+            self.status.showMessage("Ready")
+        else:
+            self.status.showMessage("Loaded with warnings", 5000)
 
     def refresh_preflight(self) -> None:
-        self.preflight_table.setRowCount(0)
-        counts = {"OK": 0, "Warning": 0, "Error": 0}
         try:
             items = self.backend.preflight()
         except Exception as exc:
             self.preflight_summary.setText(f"Preflight unavailable: {exc}")
             return
+        self.render_preflight(items)
+
+    def render_preflight(self, items: list[Any]) -> None:
+        self.preflight_table.setRowCount(0)
+        counts = {"OK": 0, "Warning": 0, "Error": 0}
         for item in items:
             counts[item.status] = counts.get(item.status, 0) + 1
             row = self.preflight_table.rowCount()
@@ -421,10 +467,16 @@ class MainWindow(QMainWindow):
     def refresh_vms(self) -> None:
         current = self.selected_vm.name if self.selected_vm else ""
         try:
-            self.vms = self.backend.list_vms()
+            vms = self.backend.list_vms()
         except HyperGeryError as exc:
-            self.vms = []
+            vms = []
             self.show_error(str(exc))
+        self.render_vms(vms, current=current)
+
+    def render_vms(self, vms: list[VmSummary], *, current: str | None = None) -> None:
+        if current is None:
+            current = self.selected_vm.name if self.selected_vm else ""
+        self.vms = vms
         self.vm_table.setRowCount(0)
         selected_row = -1
         for vm in self.vms:
@@ -450,16 +502,23 @@ class MainWindow(QMainWindow):
         self.update_actions()
 
     def refresh_labs(self) -> None:
-        self.lab_table.setRowCount(0)
         try:
             labs = self.backend.load_labs()
         except Exception as exc:
-            row = self.lab_table.rowCount()
-            self.lab_table.insertRow(row)
-            self._set_table_item(self.lab_table, row, 0, "unavailable")
-            self._set_table_item(self.lab_table, row, 1, "-")
-            self._set_table_item(self.lab_table, row, 2, str(exc))
+            self.render_labs_error(str(exc))
             return
+        self.render_labs(labs)
+
+    def render_labs_error(self, message: str) -> None:
+        self.lab_table.setRowCount(0)
+        row = self.lab_table.rowCount()
+        self.lab_table.insertRow(row)
+        self._set_table_item(self.lab_table, row, 0, "unavailable")
+        self._set_table_item(self.lab_table, row, 1, "-")
+        self._set_table_item(self.lab_table, row, 2, message)
+
+    def render_labs(self, labs: list[dict[str, Any]]) -> None:
+        self.lab_table.setRowCount(0)
         for manifest in labs:
             row = self.lab_table.rowCount()
             self.lab_table.insertRow(row)
@@ -472,6 +531,9 @@ class MainWindow(QMainWindow):
             logs = self.backend.recent_logs()
         except Exception as exc:
             logs = f"Logs unavailable: {exc}"
+        self.render_logs(logs)
+
+    def render_logs(self, logs: str) -> None:
         self.activity_log.setPlainText(logs)
         self.activity_log.moveCursor(QTextCursor.MoveOperation.End)
 
@@ -550,16 +612,29 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "HyperGery", message)
         self.refresh_logs()
 
-    def run_operation(self, label: str, fn: Callable[[], Any], *, on_success: Callable[[Any], None] | None = None) -> None:
-        self.set_busy(True, label)
+    def run_operation(
+        self,
+        label: str,
+        fn: Callable[[], Any],
+        *,
+        on_success: Callable[[Any], None] | None = None,
+        refresh_after: bool = True,
+        busy: bool = True,
+    ) -> None:
+        if busy:
+            self.set_busy(True, label)
+        else:
+            self.status.showMessage(label)
         job = BackendJob(label, fn)
         self.jobs.append(job)
 
         def succeeded(result: Any) -> None:
             if on_success:
                 on_success(result)
-            self.refresh_all()
-            self.status.showMessage("Ready")
+            if refresh_after:
+                self.refresh_all()
+            if busy or refresh_after:
+                self.status.showMessage("Ready")
 
         def failed(message: str) -> None:
             self.show_error(message)
@@ -568,7 +643,10 @@ class MainWindow(QMainWindow):
         def finished() -> None:
             if job in self.jobs:
                 self.jobs.remove(job)
-            self.set_busy(False)
+            if busy:
+                self.set_busy(False)
+            else:
+                self.update_actions()
             job.deleteLater()
 
         job.succeeded.connect(succeeded)
