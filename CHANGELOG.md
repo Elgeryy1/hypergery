@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 - Release Candidate
+## v0.3.0 - Labs and Templates
 
 HyperGery v0.3.0 — Lab Manager & Templates Manager.
 

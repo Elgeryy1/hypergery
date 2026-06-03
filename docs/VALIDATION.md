@@ -18,45 +18,45 @@ Run inside the venv (all tests including Qt):
 
 The 4 skipped tests are the Qt widget tests that require PySide6 in the runtime environment. They pass cleanly in the venv.
 
-## v0.3.0 RC — Manual Smoke Checklist
+## v0.3.0 — Manual Smoke Validated (2026-06-03)
 
 Run from the Qt UI (`python -m hypergery_ubuntu` inside the venv).
 
 ### Lab Manager
 
-- [ ] Create lab `hg-v03-asr` with network=isolated
-- [ ] Create lab `hg-v03-par` with network=nat
-- [ ] Confirm subnets differ in Lab Details panel
-- [ ] Rename `hg-v03-par` display name (lab_id unchanged)
-- [ ] Export `hg-v03-asr` to `/tmp/hg-v03-asr.json`
-- [ ] Import `/tmp/hg-v03-asr.json` with new id `hg-v03-asr-copy`
-- [ ] Verify `hg-v03-asr-copy` appears in the lab list with a different subnet
-- [ ] Delete all temporary labs
+- [x] Create lab `hg-v03-asr` with network=isolated
+- [x] Create lab `hg-v03-par` with network=nat
+- [x] Confirm subnets differ in Lab Details panel
+- [x] Rename `hg-v03-par` display name (lab_id unchanged)
+- [x] Export `hg-v03-asr` to `/tmp/hg-v03-asr.json`
+- [x] Import `/tmp/hg-v03-asr.json` with new id `hg-v03-asr-copy`
+- [x] Verify `hg-v03-asr-copy` appears in the lab list with a different subnet
+- [x] Delete all temporary labs
 
 ### Templates Manager
 
-- [ ] Create VM template `hg-v03-ubuntu-template` (OS=linux, RAM=4096, vCPUs=2, Disk=40, Net=nat, Display=spice)
-- [ ] Verify detail panel shows all fields including Notes
-- [ ] Create Lab template `hg-v03-asr-template` (Network=isolated)
-- [ ] Verify planned VMs count = 0 (no VMs defined in this template)
-- [ ] Export `hg-v03-ubuntu-template` to `/tmp/hg-v03-ubuntu-template.json`
-- [ ] Delete `hg-v03-ubuntu-template`, then import it back from `/tmp/`
-- [ ] Attempt import again with template present — error shown, no overwrite
-- [ ] Select `hg-v03-ubuntu-template` — **Create VM from Template** button activates
-- [ ] Click **Create VM from Template** — wizard opens with RAM/vCPUs/Disk/Net/Display pre-filled
-- [ ] Cancel the wizard (no ISO available or test without creating real VM)
-- [ ] Select `hg-v03-asr-template` — **Create Lab from Template** button activates
-- [ ] Click **Create Lab from Template** — dialog shows network=isolated, empty planned VMs list
-- [ ] Enter name `ASR Instance 01` — preview shows lab_id, bridge, subnet
-- [ ] Create the lab — appears in Instances tab with `templates_used = hg-v03-asr-template`
-- [ ] Delete `ASR Instance 01`, `hg-v03-ubuntu-template`, `hg-v03-asr-template`
+- [x] Create VM template `hg-v03-ubuntu-template` (OS=linux, RAM=4096, vCPUs=2, Disk=40, Net=nat, Display=spice)
+- [x] Verify detail panel shows all fields including Notes
+- [x] Create Lab template `hg-v03-asr-template` (Network=isolated)
+- [x] Verify planned VMs count = 0 (no VMs defined in this template)
+- [x] Export `hg-v03-ubuntu-template` to `/tmp/hg-v03-ubuntu-template.json`
+- [x] Delete `hg-v03-ubuntu-template`, then import it back from `/tmp/`
+- [x] Attempt import again with template present — error shown, no overwrite
+- [x] Select `hg-v03-ubuntu-template` — **Create VM from Template** button activates
+- [x] Click **Create VM from Template** — wizard opens with RAM/vCPUs/Disk/Net/Display pre-filled
+- [x] ISO/name validation works (wizard disables Finish without valid ISO)
+- [x] Select `hg-v03-asr-template` — **Create Lab from Template** button activates
+- [x] Click **Create Lab from Template** — dialog shows network=isolated, empty planned VMs list
+- [x] Enter name `ASR Instance 01` — preview shows lab_id, bridge, subnet
+- [x] Create the lab — appears in Instances tab with `templates_used = hg-v03-asr-template`
+- [x] Delete `ASR Instance 01`, `hg-v03-ubuntu-template`, `hg-v03-asr-template`
 
 ### Activity Log
 
-- [ ] All above operations appear in the Activity Log panel
-- [ ] Copy log to clipboard works
+- [x] All above operations appear in the Activity Log panel
+- [x] Copy log to clipboard works
 
-### Pending (not smoke-tested, requires real ISO or KVM host)
+### Not smoke-tested (requires real ISO or KVM host)
 
 - Create VM from Template end-to-end with a real ISO
 - Verify `templates_used` in the lab JSON after VM creation
