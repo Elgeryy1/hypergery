@@ -36,13 +36,15 @@ from ..labs import LabStore
 from ..templates import TemplateStore
 from .dialogs import (
     CloneDialog,
-    CreateLabFromTemplateDialog,
     DeleteConfirmationDialog,
     DeleteLabDialog,
     DeleteLabTemplateDialog,
     DeleteVmTemplateDialog,
     DuplicateLabDialog,
+    EditLabTemplateDialog,
+    EditVmTemplateDialog,
     FILE_DIALOG_OPTIONS,
+    InstantiateLabTemplateWizard,
     NewLabDialog,
     NewLabTemplateDialog,
     NewVmTemplateDialog,
@@ -276,6 +278,8 @@ class MainWindow(QMainWindow):
         vm_template_actions.setVerticalSpacing(8)
         self.new_vm_template_button = self._button("New VM Template", self.new_vm_template, primary=True)
         self.delete_vm_template_button = self._button("Delete", self.delete_vm_template, danger=True)
+        self.edit_vm_template_button = self._button("Edit", self.edit_vm_template)
+        self.edit_vm_template_button.setEnabled(False)
         self.export_vm_template_button = self._button("Export", self.export_vm_template)
         self.import_vm_template_button = self._button("Import", self.import_vm_template)
         self.refresh_vm_templates_button = self._button("Refresh", self.refresh_templates)
@@ -286,8 +290,9 @@ class MainWindow(QMainWindow):
         vm_template_actions.addWidget(self.import_vm_template_button, 0, 1)
         vm_template_actions.addWidget(self.refresh_vm_templates_button, 0, 2)
         vm_template_actions.addWidget(self.delete_vm_template_button, 1, 0)
-        vm_template_actions.addWidget(self.export_vm_template_button, 1, 1)
-        vm_template_actions.addWidget(self.create_vm_from_template_button, 1, 2)
+        vm_template_actions.addWidget(self.edit_vm_template_button, 1, 1)
+        vm_template_actions.addWidget(self.export_vm_template_button, 1, 2)
+        vm_template_actions.addWidget(self.create_vm_from_template_button, 2, 0, 1, 3)
 
         vm_templates_layout.addLayout(vm_template_actions)
 
@@ -321,6 +326,8 @@ class MainWindow(QMainWindow):
         lab_template_actions.setVerticalSpacing(8)
         self.new_lab_template_button = self._button("New Lab Template", self.new_lab_template, primary=True)
         self.delete_lab_template_button = self._button("Delete", self.delete_lab_template, danger=True)
+        self.edit_lab_template_button = self._button("Edit", self.edit_lab_template)
+        self.edit_lab_template_button.setEnabled(False)
         self.export_lab_template_button = self._button("Export", self.export_action_lab_template)
         self.import_lab_template_button = self._button("Import", self.import_action_lab_template)
         self.refresh_lab_templates_button = self._button("Refresh", self.refresh_templates)
@@ -331,8 +338,9 @@ class MainWindow(QMainWindow):
         lab_template_actions.addWidget(self.import_lab_template_button, 0, 1)
         lab_template_actions.addWidget(self.refresh_lab_templates_button, 0, 2)
         lab_template_actions.addWidget(self.delete_lab_template_button, 1, 0)
-        lab_template_actions.addWidget(self.export_lab_template_button, 1, 1)
-        lab_template_actions.addWidget(self.create_lab_from_template_button, 1, 2)
+        lab_template_actions.addWidget(self.edit_lab_template_button, 1, 1)
+        lab_template_actions.addWidget(self.export_lab_template_button, 1, 2)
+        lab_template_actions.addWidget(self.create_lab_from_template_button, 2, 0, 1, 3)
 
         lab_templates_layout.addLayout(lab_template_actions)
 
@@ -564,11 +572,13 @@ class MainWindow(QMainWindow):
             self.new_vm_in_lab_button,
             self.new_vm_template_button,
             self.delete_vm_template_button,
+            self.edit_vm_template_button,
             self.export_vm_template_button,
             self.import_vm_template_button,
             self.refresh_vm_templates_button,
             self.new_lab_template_button,
             self.delete_lab_template_button,
+            self.edit_lab_template_button,
             self.export_lab_template_button,
             self.import_lab_template_button,
             self.refresh_lab_templates_button,
@@ -603,10 +613,12 @@ class MainWindow(QMainWindow):
         has_vm_tmpl = self.selected_vm_template is not None
         self.create_vm_from_template_button.setEnabled(has_vm_tmpl)
         self.delete_vm_template_button.setEnabled(has_vm_tmpl)
+        self.edit_vm_template_button.setEnabled(has_vm_tmpl)
         self.export_vm_template_button.setEnabled(has_vm_tmpl)
         has_lab_tmpl = self.selected_lab_template is not None
         self.create_lab_from_template_button.setEnabled(has_lab_tmpl)
         self.delete_lab_template_button.setEnabled(has_lab_tmpl)
+        self.edit_lab_template_button.setEnabled(has_lab_tmpl)
         self.export_lab_template_button.setEnabled(has_lab_tmpl)
 
     def refresh_all(self) -> None:
@@ -895,15 +907,25 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
-        try:
-            duplicate = self.lab_store().duplicate_lab(str(lab["lab_id"]), values["new_name"], clone_vms=False)
-        except Exception as exc:
-            self.log_activity(f"Duplicate lab failed: {exc}")
-            self.show_error(str(exc))
-            return
-        self.selected_lab = duplicate
-        self.log_activity(f"Duplicated lab {lab['lab_id']} to {duplicate['lab_id']}")
-        self.refresh_labs()
+        clone_vms = bool(values.get("clone_vms"))
+        source_lab_id = str(lab["lab_id"])
+
+        def do_duplicate() -> dict:
+            store = LabStore(
+                self.backend.data_dir,
+                clone_vm_callback=self.backend.clone_vm if clone_vms else None,
+                vm_state_callback=(lambda name: self.backend.get_vm(name).state) if clone_vms else None,
+            )
+            return store.duplicate_lab(source_lab_id, values["new_name"], clone_vms=clone_vms)
+
+        def on_done(duplicate: dict) -> None:
+            self.selected_lab = duplicate
+            self.log_activity(f"Duplicated lab {source_lab_id} to {duplicate['lab_id']}")
+            self.refresh_labs()
+
+        action_label = f"Duplicating lab {source_lab_id}" + (" with VM cloning" if clone_vms else "")
+        self.log_activity(action_label)
+        self.run_operation(action_label, do_duplicate, on_success=on_done)
 
     def export_lab(self) -> None:
         try:
@@ -1586,32 +1608,87 @@ class MainWindow(QMainWindow):
             return
         tmpl = self.selected_lab_template
         template_id = str(tmpl["template_id"])
-        dialog = CreateLabFromTemplateDialog(
+        wizard = InstantiateLabTemplateWizard(
             tmpl,
             self.existing_lab_ids(),
             self.existing_lab_subnets(),
             self,
         )
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = wizard.values()
+        lab_name = values["lab_name"]
+        lab_description = values["lab_description"]
+        vm_iso_map = values["vm_iso_map"]
+        planned_vm_count = len(tmpl.get("vms", []))
+
+        def do_instantiate() -> dict:
+            return self.template_store.instantiate_lab_template(
+                template_id,
+                lab_name,
+                vm_iso_map,
+                new_lab_description=lab_description,
+            )
+
+        def on_instantiate_done(result: dict) -> None:
+            if result.get("errors"):
+                errs = "\n".join(result["errors"])
+                self.log_activity(f"Create lab from template failed:\n{errs}")
+                self.show_error(f"Lab creation failed:\n{errs}")
+                return
+            lab = result.get("lab")
+            if lab:
+                self.selected_lab = lab
+                created = len(result.get("vms_created", []))
+                warnings = result.get("warnings", [])
+                msg = f"Created lab {lab['lab_id']} from template {template_id} ({created}/{planned_vm_count} VMs)"
+                if warnings:
+                    msg += f"\nWarnings: {'; '.join(warnings)}"
+                self.log_activity(msg)
+            self.refresh_labs()
+            self.refresh_templates()
+
+        self.log_activity(f"Instantiating lab template {template_id} as '{lab_name}'…")
+        self.run_operation(
+            f"Creating lab from template {template_id}",
+            do_instantiate,
+            on_success=on_instantiate_done,
+        )
+
+    def edit_vm_template(self) -> None:
+        if self.selected_vm_template is None:
+            self.show_error("Select a VM template first.")
+            return
+        tmpl = self.selected_vm_template
+        dialog = EditVmTemplateDialog(tmpl, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
         try:
-            lab = self.lab_store().create_lab(
-                values["name"],
-                values["description"],
-                values["network_mode"],
-                lab_id=values.get("lab_id"),
-            )
-            used: list[str] = list(lab.get("templates_used", []))
-            if template_id not in used:
-                used.append(template_id)
-            lab["templates_used"] = used
-            self.backend.write_lab(lab)
+            updated = self.template_store.update_vm_template(str(tmpl["template_id"]), **values)
         except Exception as exc:
-            self.log_activity(f"Create lab from template failed: {exc}")
+            self.log_activity(f"Edit VM template failed: {exc}")
             self.show_error(str(exc))
             return
-        self.selected_lab = lab
-        self.log_activity(f"Created lab {lab['lab_id']} from template {template_id}")
-        self.refresh_labs()
+        self.selected_vm_template = updated
+        self.log_activity(f"Updated VM template {updated['template_id']}")
+        self.refresh_templates()
+
+    def edit_lab_template(self) -> None:
+        if self.selected_lab_template is None:
+            self.show_error("Select a lab template first.")
+            return
+        tmpl = self.selected_lab_template
+        dialog = EditLabTemplateDialog(tmpl, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            updated = self.template_store.update_lab_template(str(tmpl["template_id"]), **values)
+        except Exception as exc:
+            self.log_activity(f"Edit lab template failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.selected_lab_template = updated
+        self.log_activity(f"Updated lab template {updated['template_id']}")
         self.refresh_templates()
