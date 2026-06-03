@@ -1,57 +1,84 @@
-# HyperGery v0.1.0 Validation
+# HyperGery Validation
+
+## v0.2.0 PySide6 UI Validation Status
+
+v0.2.0 has been prepared on `develop`, but full release validation is not marked complete until the complete real UI flow below passes on a real Ubuntu KVM/libvirt host.
+
+Validated so far:
+
+- PySide6/Qt UI starts from the venv/NAS setup.
+- Host preflight reaches libvirt when the user has effective `libvirt` group membership.
+- New VM wizard creates a real libvirt domain from a real ISO.
+- The create flow was verified with `qemu-img`, `virsh define`, state `shut off`, and cleanup.
+- VM state loading works with localized `virsh` output such as `ejecutando`.
+
+Still required before tagging v0.2.0:
+
+- Start `hg-v02-qt-test`.
+- Open console with `virt-viewer` or `remote-viewer`.
+- ACPI shutdown or Force Off.
+- Snapshot create/list/revert/delete.
+- Clone stopped VM to `hg-v02-qt-clone`.
+- Safe delete `hg-v02-qt-test` and `hg-v02-qt-clone`.
+
+## v0.2.0 Manual UI Checklist
+
+Use real names:
+
+```text
+hg-v02-qt-test
+hg-v02-qt-clone
+```
+
+Run:
+
+```bash
+git switch develop
+git pull origin develop
+source ~/.venvs/hypergery/bin/activate
+./scripts/preflight.sh
+./scripts/dev-run.sh
+```
+
+If the current login session has not inherited the `libvirt` group yet, either log out and back in or run:
+
+```bash
+sg libvirt -c 'cd /path/to/miversiondevirtualbox && source ~/.venvs/hypergery/bin/activate && ./scripts/dev-run.sh'
+```
+
+Checklist:
+
+- [ ] Create VM `hg-v02-qt-test` from a real Ubuntu/Debian ISO.
+- [ ] Confirm the VM appears in the list with correct state, lab, CPU, and RAM.
+- [ ] Start `hg-v02-qt-test`.
+- [ ] Open Console.
+- [ ] Create snapshot `before-install`.
+- [ ] List snapshots and confirm `before-install` appears.
+- [ ] Revert snapshot `before-install`.
+- [ ] Delete snapshot `before-install`.
+- [ ] ACPI shutdown; use Force Off only if the installer ignores ACPI.
+- [ ] Clone stopped VM to `hg-v02-qt-clone`.
+- [ ] Start clone and confirm it is independent.
+- [ ] Stop clone.
+- [ ] Delete clone with disk deletion.
+- [ ] Delete original with disk deletion.
+
+## v0.1.0 Validation
 
 HyperGery v0.1.0 was validated on a real Ubuntu KVM/libvirt host.
 
-## Preflight
+The validation covered:
 
-The preflight verified:
+- Real preflight against `/dev/kvm`, libvirt, QEMU tools, and viewer tools.
+- Real VM creation from an Ubuntu ISO.
+- Real qcow2 disk creation.
+- Real libvirt network creation for `hg-net-default-lab`.
+- Real SPICE console opened with `virt-viewer`.
+- Real snapshots: create, list, revert, delete.
+- Real clone of a stopped VM with an independent qcow2 disk.
+- Safe delete of managed test VMs and disks.
 
-- `/dev/kvm` exists and is accessible.
-- User is in `kvm` and `libvirt` groups.
-- `qemu-system-x86_64` is installed.
-- `qemu-img` is installed.
-- `virsh` is installed.
-- `virt-viewer` is installed.
-- `libvirtd` is active.
-- `qemu:///system` is reachable.
-
-## VM Creation
-
-The acceptance flow created a real VM from an Ubuntu ISO:
-
-- 2 vCPUs.
-- 4096 MiB RAM.
-- 40 GiB qcow2 disk.
-- `default-lab` lab manifest.
-- `hg-net-default-lab` libvirt network.
-
-## Network
-
-The libvirt network was created with:
-
-- A HyperGery network name: `hg-net-default-lab`.
-- A HyperGery bridge name: `hgbr...`.
-- A non-default subnet, avoiding libvirt's common `192.168.122.0/24` default network.
-
-## Console
-
-The VM exposed a SPICE console through libvirt and opened successfully with `virt-viewer`.
-
-## Snapshots
-
-The validation created, listed, reverted, and deleted a real libvirt snapshot.
-
-## Clone
-
-The validation cloned a stopped VM to a new libvirt domain with an independent qcow2 disk. The clone was started successfully.
-
-## Delete
-
-The validation deleted test VMs and their HyperGery-managed disks. The libvirt `default` network was not modified.
-
-## Repeating Validation
-
-Run:
+Repeat CLI acceptance:
 
 ```bash
 ./scripts/preflight.sh

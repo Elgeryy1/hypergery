@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 - En desarrollo
+## v0.2.0 - Preparacion de release
 
 - Inicio de la rama `develop` para la siguiente iteracion sin modificar `main` ni la release `v0.1.0`.
 - Migracion inicial de la UI principal a PySide6/Qt como interfaz por defecto.
@@ -25,6 +25,12 @@
 - Retenidos temporalmente los `QThread` finalizados para evitar segfaults de Shiboken durante la destruccion del worker justo despues de crear una VM.
 - Verificada creacion real desde la UI PySide6 con permisos `libvirt` efectivos mediante `sg libvirt`: wizard New VM, `qemu-img`, `virsh define`, VM en estado `shut off` y limpieza posterior.
 - Corregida la carga de estados cuando `virsh domstate` devuelve texto localizado como `ejecutando`; los comandos externos se ejecutan con locale `C` y el backend normaliza estados conocidos.
+- Documentacion y scripts preparados para cierre de v0.2.0: PySide6 como UI principal, Tkinter como legacy temporal, venv externo recomendado para NAS y checklist de validacion real UI Qt.
+
+Pendiente antes de publicar v0.2.0:
+
+- Validar desde la UI Qt el flujo completo Start, Console, ACPI/Force Off, Snapshot create/list/revert/delete, Clone y Delete seguro con `hg-v02-qt-test` y `hg-v02-qt-clone`.
+- Merge a `main`, tag `v0.2.0` y GitHub release solo cuando esa validacion este completa.
 
 Limitaciones intencionales mantenidas en v0.2.0:
 

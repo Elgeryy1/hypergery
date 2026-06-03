@@ -9,11 +9,11 @@
 
 HyperGery is a first real version of a desktop virtual machine manager for Ubuntu. It is functionally inspired by VirtualBox workflows, but it is not a VirtualBox frontend: HyperGery uses KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
 
-HyperGery v0.1.0 focuses on the basics: create a VM from an ISO, create a qcow2 disk, define a libvirt domain, start it, open a real console, manage snapshots, clone stopped VMs, and delete managed VMs safely. The `develop` branch starts the v0.2.0 UI migration to PySide6 while keeping the same real backend.
+HyperGery v0.2.0 uses a modern PySide6/Qt desktop UI as the primary interface while keeping the real KVM/QEMU/libvirt backend from v0.1.0. The legacy Tkinter UI remains temporarily available in `hypergery_ubuntu.app_tk` as a migration fallback.
 
 ## Screenshots
 
-Screenshots will be added in v0.2.0.
+![HyperGery v0.2.0 PySide6 dashboard](docs/screenshots/hypergery-v0.2-main.png)
 
 ## Features
 
@@ -72,7 +72,14 @@ Required packages:
 - `python3-tk`
 - `python3-pip`
 - `python3-venv`
+- `python3-dev`
 - `dnsmasq-base`
+- `libxcb-cursor0`
+- `libxcb-icccm4`
+- `libxcb-image0`
+- `libxcb-keysyms1`
+- `libxcb-render-util0`
+- `libxkbcommon-x11-0`
 
 Python package dependencies:
 
@@ -88,16 +95,14 @@ Install dependencies:
 ./scripts/install-ubuntu-deps.sh
 ```
 
-Install Python dependencies for the Qt UI:
+Install Python dependencies for the Qt UI. If the repository is stored on a normal local Linux filesystem:
 
 ```bash
 cd hypergery-ubuntu
 python3 -m pip install -e .
 ```
 
-If the repository is stored on a NAS or on a filesystem that does not support
-Python virtualenv symlinks reliably, keep the virtual environment on a local
-Linux filesystem and install the project from there:
+Recommended setup when the repository is stored on a NAS or on a filesystem that does not support Python virtualenv symlinks reliably:
 
 ```bash
 python3 -m venv --copies ~/.venvs/hypergery
@@ -116,7 +121,7 @@ Manual equivalent:
 
 ```bash
 sudo apt update
-sudo apt install qemu-kvm qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu libvirt-daemon-config-network virt-viewer ovmf python3-tk python3-pip python3-venv dnsmasq-base
+sudo apt install qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu libvirt-daemon-config-network virt-viewer ovmf dnsmasq-base python3-pip python3-venv python3-dev python3-tk libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxkbcommon-x11-0
 sudo systemctl enable --now libvirtd
 sudo usermod -aG kvm,libvirt "$USER"
 ```
@@ -151,6 +156,13 @@ python3 -m hypergery_ubuntu
 ```
 
 The default desktop UI on `develop` is the PySide6/Qt interface. The previous Tkinter UI is kept temporarily in `hypergery_ubuntu.app_tk` during migration.
+
+If PySide6 is installed in a virtualenv, activate it before running:
+
+```bash
+source ~/.venvs/hypergery/bin/activate
+./scripts/dev-run.sh
+```
 
 Run the acceptance flow with a real ISO:
 
