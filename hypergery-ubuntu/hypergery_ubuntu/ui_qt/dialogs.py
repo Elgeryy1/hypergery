@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
+from .lab_helpers import build_lab_preview
 from .styles import details_block
 
 if TYPE_CHECKING:
@@ -126,7 +127,7 @@ class ResourcesPage(QWizardPage):
 
 
 class IntegrationPage(QWizardPage):
-    def __init__(self) -> None:
+    def __init__(self, default_lab_id: str = "default-lab") -> None:
         super().__init__()
         self.setTitle("Storage & Network")
         self.setSubTitle("Choose disk location, lab network and console type.")
@@ -138,7 +139,7 @@ class IntegrationPage(QWizardPage):
         self.network.addItems(["nat", "isolated"])
         self.display = QComboBox()
         self.display.addItems(["spice", "vnc"])
-        self.lab_id = QLineEdit("default-lab")
+        self.lab_id = QLineEdit(default_lab_id or "default-lab")
 
         disk_row = QHBoxLayout()
         disk_row.addWidget(self.disk_dir, 1)
@@ -201,13 +202,13 @@ class ReviewPage(QWizardPage):
 
 
 class VMWizard(QWizard):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, default_lab_id: str = "default-lab") -> None:
         super().__init__(parent)
         self.setWindowTitle("Create Virtual Machine")
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
         self.identity_page = IdentityPage()
         self.resources_page = ResourcesPage()
-        self.integration_page = IntegrationPage()
+        self.integration_page = IntegrationPage(default_lab_id)
         self.review_page = ReviewPage(self)
         self.addPage(self.identity_page)
         self.addPage(self.resources_page)
@@ -229,6 +230,224 @@ class VMWizard(QWizard):
             "display_mode": self.integration_page.display.currentText(),
             "lab_id": self.integration_page.lab_id.text().strip() or "default-lab",
         }
+
+
+class NewLabDialog(QDialog):
+    def __init__(self, existing_lab_ids: set[str], existing_subnets: set[str], parent=None) -> None:
+        super().__init__(parent)
+        self.existing_lab_ids = existing_lab_ids
+        self.existing_subnets = existing_subnets
+        self.setWindowTitle("New Lab")
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Security Lab")
+        self.description_edit = QLineEdit()
+        self.description_edit.setPlaceholderText("Optional description")
+        self.network_mode = QComboBox()
+        self.network_mode.addItems(["nat", "isolated"])
+        self.preview_label = QLabel("")
+        self.preview_label.setObjectName("mutedLabel")
+        self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.preview_label.setWordWrap(True)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.create_button = buttons.addButton("Create", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.create_button.setObjectName("primaryButton")
+        self.create_button.clicked.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        form = QFormLayout()
+        form.addRow("Name", self.name_edit)
+        form.addRow("Description", self.description_edit)
+        form.addRow("Network mode", self.network_mode)
+        form.addRow("Preview", self.preview_label)
+        form.addRow("", self.error_label)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.name_edit.textChanged.connect(self.update_preview)
+        self.network_mode.currentTextChanged.connect(self.update_preview)
+        self.update_preview()
+        self.resize(620, 300)
+
+    def current_preview(self) -> dict:
+        return build_lab_preview(
+            self.name_edit.text(),
+            self.network_mode.currentText(),
+            self.existing_lab_ids,
+            self.existing_subnets,
+        )
+
+    def update_preview(self) -> None:
+        preview = self.current_preview()
+        self.create_button.setEnabled(bool(preview["valid"]))
+        self.error_label.setText(preview["error"])
+        if preview["valid"]:
+            self.preview_label.setText(
+                details_block(
+                    ("Lab ID", preview["lab_id"]),
+                    ("Network", preview["network_id"]),
+                    ("Bridge", preview["bridge_name"]),
+                    ("Subnet", preview["subnet"]),
+                )
+            )
+        else:
+            self.preview_label.setText("Complete a valid lab name to preview network resources.")
+
+    def values(self) -> dict:
+        preview = self.current_preview()
+        return {
+            "name": self.name_edit.text().strip(),
+            "description": self.description_edit.text().strip(),
+            "network_mode": self.network_mode.currentText(),
+            "lab_id": preview["lab_id"],
+        }
+
+
+class RenameLabDialog(QDialog):
+    def __init__(self, lab: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.lab = lab
+        self.setWindowTitle(f"Rename Lab: {lab.get('lab_id', 'unknown')}")
+        self.name_edit = QLineEdit(str(lab.get("name") or lab.get("lab_id") or ""))
+        self.description_edit = QLineEdit(str(lab.get("description") or ""))
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+        notice = QLabel("This changes only the visible name and description. The lab ID and network resources stay unchanged.")
+        notice.setObjectName("mutedLabel")
+        notice.setWordWrap(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form = QFormLayout()
+        form.addRow("Lab ID", QLabel(str(lab.get("lab_id", ""))))
+        form.addRow("Name", self.name_edit)
+        form.addRow("Description", self.description_edit)
+        form.addRow("", self.error_label)
+        layout = QVBoxLayout(self)
+        layout.addWidget(notice)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.resize(620, 260)
+
+    def accept(self) -> None:
+        if not self.name_edit.text().strip():
+            self.error_label.setText("Lab name is required.")
+            return
+        super().accept()
+
+    def values(self) -> dict:
+        return {"name": self.name_edit.text().strip(), "description": self.description_edit.text().strip()}
+
+
+class DeleteLabDialog(QDialog):
+    def __init__(self, lab: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.lab = lab
+        lab_id = str(lab.get("lab_id", ""))
+        self.setWindowTitle(f"Delete Lab: {lab_id}")
+        title = QLabel(f"Delete lab {lab_id}?")
+        title.setObjectName("sectionTitle")
+        warning = QLabel("This removes the lab manifest. VMs are not deleted by default.")
+        warning.setWordWrap(True)
+        self.delete_vms = QCheckBox("Delete VMs too - coming later")
+        self.delete_vms.setEnabled(False)
+        self.confirm_lab = QLineEdit()
+        self.confirm_lab.setPlaceholderText(lab_id)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.delete_button = buttons.addButton("Delete Lab", QDialogButtonBox.ButtonRole.DestructiveRole)
+        self.delete_button.setObjectName("dangerButton")
+        self.delete_button.setEnabled(False)
+        buttons.rejected.connect(self.reject)
+        self.delete_button.clicked.connect(self.accept)
+        self.confirm_lab.textChanged.connect(self.update_state)
+        form = QFormLayout()
+        form.addRow("Type lab ID", self.confirm_lab)
+        layout = QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addWidget(warning)
+        layout.addWidget(self.delete_vms)
+        layout.addLayout(form)
+        layout.addWidget(self.error_label)
+        layout.addWidget(buttons)
+        self.resize(560, 280)
+
+    def update_state(self) -> None:
+        self.delete_button.setEnabled(self.confirm_lab.text().strip() == str(self.lab.get("lab_id", "")))
+
+    def accept(self) -> None:
+        if self.confirm_lab.text().strip() != str(self.lab.get("lab_id", "")):
+            self.error_label.setText("Type the exact lab ID to confirm deletion.")
+            return
+        super().accept()
+
+    def delete_vms_too(self) -> bool:
+        return False
+
+
+class DuplicateLabDialog(QDialog):
+    def __init__(self, source_lab: dict, existing_lab_ids: set[str], existing_subnets: set[str], parent=None) -> None:
+        super().__init__(parent)
+        self.source_lab = source_lab
+        self.existing_lab_ids = existing_lab_ids
+        self.existing_subnets = existing_subnets
+        self.setWindowTitle(f"Duplicate Lab: {source_lab.get('lab_id', 'unknown')}")
+        self.name_edit = QLineEdit(f"{source_lab.get('name') or source_lab.get('lab_id')} Copy")
+        self.preview_label = QLabel("")
+        self.preview_label.setObjectName("mutedLabel")
+        self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.preview_label.setWordWrap(True)
+        self.clone_vms = QCheckBox("Clone VMs too - coming later")
+        self.clone_vms.setEnabled(False)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.duplicate_button = buttons.addButton("Duplicate", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.duplicate_button.setObjectName("primaryButton")
+        self.duplicate_button.clicked.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form = QFormLayout()
+        form.addRow("Source", QLabel(str(source_lab.get("lab_id", ""))))
+        form.addRow("New lab name", self.name_edit)
+        form.addRow("Preview", self.preview_label)
+        form.addRow("", self.error_label)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.clone_vms)
+        layout.addWidget(buttons)
+        self.name_edit.textChanged.connect(self.update_preview)
+        self.update_preview()
+        self.resize(620, 300)
+
+    def current_preview(self) -> dict:
+        return build_lab_preview(
+            self.name_edit.text(),
+            str(self.source_lab.get("network_mode", "nat")),
+            self.existing_lab_ids,
+            self.existing_subnets,
+        )
+
+    def update_preview(self) -> None:
+        preview = self.current_preview()
+        self.duplicate_button.setEnabled(bool(preview["valid"]))
+        self.error_label.setText(preview["error"])
+        if preview["valid"]:
+            self.preview_label.setText(
+                details_block(
+                    ("Lab ID", preview["lab_id"]),
+                    ("Network", preview["network_id"]),
+                    ("Bridge", preview["bridge_name"]),
+                    ("Subnet", preview["subnet"]),
+                )
+            )
+        else:
+            self.preview_label.setText("Choose a valid new lab name.")
+
+    def values(self) -> dict:
+        preview = self.current_preview()
+        return {"new_name": self.name_edit.text().strip(), "lab_id": preview["lab_id"], "clone_vms": False}
 
 
 class SettingsDialog(QDialog):

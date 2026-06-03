@@ -37,6 +37,11 @@ Cambios iniciales implementados:
 - Nuevo modulo `hypergery_ubuntu.templates` con `TemplateStore`, plantillas de VM y plantillas de laboratorio.
 - CLI minima para `lab list/create/show/rename/delete/export/import` y `template list/show/delete`.
 - Tests unitarios de validacion de lab ids, migracion, subredes, bridges, export/import y plantillas.
+- Primera UI Qt de Lab Manager conectada a `LabStore`: lista real de labs, detalles, seleccion activa y refresco manual.
+- Acciones Qt para crear, renombrar nombre visible/descripcion, borrar, duplicar, exportar e importar labs con dialogos de validacion.
+- Preview de nuevo lab y duplicado con `lab_id`, red libvirt, bridge y subred antes de crear.
+- Filtro de lista de VMs entre `All VMs` y `Selected Lab`, con empty state `No VMs in this lab yet` y acceso a `New VM in Lab`.
+- Clonado/borrado masivo de VMs desde dialogs de labs queda explicitamente deshabilitado hasta conectar el flujo real de discos.
 
 ## v0.2.0 - Modern PySide6 UI
 

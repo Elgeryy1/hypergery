@@ -14,7 +14,32 @@ Validated in the v0.3.0 development branch:
 - Lab template create/list/show/delete/export/import.
 - CLI coverage for minimal `lab` and `template` commands.
 
-The large Qt Lab Manager UI is not implemented yet.
+## v0.3.0 Qt Lab Manager First Pass
+
+Implemented and covered by lightweight tests where possible:
+
+- Lab preview helper generates `lab_id`, network ID, bridge, and subnet before creation.
+- Preview validation rejects duplicate lab IDs.
+- VM filter helper supports `All VMs` and `Selected Lab`.
+- VM count combines live libvirt summaries and manifest entries.
+- Qt main window now loads real labs from `LabStore`, shows details, and exposes create/rename/delete/duplicate/export/import actions.
+- `New VM in Lab` opens the VM wizard with the selected `lab_id` prefilled.
+
+Manual validation recommended before cutting v0.3.0:
+
+- Create `hg-v03-asr`.
+- Create `hg-v03-par`.
+- Confirm subnets differ.
+- Rename one lab.
+- Export one lab.
+- Import the exported JSON with another lab ID.
+- Delete the temporary labs.
+
+Not yet implemented:
+
+- Full Templates UI.
+- Lab VM cloning from the Duplicate Lab dialog.
+- Delete Lab with VM deletion.
 
 ## v0.2.0 PySide6 UI Validation Status
 
