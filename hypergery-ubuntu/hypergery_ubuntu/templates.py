@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .backend import HyperGeryError, xdg_data_home
-from .labs import validate_lab_id
+from .backend import HyperGeryError, validate_vm_name, xdg_data_home
 
 
 VM_TEMPLATE_SCHEMA_VERSION = 1
@@ -62,12 +62,26 @@ def validate_lab_template(template: dict) -> dict:
         raise HyperGeryError("Lab template network_mode must be nat or isolated.")
     if not isinstance(template["vms"], list):
         raise HyperGeryError("Lab template vms must be a list.")
+    names_seen: set[str] = set()
     for vm in template["vms"]:
         for key in ("name", "ram_mib", "vcpus", "disk_gb", "os_type", "display"):
             if key not in vm:
                 raise HyperGeryError(f"Invalid lab template VM: missing {key}.")
+        vm_name = str(vm["name"]).strip()
+        if not vm_name:
+            raise HyperGeryError("Lab template VM name cannot be empty.")
+        try:
+            validate_vm_name(vm_name)
+        except HyperGeryError as exc:
+            raise HyperGeryError(f"Lab template VM name invalid: {exc}") from exc
+        if vm_name in names_seen:
+            raise HyperGeryError(f"Lab template has duplicate VM name: {vm_name}")
+        names_seen.add(vm_name)
+        vm["name"] = vm_name
         if "template_id" in vm and vm["template_id"]:
             vm["template_id"] = validate_template_id(str(vm["template_id"]))
+        else:
+            vm.setdefault("template_id", "")
         if vm["os_type"] not in {"linux", "windows", "other"}:
             raise HyperGeryError("Lab template VM os_type must be linux, windows, or other.")
         if vm["display"] not in {"spice", "vnc"}:
@@ -76,6 +90,9 @@ def validate_lab_template(template: dict) -> dict:
             vm[key] = int(vm[key])
             if vm[key] < 1:
                 raise HyperGeryError(f"Lab template VM {key} must be positive.")
+        vm["iso_required"] = bool(vm.get("iso_required", True))
+        vm.setdefault("role", "")
+        vm.setdefault("notes", "")
     template["schema_version"] = LAB_TEMPLATE_SCHEMA_VERSION
     template.setdefault("notes", "")
     return template
@@ -265,3 +282,170 @@ class TemplateStore:
             raise HyperGeryError(f"Lab template already exists: {template['template_id']}")
         self.write_json(destination, template)
         return template
+
+    def update_vm_template(self, template_id: str, **kwargs) -> dict:
+        template = self.get_vm_template(template_id)
+        kwargs.pop("schema_version", None)
+        template.update(kwargs)
+        template["template_id"] = template_id
+        template = validate_vm_template(template)
+        self.write_json(self.vm_path(template_id), template)
+        return template
+
+    def update_lab_template(self, template_id: str, **kwargs) -> dict:
+        template = self.get_lab_template(template_id)
+        kwargs.pop("schema_version", None)
+        template.update(kwargs)
+        template["template_id"] = template_id
+        template = validate_lab_template(template)
+        self.write_json(self.lab_path(template_id), template)
+        return template
+
+    def _resolve_planned_vm(self, planned_vm: dict) -> dict:
+        resolved: dict = {
+            "os_type": "linux",
+            "ram_mib": 4096,
+            "vcpus": 2,
+            "disk_gb": 40,
+            "network_mode": "nat",
+            "display": "spice",
+        }
+        if planned_vm.get("template_id"):
+            try:
+                vm_tmpl = self.get_vm_template(planned_vm["template_id"])
+                for key in ("os_type", "ram_mib", "vcpus", "disk_gb", "network_mode", "display"):
+                    if key in vm_tmpl:
+                        resolved[key] = vm_tmpl[key]
+            except HyperGeryError:
+                pass
+        for key in ("os_type", "ram_mib", "vcpus", "disk_gb", "display"):
+            if key in planned_vm:
+                resolved[key] = planned_vm[key]
+        return resolved
+
+    def instantiate_lab_template(
+        self,
+        template_id: str,
+        new_lab_name: str,
+        vm_iso_map: dict,
+        *,
+        dry_run: bool = False,
+        new_lab_description: str = "",
+        new_lab_id: str | None = None,
+    ) -> dict:
+        if self.backend is None or self.lab_store is None:
+            raise HyperGeryError("instantiate_lab_template requires a backend and lab_store.")
+
+        template = self.get_lab_template(template_id)
+        planned_vms = template.get("vms", [])
+
+        errors: list[str] = []
+        warnings: list[str] = []
+        vm_plans: list[dict] = []
+
+        if not new_lab_name or not new_lab_name.strip():
+            errors.append("Lab name is required.")
+
+        for vm in planned_vms:
+            vm_name = str(vm.get("name", "")).strip()
+            resolved = self._resolve_planned_vm(vm)
+            iso_required = vm.get("iso_required", True)
+            iso_path = str(vm_iso_map.get(vm_name, "")).strip()
+
+            if iso_required and not iso_path:
+                errors.append(f"VM '{vm_name}' requires an ISO path.")
+            elif iso_path:
+                p = Path(iso_path).expanduser()
+                if not p.exists():
+                    errors.append(f"VM '{vm_name}': ISO not found: {iso_path}")
+                elif not p.is_file():
+                    errors.append(f"VM '{vm_name}': ISO is not a file: {iso_path}")
+
+            if planned_vm_tmpl := vm.get("template_id"):
+                try:
+                    self.get_vm_template(planned_vm_tmpl)
+                except HyperGeryError:
+                    warnings.append(f"VM '{vm_name}': VM template '{planned_vm_tmpl}' not found; using planned VM values.")
+
+            vm_plans.append({
+                "name": vm_name,
+                "resolved": resolved,
+                "iso_path": iso_path,
+                "iso_required": iso_required,
+                "role": vm.get("role", ""),
+                "template_id": vm.get("template_id", ""),
+            })
+
+        result: dict = {
+            "template_id": template_id,
+            "lab_name": new_lab_name,
+            "vm_plans": vm_plans,
+            "warnings": warnings,
+            "errors": errors,
+            "dry_run": dry_run,
+            "lab": None,
+            "vms_created": [],
+        }
+
+        if errors or dry_run:
+            return result
+
+        lab = self.lab_store.create_lab(
+            new_lab_name,
+            new_lab_description,
+            template.get("network_mode", "nat"),
+            lab_id=new_lab_id if new_lab_id else None,
+        )
+        result["lab"] = lab
+        lab_id_created = lab["lab_id"]
+        created_vms: list[str] = []
+
+        try:
+            for plan in vm_plans:
+                resolved = plan["resolved"]
+                self.backend.create_vm(
+                    name=plan["name"],
+                    iso_path=plan["iso_path"],
+                    os_type=resolved["os_type"],
+                    ram_mib=int(resolved["ram_mib"]),
+                    vcpus=int(resolved["vcpus"]),
+                    disk_gb=int(resolved["disk_gb"]),
+                    disk_dir=None,
+                    network_mode=resolved["network_mode"],
+                    display_mode=resolved["display"],
+                    lab_id=lab_id_created,
+                )
+                created_vms.append(plan["name"])
+                result["vms_created"].append(plan["name"])
+        except HyperGeryError as exc:
+            result["errors"].append(f"VM creation failed: {exc}")
+            rollback_errors: list[str] = []
+            for vm_name in created_vms:
+                try:
+                    self.backend.delete_vm(validate_vm_name(vm_name), delete_disks=True)
+                except Exception as rb_exc:
+                    rollback_errors.append(f"Could not delete VM '{vm_name}': {rb_exc}")
+            try:
+                lab_dir = self.lab_store.lab_path(lab_id_created).parent
+                shutil.rmtree(lab_dir)
+            except Exception as rb_exc:
+                rollback_errors.append(f"Could not delete lab '{lab_id_created}': {rb_exc}")
+            if rollback_errors:
+                result["warnings"].extend(rollback_errors)
+                result["warnings"].append(
+                    "Partial rollback failed. Check remaining VMs/labs and remove manually."
+                )
+            result["lab"] = None
+            return result
+
+        used = list(lab.get("templates_used", []))
+        if template_id not in used:
+            used.append(template_id)
+        lab["templates_used"] = used
+        lab.setdefault("vms", [])
+        for vm_name in created_vms:
+            if vm_name not in lab["vms"]:
+                lab["vms"].append(vm_name)
+        self.lab_store.write_lab(lab)
+        result["lab"] = lab
+        return result

@@ -176,5 +176,265 @@ class TemplateStoreTests(unittest.TestCase):
         self.assertEqual(imported["template_id"], "classroom")
 
 
+class LabTemplatePlannedVMTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.store = TemplateStore(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _base_vm(self, name="server"):
+        return {
+            "name": name,
+            "os_type": "linux",
+            "ram_mib": 2048,
+            "vcpus": 2,
+            "disk_gb": 20,
+            "display": "spice",
+        }
+
+    def test_planned_vm_defaults_iso_required_and_role(self):
+        tmpl = self.store.create_lab_template("ASR Lab", "asr", "isolated", [self._base_vm("server")])
+        vm = tmpl["vms"][0]
+        self.assertTrue(vm["iso_required"])
+        self.assertEqual(vm["role"], "")
+        self.assertEqual(vm["notes"], "")
+
+    def test_planned_vm_explicit_iso_not_required(self):
+        vm = {**self._base_vm("router"), "iso_required": False, "role": "router"}
+        tmpl = self.store.create_lab_template("Router Lab", "test", "nat", [vm])
+        self.assertFalse(tmpl["vms"][0]["iso_required"])
+        self.assertEqual(tmpl["vms"][0]["role"], "router")
+
+    def test_planned_vm_duplicate_name_blocked(self):
+        from hypergery_ubuntu.templates import validate_lab_template
+        with self.assertRaisesRegex(HyperGeryError, "duplicate VM name"):
+            validate_lab_template({
+                "template_id": "bad-template",
+                "name": "Bad Template",
+                "description": "",
+                "network_mode": "nat",
+                "vms": [self._base_vm("vm1"), self._base_vm("vm1")],
+            })
+
+    def test_planned_vm_empty_name_blocked(self):
+        from hypergery_ubuntu.templates import validate_lab_template
+        vm = {**self._base_vm(""), "name": ""}
+        with self.assertRaisesRegex(HyperGeryError, "empty"):
+            validate_lab_template({
+                "template_id": "bad-template",
+                "name": "Bad",
+                "description": "",
+                "network_mode": "nat",
+                "vms": [vm],
+            })
+
+    def test_planned_vm_template_id_reference(self):
+        vm = {**self._base_vm("server"), "template_id": "ubuntu-base"}
+        tmpl = self.store.create_lab_template("Lab with Ref", "test", "nat", [vm])
+        self.assertEqual(tmpl["vms"][0]["template_id"], "ubuntu-base")
+
+
+class TemplateUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.store = TemplateStore(self.root)
+        self.store.create_vm_template("Ubuntu Base", os_type="linux", ram_mib=2048, vcpus=2, disk_gb=20)
+        self.store.create_lab_template("ASR Lab", "asr", "isolated")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_update_vm_template_changes_field(self):
+        updated = self.store.update_vm_template("ubuntu-base", ram_mib=4096, notes="updated")
+        self.assertEqual(updated["ram_mib"], 4096)
+        self.assertEqual(updated["notes"], "updated")
+        reloaded = self.store.get_vm_template("ubuntu-base")
+        self.assertEqual(reloaded["ram_mib"], 4096)
+
+    def test_update_vm_template_ignores_schema_version(self):
+        updated = self.store.update_vm_template("ubuntu-base", schema_version=99)
+        self.assertEqual(updated["schema_version"], 1)
+        self.assertEqual(updated["template_id"], "ubuntu-base")
+
+    def test_update_vm_template_invalid_value_raises(self):
+        with self.assertRaisesRegex(HyperGeryError, "os_type"):
+            self.store.update_vm_template("ubuntu-base", os_type="freebsd")
+
+    def test_update_lab_template_changes_field(self):
+        updated = self.store.update_lab_template("asr-lab", notes="updated lab")
+        self.assertEqual(updated["notes"], "updated lab")
+
+    def test_update_lab_template_ignores_schema_version(self):
+        updated = self.store.update_lab_template("asr-lab", schema_version=99)
+        self.assertEqual(updated["schema_version"], 1)
+        self.assertEqual(updated["template_id"], "asr-lab")
+
+    def test_update_lab_template_nonexistent_raises(self):
+        with self.assertRaisesRegex(HyperGeryError, "does not exist"):
+            self.store.update_lab_template("nonexistent", notes="x")
+
+
+class InstantiateLabTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.lab_store = LabStore(self.root)
+        self.iso = self.root / "test.iso"
+        self.iso.write_bytes(b"iso")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_store(self, created_vms=None, fail_on=None):
+        created_vms = created_vms if created_vms is not None else []
+        deleted_vms = []
+
+        class FakeBackend:
+            data_dir = None
+
+            def create_vm(self_, *, name, iso_path, os_type, ram_mib, vcpus, disk_gb, disk_dir, network_mode, display_mode, lab_id):
+                if fail_on and name == fail_on:
+                    raise HyperGeryError(f"Simulated failure creating {name}")
+                created_vms.append(name)
+
+            def delete_vm(self_, name, *, delete_disks):
+                deleted_vms.append(name)
+
+        store = TemplateStore(self.root, backend=FakeBackend(), lab_store=self.lab_store)
+        store._deleted_vms = deleted_vms
+        return store
+
+    def _lab_template_vms(self):
+        return [
+            {
+                "name": "server",
+                "os_type": "linux",
+                "ram_mib": 2048,
+                "vcpus": 2,
+                "disk_gb": 20,
+                "display": "spice",
+                "iso_required": True,
+                "role": "server",
+            },
+            {
+                "name": "client",
+                "os_type": "linux",
+                "ram_mib": 1024,
+                "vcpus": 1,
+                "disk_gb": 10,
+                "display": "spice",
+                "iso_required": True,
+                "role": "client",
+            },
+        ]
+
+    def test_dry_run_returns_plan_without_creating(self):
+        store = self._make_store()
+        store.create_lab_template("ASR Lab", "asr", "nat", self._lab_template_vms())
+        result = store.instantiate_lab_template(
+            "asr-lab",
+            "ASR Instance",
+            {"server": str(self.iso), "client": str(self.iso)},
+            dry_run=True,
+        )
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["errors"], [])
+        self.assertIsNone(result["lab"])
+        self.assertEqual(len(result["vm_plans"]), 2)
+        self.assertFalse(any("asr" in p.name for p in (self.root / "labs").glob("*") if p.is_dir()))
+
+    def test_missing_required_iso_returns_error(self):
+        store = self._make_store()
+        store.create_lab_template("ASR Lab", "asr", "nat", self._lab_template_vms())
+        result = store.instantiate_lab_template("asr-lab", "ASR Instance", {"server": str(self.iso)})
+        self.assertFalse(result["dry_run"])
+        self.assertTrue(any("client" in e and "requires an ISO" in e for e in result["errors"]))
+        self.assertIsNone(result["lab"])
+
+    def test_missing_iso_file_returns_error(self):
+        store = self._make_store()
+        store.create_lab_template("ASR Lab", "asr", "nat", self._lab_template_vms())
+        result = store.instantiate_lab_template(
+            "asr-lab",
+            "ASR Instance",
+            {"server": "/nonexistent/ubuntu.iso", "client": str(self.iso)},
+        )
+        self.assertTrue(any("not found" in e for e in result["errors"]))
+        self.assertIsNone(result["lab"])
+
+    def test_empty_lab_name_returns_error(self):
+        store = self._make_store()
+        store.create_lab_template("ASR Lab", "asr", "nat", [])
+        result = store.instantiate_lab_template("asr-lab", "", {})
+        self.assertTrue(any("Lab name" in e for e in result["errors"]))
+
+    def test_successful_instantiation_creates_lab_and_vms(self):
+        created = []
+        store = self._make_store(created_vms=created)
+        store.create_lab_template("ASR Lab", "asr", "nat", self._lab_template_vms())
+        result = store.instantiate_lab_template(
+            "asr-lab",
+            "ASR Instance",
+            {"server": str(self.iso), "client": str(self.iso)},
+        )
+        self.assertEqual(result["errors"], [])
+        self.assertIsNotNone(result["lab"])
+        self.assertIn("asr-lab", result["lab"]["templates_used"])
+        self.assertIn("server", result["vms_created"])
+        self.assertIn("client", result["vms_created"])
+        lab = self.lab_store.get_lab(result["lab"]["lab_id"])
+        self.assertIn("server", lab["vms"])
+        self.assertIn("client", lab["vms"])
+
+    def test_partial_failure_triggers_rollback(self):
+        created = []
+        store = self._make_store(created_vms=created, fail_on="client")
+        store.create_lab_template("ASR Lab", "asr", "nat", self._lab_template_vms())
+        result = store.instantiate_lab_template(
+            "asr-lab",
+            "ASR Instance",
+            {"server": str(self.iso), "client": str(self.iso)},
+        )
+        self.assertTrue(any("creation failed" in e for e in result["errors"]))
+        self.assertIsNone(result["lab"])
+        self.assertIn("server", store._deleted_vms)
+
+    def test_resolve_planned_vm_uses_vm_template(self):
+        store = self._make_store()
+        store.create_vm_template("Ubuntu Srv", os_type="linux", ram_mib=8192, vcpus=4, disk_gb=80)
+        vm = {"name": "server", "template_id": "ubuntu-srv", "os_type": "linux",
+              "ram_mib": 2048, "vcpus": 2, "disk_gb": 20, "display": "spice"}
+        resolved = store._resolve_planned_vm(vm)
+        self.assertEqual(resolved["ram_mib"], 2048)
+
+    def test_resolve_planned_vm_falls_back_to_template_defaults(self):
+        store = self._make_store()
+        store.create_vm_template("Ubuntu Srv", os_type="linux", ram_mib=8192, vcpus=4, disk_gb=80)
+        vm = {"template_id": "ubuntu-srv"}
+        resolved = store._resolve_planned_vm(vm)
+        self.assertEqual(resolved["ram_mib"], 8192)
+        self.assertEqual(resolved["vcpus"], 4)
+
+    def test_iso_not_required_skips_iso_check(self):
+        created = []
+        store = self._make_store(created_vms=created)
+        vms = [{
+            "name": "router",
+            "os_type": "linux",
+            "ram_mib": 512,
+            "vcpus": 1,
+            "disk_gb": 4,
+            "display": "vnc",
+            "iso_required": False,
+        }]
+        store.create_lab_template("Router Lab", "test", "nat", vms)
+        result = store.instantiate_lab_template("router-lab", "Router Instance", {})
+        self.assertEqual(result["errors"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
