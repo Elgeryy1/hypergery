@@ -6,6 +6,7 @@
 - Migracion inicial de la UI principal a PySide6/Qt como interfaz por defecto.
 - Capa Qt separada en `hypergery_ubuntu/ui_qt/`, reutilizando el backend real existente.
 - UI Tkinter conservada temporalmente como `hypergery_ubuntu.app_tk` durante la migracion.
+- Pulido visual del dashboard PySide6: preflight compacto, empty states, chips de estado, logs menos invasivos y cards de accion rapida.
 - UI principal revisada para parecer mas una herramienta de gestion de VMs real: cabecera de producto, acciones principales separadas, estados de VM mas legibles y resumen de seleccion.
 - Lista de VMs ampliada con estado, lab, CPU y RAM visibles.
 - Panel de labs visible con lab id, numero de VMs y red asociada.

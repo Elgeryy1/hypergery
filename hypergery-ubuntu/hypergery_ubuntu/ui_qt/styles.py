@@ -10,6 +10,20 @@ STATE_COLORS = {
     "unknown": "#c7d0dd",
 }
 
+STATE_BACKGROUNDS = {
+    "running": "#123d36",
+    "shutoff": "#273241",
+    "paused": "#3c3017",
+    "unknown": "#202938",
+}
+
+STATE_LABELS = {
+    "running": "RUNNING",
+    "shutoff": "SHUTOFF",
+    "paused": "PAUSED",
+    "unknown": "UNKNOWN",
+}
+
 
 def state_kind(state: str) -> str:
     value = state.lower()
@@ -33,7 +47,7 @@ def details_block(*rows: tuple[str, str]) -> str:
 
 APP_STYLESHEET = """
 QMainWindow, QDialog, QWizard {
-    background: #11161d;
+    background: #0f141b;
     color: #e8edf3;
     font-family: "Inter", "Segoe UI", "Ubuntu", "Sans";
     font-size: 10.5pt;
@@ -42,12 +56,13 @@ QWidget {
     color: #e8edf3;
 }
 QFrame#topBar {
-    background: #171d26;
-    border-bottom: 1px solid #2a3441;
+    background: #121a24;
+    border-bottom: 1px solid #243244;
 }
 QLabel#brandTitle {
     font-size: 18pt;
     font-weight: 700;
+    color: #eaf6ff;
 }
 QLabel#brandSubtle, QLabel#mutedLabel {
     color: #9aa4b2;
@@ -55,17 +70,32 @@ QLabel#brandSubtle, QLabel#mutedLabel {
 QLabel#sectionTitle {
     font-size: 12pt;
     font-weight: 700;
+    color: #f3f8ff;
+}
+QLabel#heroTitle {
+    font-size: 18pt;
+    font-weight: 750;
+    color: #f8fbff;
+}
+QLabel#heroSubtitle {
+    font-size: 11pt;
+    color: #9aa4b2;
+}
+QLabel#preflightSummary {
+    font-size: 12pt;
+    font-weight: 700;
+    color: #dbeafe;
 }
 QPushButton {
-    background: #242d3a;
-    border: 1px solid #344052;
-    border-radius: 6px;
+    background: #202a38;
+    border: 1px solid #334155;
+    border-radius: 7px;
     color: #eef4fb;
-    padding: 8px 12px;
+    padding: 7px 11px;
 }
 QPushButton:hover {
-    background: #2d3848;
-    border-color: #4d5f76;
+    background: #263449;
+    border-color: #0891b2;
 }
 QPushButton:disabled {
     background: #19202a;
@@ -73,9 +103,12 @@ QPushButton:disabled {
     color: #687386;
 }
 QPushButton#primaryButton {
-    background: #2563eb;
-    border-color: #3774ff;
+    background: #0e7490;
+    border-color: #22d3ee;
     font-weight: 700;
+}
+QPushButton#primaryButton:hover {
+    background: #0891b2;
 }
 QPushButton#dangerButton {
     background: #3a2025;
@@ -83,20 +116,25 @@ QPushButton#dangerButton {
     color: #ffc9c9;
     font-weight: 700;
 }
+QPushButton#ghostButton {
+    background: #151d27;
+    border-color: #2b3a4f;
+    color: #cbd5e1;
+}
 QLineEdit, QSpinBox, QComboBox, QTextEdit, QListWidget, QTableWidget {
-    background: #151b24;
-    border: 1px solid #2d3848;
-    border-radius: 6px;
+    background: #121922;
+    border: 1px solid #263449;
+    border-radius: 8px;
     color: #eef4fb;
     selection-background-color: #2563eb;
     padding: 5px;
 }
 QTableWidget {
-    gridline-color: #25303d;
-    alternate-background-color: #131922;
+    gridline-color: #202b3a;
+    alternate-background-color: #101720;
 }
 QHeaderView::section {
-    background: #1b2330;
+    background: #162030;
     color: #cbd5e1;
     border: 0;
     border-bottom: 1px solid #2d3848;
@@ -104,29 +142,47 @@ QHeaderView::section {
     font-weight: 700;
 }
 QTabWidget::pane {
-    border: 1px solid #2d3848;
-    border-radius: 7px;
+    border: 1px solid #263449;
+    border-radius: 9px;
     top: -1px;
 }
 QTabBar::tab {
-    background: #171d26;
-    border: 1px solid #2d3848;
+    background: #121a24;
+    border: 1px solid #263449;
     color: #aab4c3;
     padding: 8px 13px;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
 QTabBar::tab:selected {
-    background: #222b38;
+    background: #1c2938;
     color: #ffffff;
 }
 QSplitter::handle {
     background: #202938;
 }
 QFrame#panel {
-    background: #141a23;
-    border: 1px solid #273241;
-    border-radius: 8px;
+    background: #121a24;
+    border: 1px solid #243244;
+    border-radius: 10px;
+}
+QFrame#softPanel {
+    background: #151d28;
+    border: 1px solid #2b3a4f;
+    border-radius: 12px;
+}
+QFrame#emptyPanel {
+    background: #101720;
+    border: 1px dashed #334155;
+    border-radius: 12px;
+}
+QFrame#quickCard {
+    background: #151d28;
+    border: 1px solid #2b3a4f;
+    border-radius: 12px;
+}
+QFrame#quickCard:hover {
+    border-color: #0891b2;
 }
 QLabel#errorLabel {
     color: #fca5a5;
@@ -135,7 +191,7 @@ QLabel#okLabel {
     color: #86efac;
 }
 QStatusBar {
-    background: #11161d;
+    background: #0f141b;
     color: #aab4c3;
 }
 """
