@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0 - Lab Automation (en desarrollo)
+
+HyperGery v0.4.0 — automatización de entornos de laboratorio.
+
+Roadmap:
+
+- Auto-crear VMs desde Lab Templates (requiere selección de ISO por cada VM planificada).
+- Editar VM Templates y Lab Templates in-place.
+- Duplicar labs con clonado real de discos de VMs.
+- Vista de topología de lab (VMs y red asociada).
+- Flujo mejorado de template-to-ISO en el wizard.
+
 ## v0.3.0 - Labs and Templates
 
 HyperGery v0.3.0 — Lab Manager & Templates Manager.
