@@ -1,5 +1,121 @@
 # HyperGery Validation
 
+## v0.5.0 RC — Automated Tests Status
+
+Run with system Python (PySide6 not required):
+
+```bash
+cd hypergery-ubuntu && python3 -m unittest discover -s tests
+# Expected: Ran 130 tests — OK (skipped=4)
+```
+
+Run inside the venv (all tests including Qt):
+
+```bash
+cd hypergery-ubuntu && /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
+# Expected: Ran 130 tests — OK
+```
+
+The 4 skipped tests are Qt widget tests that require PySide6. They pass cleanly in the venv.
+
+New in v0.5.0: 9 additional tests covering `build_lab_topology` (empty, live VMs, not-created VMs, cross-lab exclusion, deduplication, JSON export), CLI `template update`, CLI `lab-topology`, CLI `lab-instantiate --dry-run`.
+
+Offscreen Qt smoke (2026-06-03):
+
+```bash
+QT_QPA_PLATFORM=offscreen python -c "
+from PySide6.QtWidgets import QApplication; import sys
+from hypergery_ubuntu.ui_qt.topology import LabTopologyWidget
+from hypergery_ubuntu.ui_qt.lab_helpers import build_lab_topology
+from hypergery_ubuntu.backend import VmSummary
+app = QApplication(sys.argv)
+w = LabTopologyWidget(); w.resize(500, 300)
+lab = {'lab_id': 'asr-lab', 'name': 'ASR Lab', 'network_mode': 'isolated',
+       'network_id': 'hg-net-asr-lab-isolated', 'subnet': '192.168.30.0/24',
+       'bridge_name': 'hgbr1234567', 'vms': ['server', 'ghost']}
+vms = [VmSummary(name='server', state='running', lab_id='asr-lab', ram_mib=4096, vcpus=2)]
+w.set_topology(build_lab_topology(lab, vms)); w.show()
+print(w.grab().width())  # should print 500
+"
+```
+
+Result: widget renders at 500×300 px, 2 VM nodes (server=live/running, ghost=not created). OK.
+
+## v0.5.0 RC — Manual Smoke Checklist
+
+Run from the Qt UI (`python -m hypergery_ubuntu` inside the venv). Requires a real Ubuntu KVM/libvirt host.
+
+### Lab Topology
+
+- [ ] Create or select a lab with at least one VM (e.g. `hg-v04-asr-lab` from v0.4.0 smoke)
+- [ ] Click the **Topology** sub-tab in the Lab Details panel
+- [ ] Network node visible on the left with network name, mode, and subnet
+- [ ] VM node(s) visible on the right, colour-coded by state
+- [ ] Start a VM → topology refreshes after next Refresh → node turns green
+- [ ] Click a VM node → VM selected in the main list, Details tab activates
+
+### Planned VM Editor (improved)
+
+- [ ] Select a lab template → Click **Edit**
+- [ ] Planned VMs table shows columns: Name, Role, OS, RAM MiB, vCPUs, Disk GB, Display, ISO req.
+- [ ] Double-click a VM row → Edit dialog opens with fields pre-filled
+- [ ] Change RAM, click OK → table updates immediately
+- [ ] Add a VM with the same name as an existing one → duplicate error shown
+- [ ] Remove a VM row → VM count decreases
+
+### ISO Reuse in Wizard
+
+- [ ] Select a lab template with ≥2 planned VMs requiring ISO
+- [ ] Click **Create Lab from Template** → Page 2 (ISO Mapping)
+- [ ] Click **Apply same ISO to all VMs…** → browse once → all rows filled
+- [ ] Status label disappears when all required ISOs are set
+
+### Resource Overview
+
+- [ ] Click **Resources…** button in toolbar
+- [ ] Dialog shows all VMs, labs, VM templates, lab templates
+- [ ] No delete buttons — read-only
+- [ ] Close button works
+
+### CLI — template update
+
+```bash
+python -m hypergery_ubuntu.cli template update vm hg-v04-ubuntu-template --set ram_mib=8192
+# expected: JSON output with ram_mib=8192
+```
+
+- [ ] JSON returned; `ram_mib` updated in the file
+
+### CLI — lab-topology
+
+```bash
+python -m hypergery_ubuntu.cli lab-topology hg-v04-asr-lab
+# expected: JSON with lab_id, subnet, vms list
+```
+
+- [ ] JSON returned; `vms` list present
+
+### CLI — lab-instantiate dry-run
+
+```bash
+python -m hypergery_ubuntu.cli lab-instantiate hg-v04-asr-template "ASR Test" \
+  --iso hg-v04-ad-server=/path/to/ubuntu.iso \
+  --iso hg-v04-client=/path/to/ubuntu.iso \
+  --dry-run
+# expected: JSON with dry_run=true, errors=[], lab=null
+```
+
+- [ ] dry_run=true in response; no lab created
+
+### Activity Log
+
+- [ ] All topology-tab switches, resource overview open, template edits appear in log
+
+### Not smoke-tested (requires extended setup)
+
+- Topology node click on a real running VM
+- Per-VM progress during lab instantiation (not yet implemented)
+
 ## v0.4.0 — Automated Tests Status
 
 Run with system Python (PySide6 not required):

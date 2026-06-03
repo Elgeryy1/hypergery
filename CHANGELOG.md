@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.0 - Lab Topology & UX (en desarrollo)
+## v0.5.0 - Lab Topology & UX - Release Candidate
 
 HyperGery v0.5.0 — topología visual de labs y mejoras de UX.
 

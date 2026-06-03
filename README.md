@@ -2,14 +2,14 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v0.3.0--dev-blue)
+![Version](https://img.shields.io/badge/version-v0.5.0--dev-blue)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 HyperGery is a real desktop virtual machine manager for Ubuntu, functionally inspired by VirtualBox workflows but using KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
 
-HyperGery v0.3.0 extends the modern PySide6/Qt desktop UI with Lab Manager and Templates Manager, turning the app into a reusable laboratory environment manager.
+HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
 
 ## Screenshots
 
@@ -59,10 +59,39 @@ HyperGery v0.3.0 extends the modern PySide6/Qt desktop UI with Lab Manager and T
 - **Add/Remove Planned VMs** from the Edit Lab Template dialog.
 - **Duplicate Lab with VM Cloning**: Clone VMs checkbox enabled when VMs are present; clones qcow2 disks via `qemu-img convert`; requires all VMs shut off.
 
+### Lab Topology (v0.5.0)
+
+- **Visual topology tab** in the Lab Details panel: QPainter canvas showing the lab network node and VM nodes colour-coded by state.
+- State colours: running = green, shut off = grey, paused = amber, not created = slate blue.
+- VMs only in the lab manifest (not yet created in libvirt) shown as "not created".
+- Click a VM node to select it in the main VM list.
+- `build_lab_topology()` and `topology_to_json()` available for scripting.
+
+### CLI (v0.5.0)
+
+```bash
+# Update template fields in place
+python -m hypergery_ubuntu.cli template update vm ubuntu-base --set ram_mib=8192 --set notes="Updated"
+python -m hypergery_ubuntu.cli template update lab asr-lab --set notes="v2"
+
+# Print lab topology as JSON
+python -m hypergery_ubuntu.cli lab-topology asr-lab
+
+# Instantiate a lab template (dry-run or real)
+python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
+  --iso server=/path/to/ubuntu.iso --iso client=/path/to/ubuntu.iso --dry-run
+```
+
+### Resource Overview (v0.5.0)
+
+- **Resources…** button in the toolbar opens a read-only overview of all HyperGery-managed VMs, labs, VM templates, and lab templates.
+- Nothing is deleted automatically — the dialog is a safe audit view.
+
 ### Not yet implemented
 
-- CLI `template update` and `template instantiate` commands.
-- Auto-create planned VMs via CLI (UI only).
+- Lab topology zoom/pan and PNG/SVG export.
+- VM role badges on topology nodes.
+- Per-VM progress during lab instantiation.
 - Android Hub, NAS, IsardVDI, P2P, live migration, GPU shadowing.
 
 ## Requirements
@@ -161,10 +190,10 @@ System Python (no PySide6 — Qt tests are skipped cleanly):
 python3 -m unittest discover -s hypergery-ubuntu/tests
 ```
 
-Full suite inside the venv (all 101 tests pass including Qt tests):
+Full suite inside the venv (all 130 tests pass including Qt tests):
 
 ```bash
-/home/gerard/.venvs/hypergery/bin/python -m unittest discover -s hypergery-ubuntu/tests
+cd hypergery-ubuntu && /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
 ```
 
 ## Safety
@@ -181,9 +210,10 @@ The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime fo
 
 ## Roadmap
 
-- v0.3.0 — Lab Manager + Templates Manager (current develop branch, RC)
-- v0.4.0 — auto-create VMs from lab template, edit templates, clone VM disks in lab duplicate
-- v0.5.0 — NAS commit prototype
+- v0.3.0 — Lab Manager + Templates Manager ✓
+- v0.4.0 — Lab Automation (instantiation wizard, rollback, template editing, VM clone in duplicate) ✓
+- v0.5.0 — Lab Topology view, planned VM editor, ISO reuse, resource overview, CLI update/instantiate (current develop branch, RC)
+- v0.6.0 — topology zoom/pan, VM role badges, per-VM progress during instantiation
 - v1.0.0 — stable classroom-ready release
 
 ## License
