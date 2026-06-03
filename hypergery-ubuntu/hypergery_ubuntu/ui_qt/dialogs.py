@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -1192,11 +1193,30 @@ class _IsoMappingPage(QWizardPage):
             self.vm_rows.append({"name": str(vm.get("name", "")), "iso_required": vm.get("iso_required", True)})
             self.table.setRowHeight(row, 44)
 
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("mutedLabel")
+        self.status_label.setWordWrap(True)
+
         layout = QVBoxLayout(self)
         if not vms:
             layout.addWidget(QLabel("This template has no planned VMs. The lab structure will be created."))
         else:
+            apply_all_btn = QPushButton("Apply same ISO to all VMs…")
+            apply_all_btn.clicked.connect(self._apply_all_iso)
+            apply_all_row = QHBoxLayout()
+            apply_all_row.addWidget(apply_all_btn)
+            apply_all_row.addStretch()
+            layout.addLayout(apply_all_row)
             layout.addWidget(self.table)
+        layout.addWidget(self.status_label)
+
+    def _apply_all_iso(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select ISO for all VMs", "", "ISO images (*.iso);;All files (*)", "", FILE_DIALOG_OPTIONS
+        )
+        if path:
+            for edit in self.iso_edits:
+                edit.setText(path)
 
     def _browse(self, edit: QLineEdit) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1206,9 +1226,15 @@ class _IsoMappingPage(QWizardPage):
             edit.setText(path)
 
     def isComplete(self) -> bool:
-        for row_info, iso_edit in zip(self.vm_rows, self.iso_edits):
-            if row_info["iso_required"] and not iso_edit.text().strip():
-                return False
+        missing = [
+            row_info["name"]
+            for row_info, iso_edit in zip(self.vm_rows, self.iso_edits)
+            if row_info["iso_required"] and not iso_edit.text().strip()
+        ]
+        if missing:
+            self.status_label.setText(f"ISO required for: {', '.join(missing)}")
+            return False
+        self.status_label.setText("")
         return True
 
     def iso_map(self) -> dict:
@@ -1357,65 +1383,102 @@ class EditVmTemplateDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# EditLabTemplateDialog — Fase 3
+# PlannedVmDialog — add or edit a planned VM (Fase 2 v0.5.0)
 # ---------------------------------------------------------------------------
 
-class _AddPlannedVmDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+class PlannedVmDialog(QDialog):
+    """Add or edit a planned VM entry in a Lab Template."""
+
+    def __init__(self, existing: dict | None = None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add Planned VM")
-        self.name_edit = QLineEdit()
+        self.setWindowTitle("Edit Planned VM" if existing else "Add Planned VM")
+        self._original_name = str(existing.get("name", "")) if existing else ""
+        self.name_edit = QLineEdit(self._original_name)
         self.name_edit.setPlaceholderText("server-01")
-        self.role_edit = QLineEdit()
+        self.role_edit = QLineEdit(str(existing.get("role", "")) if existing else "")
         self.role_edit.setPlaceholderText("server / client / router (optional)")
+        self.vm_template_edit = QLineEdit(str(existing.get("template_id", "")) if existing else "")
+        self.vm_template_edit.setPlaceholderText("ubuntu-base (optional VM template id)")
         self.os_type = QComboBox()
         self.os_type.addItems(["linux", "windows", "other"])
+        os_idx = self.os_type.findText(str(existing.get("os_type", "linux")) if existing else "linux")
+        if os_idx >= 0:
+            self.os_type.setCurrentIndex(os_idx)
         self.ram = QSpinBox()
         self.ram.setRange(256, 262144)
         self.ram.setSingleStep(512)
         self.ram.setSuffix(" MiB")
-        self.ram.setValue(2048)
+        self.ram.setValue(int(existing.get("ram_mib", 2048)) if existing else 2048)
         self.vcpus = QSpinBox()
         self.vcpus.setRange(1, 128)
-        self.vcpus.setValue(2)
+        self.vcpus.setValue(int(existing.get("vcpus", 2)) if existing else 2)
         self.disk = QSpinBox()
         self.disk.setRange(1, 65536)
         self.disk.setSuffix(" GB")
-        self.disk.setValue(20)
+        self.disk.setValue(int(existing.get("disk_gb", 20)) if existing else 20)
         self.display = QComboBox()
         self.display.addItems(["spice", "vnc"])
+        disp_idx = self.display.findText(str(existing.get("display", "spice")) if existing else "spice")
+        if disp_idx >= 0:
+            self.display.setCurrentIndex(disp_idx)
+        self.notes_edit = QLineEdit(str(existing.get("notes", "")) if existing else "")
         self.iso_required = QCheckBox("ISO required at instantiation time")
-        self.iso_required.setChecked(True)
+        self.iso_required.setChecked(bool(existing.get("iso_required", True)) if existing else True)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         form = QFormLayout()
         form.addRow("VM name *", self.name_edit)
         form.addRow("Role", self.role_edit)
+        form.addRow("VM template id", self.vm_template_edit)
         form.addRow("OS type", self.os_type)
         form.addRow("RAM", self.ram)
         form.addRow("vCPUs", self.vcpus)
         form.addRow("Disk", self.disk)
         form.addRow("Display", self.display)
+        form.addRow("Notes", self.notes_edit)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self.iso_required)
+        layout.addWidget(self.error_label)
         layout.addWidget(buttons)
-        self.resize(440, 360)
+        self.resize(480, 420)
+
+    def _validate_and_accept(self) -> None:
+        name = self.name_edit.text().strip()
+        if not name:
+            self.error_label.setText("VM name cannot be empty.")
+            return
+        import re as _re
+        if not _re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_\-]{0,61}", name):
+            self.error_label.setText("VM name must start with a letter/digit, only letters, digits, dashes, underscores.")
+            return
+        self.accept()
 
     def values(self) -> dict:
         return {
             "name": self.name_edit.text().strip(),
             "role": self.role_edit.text().strip(),
+            "template_id": self.vm_template_edit.text().strip(),
             "os_type": self.os_type.currentText(),
             "ram_mib": self.ram.value(),
             "vcpus": self.vcpus.value(),
             "disk_gb": self.disk.value(),
             "display": self.display.currentText(),
+            "notes": self.notes_edit.text().strip(),
             "iso_required": self.iso_required.isChecked(),
         }
+
+
+# ---------------------------------------------------------------------------
+# EditLabTemplateDialog — improved (Fase 2 v0.5.0)
+# ---------------------------------------------------------------------------
+
+_VM_TABLE_COLS = ["Name", "Role", "OS", "RAM MiB", "vCPUs", "Disk GB", "Display", "ISO req."]
 
 
 class EditLabTemplateDialog(QDialog):
@@ -1431,20 +1494,36 @@ class EditLabTemplateDialog(QDialog):
         if net_idx >= 0:
             self.network_mode.setCurrentIndex(net_idx)
         self.notes_edit = QTextEdit(str(template.get("notes", "")))
-        self.notes_edit.setMaximumHeight(80)
+        self.notes_edit.setMaximumHeight(70)
 
+        # --- Planned VMs table ---
         vms = template.get("vms", [])
-        self.vm_list = QListWidget()
-        for vm in vms:
-            self.vm_list.addItem(f"{vm.get('name', '?')}  RAM={vm.get('ram_mib', '?')}MiB  role={vm.get('role', '')}")
         self._vms: list[dict] = list(vms)
-        add_vm_btn = QPushButton("Add Planned VM…")
-        remove_vm_btn = QPushButton("Remove Selected")
-        add_vm_btn.clicked.connect(self._add_vm)
-        remove_vm_btn.clicked.connect(self._remove_vm)
+        self.vm_table = QTableWidget(0, len(_VM_TABLE_COLS))
+        self.vm_table.setHorizontalHeaderLabels(_VM_TABLE_COLS)
+        self.vm_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.vm_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.vm_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.vm_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in range(1, len(_VM_TABLE_COLS)):
+            self.vm_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        self.vm_table.verticalHeader().setVisible(False)
+        self.vm_table.setAlternatingRowColors(True)
+        self.vm_table.itemDoubleClicked.connect(self._edit_vm)
+        for vm in vms:
+            self._append_vm_row(vm)
+
+        add_btn = QPushButton("Add VM…")
+        edit_btn = QPushButton("Edit Selected…")
+        remove_btn = QPushButton("Remove Selected")
+        add_btn.clicked.connect(self._add_vm)
+        edit_btn.clicked.connect(self._edit_vm)
+        remove_btn.clicked.connect(self._remove_vm)
         vm_buttons = QHBoxLayout()
-        vm_buttons.addWidget(add_vm_btn)
-        vm_buttons.addWidget(remove_vm_btn)
+        vm_buttons.addWidget(add_btn)
+        vm_buttons.addWidget(edit_btn)
+        vm_buttons.addWidget(remove_btn)
+        vm_buttons.addStretch()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -1461,33 +1540,77 @@ class EditLabTemplateDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(QLabel("Planned VMs:"))
-        layout.addWidget(self.vm_list)
+        layout.addWidget(QLabel("Planned VMs (double-click to edit):"))
+        layout.addWidget(self.vm_table)
         layout.addLayout(vm_buttons)
         layout.addWidget(buttons)
-        self.resize(600, 500)
+        self.resize(720, 560)
+
+    def _append_vm_row(self, vm: dict) -> None:
+        row = self.vm_table.rowCount()
+        self.vm_table.insertRow(row)
+        items = [
+            str(vm.get("name", "")),
+            str(vm.get("role", "")),
+            str(vm.get("os_type", "")),
+            str(vm.get("ram_mib", "")),
+            str(vm.get("vcpus", "")),
+            str(vm.get("disk_gb", "")),
+            str(vm.get("display", "")),
+            "Yes" if vm.get("iso_required", True) else "No",
+        ]
+        for col, text in enumerate(items):
+            self.vm_table.setItem(row, col, QTableWidgetItem(text))
+
+    def _refresh_row(self, row: int, vm: dict) -> None:
+        items = [
+            str(vm.get("name", "")),
+            str(vm.get("role", "")),
+            str(vm.get("os_type", "")),
+            str(vm.get("ram_mib", "")),
+            str(vm.get("vcpus", "")),
+            str(vm.get("disk_gb", "")),
+            str(vm.get("display", "")),
+            "Yes" if vm.get("iso_required", True) else "No",
+        ]
+        for col, text in enumerate(items):
+            self.vm_table.setItem(row, col, QTableWidgetItem(text))
 
     def _add_vm(self) -> None:
-        dialog = _AddPlannedVmDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            vm = dialog.values()
-            if not vm["name"]:
-                QMessageBox.warning(self, "Invalid name", "VM name cannot be empty.")
+        dialog = PlannedVmDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        vm = dialog.values()
+        existing_names = {v["name"] for v in self._vms}
+        if vm["name"] in existing_names:
+            QMessageBox.warning(self, "Duplicate name", f"A planned VM named '{vm['name']}' already exists.")
+            return
+        self._vms.append(vm)
+        self._append_vm_row(vm)
+
+    def _edit_vm(self, *_args: object) -> None:
+        row = self.vm_table.currentRow()
+        if row < 0 or row >= len(self._vms):
+            return
+        existing = self._vms[row]
+        dialog = PlannedVmDialog(existing=existing, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        updated = dialog.values()
+        if updated["name"] != existing["name"]:
+            other_names = {v["name"] for i, v in enumerate(self._vms) if i != row}
+            if updated["name"] in other_names:
+                QMessageBox.warning(self, "Duplicate name", f"A planned VM named '{updated['name']}' already exists.")
                 return
-            existing_names = {v["name"] for v in self._vms}
-            if vm["name"] in existing_names:
-                QMessageBox.warning(self, "Duplicate name", f"A planned VM named '{vm['name']}' already exists.")
-                return
-            self._vms.append(vm)
-            role = vm.get("role", "")
-            self.vm_list.addItem(f"{vm['name']}  RAM={vm['ram_mib']}MiB  role={role}")
+        self._vms[row] = updated
+        self._refresh_row(row, updated)
 
     def _remove_vm(self) -> None:
-        row = self.vm_list.currentRow()
-        if row < 0:
+        row = self.vm_table.currentRow()
+        if row < 0 or row >= len(self._vms):
             return
         self._vms.pop(row)
-        self.vm_list.takeItem(row)
+        self.vm_table.removeRow(row)
 
     def values(self) -> dict:
         return {
@@ -1497,3 +1620,56 @@ class EditLabTemplateDialog(QDialog):
             "vms": list(self._vms),
             "notes": self.notes_edit.toPlainText().strip(),
         }
+
+
+# ---------------------------------------------------------------------------
+# CleanupPreviewDialog — Fase 4 v0.5.0
+# ---------------------------------------------------------------------------
+
+class CleanupPreviewDialog(QDialog):
+    """Read-only preview of HyperGery-managed resources. Nothing is deleted here."""
+
+    def __init__(self, vms: list, labs: list, vm_templates: list, lab_templates: list, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("HyperGery Resource Overview")
+        self.resize(760, 520)
+
+        lines = ["HyperGery-managed resources\n"]
+        lines.append(f"VMs ({len(vms)}):")
+        for vm in vms:
+            state = getattr(vm, "state", "?")
+            lab = getattr(vm, "lab_id", "") or "default-lab"
+            lines.append(f"  • {vm.name}  state={state}  lab={lab}")
+        lines.append("")
+        lines.append(f"Labs ({len(labs)}):")
+        for lab in labs:
+            vm_count = len(lab.get("vms", []))
+            subnet = lab.get("subnet", "")
+            lines.append(f"  • {lab.get('lab_id', '?')}  name={lab.get('name', '')}  vms={vm_count}  subnet={subnet}")
+        lines.append("")
+        lines.append(f"VM Templates ({len(vm_templates)}):")
+        for tmpl in vm_templates:
+            lines.append(f"  • {tmpl.get('template_id', '?')}  ({tmpl.get('os_type', '')}  {tmpl.get('ram_mib', '')} MiB)")
+        lines.append("")
+        lines.append(f"Lab Templates ({len(lab_templates)}):")
+        for tmpl in lab_templates:
+            vm_count = len(tmpl.get("vms", []))
+            lines.append(f"  • {tmpl.get('template_id', '?')}  planned VMs={vm_count}")
+        lines.append("")
+        lines.append("To delete resources, use the Delete buttons in the main window.")
+        lines.append("No resources are modified by this dialog.")
+
+        text = QTextEdit("\n".join(lines))
+        text.setReadOnly(True)
+        text.setFont(QFont("monospace", 9))
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Overview of all HyperGery-managed resources (read-only):"))
+        layout.addWidget(text)
+        layout.addLayout(btn_row)

@@ -162,7 +162,48 @@ def template_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
             store.delete_lab_template(args.template_id)
         print(f"deleted_template={args.kind}:{args.template_id}")
         return 0
+    if args.template_command == "update":
+        kwargs: dict = {}
+        for pair in (args.set or []):
+            if "=" not in pair:
+                print(f"ERROR: --set must be key=value, got: {pair}", file=sys.stderr)
+                return 2
+            k, _, v = pair.partition("=")
+            kwargs[k.strip()] = v.strip()
+        if args.kind == "vm":
+            updated = store.update_vm_template(args.template_id, **kwargs)
+        else:
+            updated = store.update_lab_template(args.template_id, **kwargs)
+        return print_json(updated)
     return 2
+
+
+def lab_topology_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
+    from .ui_qt.lab_helpers import build_lab_topology
+    store = LabStore(backend.data_dir)
+    lab = store.get_lab(args.lab_id)
+    vms = backend.list_vms()
+    topology = build_lab_topology(lab, vms)
+    return print_json(topology)
+
+
+def lab_instantiate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
+    store = TemplateStore(backend.data_dir, backend=backend, lab_store=LabStore(backend.data_dir))
+    vm_iso_map: dict[str, str] = {}
+    for pair in (args.iso or []):
+        if "=" not in pair:
+            print(f"ERROR: --iso must be vm_name=path, got: {pair}", file=sys.stderr)
+            return 2
+        name, _, path = pair.partition("=")
+        vm_iso_map[name.strip()] = path.strip()
+    result = store.instantiate_lab_template(
+        args.template_id,
+        args.lab_name,
+        vm_iso_map,
+        dry_run=args.dry_run,
+        new_lab_description=args.description or "",
+    )
+    return print_json(result)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -243,6 +284,21 @@ def main(argv: list[str] | None = None) -> int:
     template_delete = template_sub.add_parser("delete")
     template_delete.add_argument("kind", choices=["vm", "lab"])
     template_delete.add_argument("template_id")
+    template_update = template_sub.add_parser("update", help="Update fields in an existing template.")
+    template_update.add_argument("kind", choices=["vm", "lab"])
+    template_update.add_argument("template_id")
+    template_update.add_argument("--set", dest="set", action="append", metavar="key=value",
+                                 help="Field to update. Repeat for multiple fields.")
+    lab_topology_p = sub.add_parser("lab-topology", help="Print lab topology as JSON.")
+    lab_topology_p.add_argument("lab_id")
+    lab_instantiate_p = sub.add_parser("lab-instantiate", help="Instantiate a lab template (create real lab + VMs).")
+    lab_instantiate_p.add_argument("template_id")
+    lab_instantiate_p.add_argument("lab_name")
+    lab_instantiate_p.add_argument("--iso", action="append", metavar="vm_name=path",
+                                   help="ISO path for a planned VM. Repeat for each VM.")
+    lab_instantiate_p.add_argument("--description", default="")
+    lab_instantiate_p.add_argument("--dry-run", action="store_true",
+                                   help="Validate and show plan without creating anything.")
     args = parser.parse_args(argv)
 
     try:
@@ -267,6 +323,10 @@ def main(argv: list[str] | None = None) -> int:
             return lab_action(backend, args)
         if args.command == "template":
             return template_action(backend, args)
+        if args.command == "lab-topology":
+            return lab_topology_action(backend, args)
+        if args.command == "lab-instantiate":
+            return lab_instantiate_action(backend, args)
     except HyperGeryError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

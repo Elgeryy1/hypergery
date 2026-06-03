@@ -21,8 +21,10 @@ It provides:
   - Lab Templates sub-tab: create, delete, export, import lab templates; detail panel with planned VM count.
   - **Create VM from Template**: opens the VM wizard with OS type, RAM, vCPUs, disk, network, display pre-filled from the template; user provides VM name, boot ISO, and lab.
   - **Create Lab from Template** (v0.4.0 wizard): 3-page `InstantiateLabTemplateWizard` — Lab Identity with live preview, ISO Mapping table with per-VM Browse, Review summary. Calls `instantiate_lab_template()` in a background worker; handles rollback errors from partial failures.
-  - **Edit VM/Lab Template**: `EditVmTemplateDialog` and `EditLabTemplateDialog` with add/remove planned VMs via `_AddPlannedVmDialog`.
+  - **Edit VM/Lab Template**: `EditVmTemplateDialog` and improved `EditLabTemplateDialog` with `QTableWidget` (add/edit/remove planned VMs via `PlannedVmDialog`; double-click to edit).
   - **Lab Duplicate with VM Cloning**: `DuplicateLabDialog` enables clone checkbox when VMs exist; passes `clone_vm_callback` and `vm_state_callback` from the real backend.
+  - **Lab Topology** (`topology.py`): `LabTopologyWidget` QPainter canvas; lab details panel has "Details" + "Topology" sub-tabs; click a VM node to select it in the VM list.
+  - **Resource Overview**: `CleanupPreviewDialog` shows all VMs, labs, and templates — read-only.
 - Qt backend workers so long-running host operations do not block the UI thread.
 
 The old Tkinter UI remains temporarily available in:

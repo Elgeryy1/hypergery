@@ -35,6 +35,7 @@ from ..backend import HyperGeryBackend, HyperGeryError, VmSummary, now_iso
 from ..labs import LabStore
 from ..templates import TemplateStore
 from .dialogs import (
+    CleanupPreviewDialog,
     CloneDialog,
     DeleteConfirmationDialog,
     DeleteLabDialog,
@@ -135,6 +136,7 @@ class MainWindow(QMainWindow):
         self.refresh_button = self._button("Refresh", self.refresh_all)
         self.force_button = self._button("Force Off", self.force_off_vm, danger=True)
         self.delete_button = self._button("Delete", self.delete_vm, danger=True)
+        self.overview_button = self._button("Resources…", self.show_cleanup_preview)
         for button in (
             self.new_button,
             self.settings_button,
@@ -147,6 +149,7 @@ class MainWindow(QMainWindow):
         ):
             layout.addWidget(button)
         layout.addStretch()
+        layout.addWidget(self.overview_button)
         layout.addWidget(self.force_button)
         layout.addWidget(self.delete_button)
         return bar
@@ -582,6 +585,7 @@ class MainWindow(QMainWindow):
             self.export_vm_template_button,
             self.import_vm_template_button,
             self.refresh_vm_templates_button,
+            self.overview_button,
             self.new_lab_template_button,
             self.delete_lab_template_button,
             self.edit_lab_template_button,
@@ -1141,6 +1145,16 @@ class MainWindow(QMainWindow):
         self.status.showMessage(message)
         QMessageBox.critical(self, "HyperGery", message)
         self.refresh_logs()
+
+    def show_cleanup_preview(self) -> None:
+        dialog = CleanupPreviewDialog(
+            self.all_vms,
+            self.labs,
+            self.vm_templates,
+            self.lab_templates,
+            self,
+        )
+        dialog.exec()
 
     def run_operation(
         self,
