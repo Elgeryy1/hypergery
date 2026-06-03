@@ -1,5 +1,21 @@
 # HyperGery Validation
 
+## v0.3.0 Labs & Templates Backend Foundation
+
+Validated in the v0.3.0 development branch:
+
+- Lab ID validation and normalization.
+- Lab create/list/show/rename/delete/export/import.
+- Legacy lab manifest migration to schema version 2.
+- Portable lab export without private disk/ISO paths.
+- Lab bridge generation with Linux interface length limits.
+- Lab subnet allocation avoiding `192.168.122.0/24` and collisions.
+- VM template create/list/show/delete.
+- Lab template create/list/show/delete/export/import.
+- CLI coverage for minimal `lab` and `template` commands.
+
+The large Qt Lab Manager UI is not implemented yet.
+
 ## v0.2.0 PySide6 UI Validation Status
 
 v0.2.0 was manually validated from the PySide6/Qt UI on a real Ubuntu KVM/libvirt host.

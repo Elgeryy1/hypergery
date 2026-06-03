@@ -1,6 +1,6 @@
 # HyperGery Architecture
 
-HyperGery v0.2.0 is a real Ubuntu desktop VM manager built around a Python backend and a modern PySide6/Qt desktop UI.
+HyperGery is a real Ubuntu desktop VM manager built around a Python backend and a modern PySide6/Qt desktop UI. v0.3.0 development adds the backend foundation for Labs & Templates.
 
 ## UI
 
@@ -58,16 +58,38 @@ Labs are represented by JSON manifests under:
 ~/.local/share/hypergery/labs/<lab-id>/lab.json
 ```
 
-Each manifest records:
+v0.3 lab manifests use `schema_version: 2` and record:
 
 - lab id
 - name
+- description
 - created timestamp
+- updated timestamp
 - network id
+- network mode
+- subnet
+- bridge name
 - VMs
-- disks
-- ISO references
+- templates used
 - notes
+
+Old manifests are loaded and migrated in place with missing fields filled.
+
+## Templates
+
+VM templates are stored under:
+
+```text
+~/.local/share/hypergery/templates/vm/
+```
+
+Lab templates are stored under:
+
+```text
+~/.local/share/hypergery/templates/lab/
+```
+
+Templates intentionally avoid private ISO paths by default. They describe reusable resources, display mode, network mode, and per-lab VM shape, leaving actual ISO/media choices to VM creation flows.
 
 ## Storage
 

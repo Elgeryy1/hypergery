@@ -8,6 +8,11 @@ Objetivo: convertir HyperGery en gestor de laboratorios, no solo gestor de VMs s
 
 Roadmap v0.3:
 
+- Base backend de labs con manifiestos schema v2 y migracion de manifiestos antiguos.
+- Validacion y normalizacion de `lab_id`.
+- Helpers de red por lab: nombre libvirt, bridge Linux y subred sin colision.
+- Backend de plantillas de VM y plantillas de lab.
+- CLI minima `lab` y `template`.
 - Lab manager visual.
 - Crear/renombrar/borrar labs.
 - Plantillas de VM.
@@ -25,6 +30,13 @@ No implementar todavia en v0.3:
 - P2P.
 - Migracion en caliente.
 - GPU shadowing.
+
+Cambios iniciales implementados:
+
+- Nuevo modulo `hypergery_ubuntu.labs` con `LabStore`, migracion a `schema_version: 2`, export/import portable y duplicacion segura de labs.
+- Nuevo modulo `hypergery_ubuntu.templates` con `TemplateStore`, plantillas de VM y plantillas de laboratorio.
+- CLI minima para `lab list/create/show/rename/delete/export/import` y `template list/show/delete`.
+- Tests unitarios de validacion de lab ids, migracion, subredes, bridges, export/import y plantillas.
 
 ## v0.2.0 - Modern PySide6 UI
 

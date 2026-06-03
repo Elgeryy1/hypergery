@@ -1,6 +1,9 @@
 import unittest
+import os
+import tempfile
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from hypergery_ubuntu import cli
@@ -97,6 +100,23 @@ class CliTests(unittest.TestCase):
         ]
         self.assertEqual(self.run_cli(["list-vms"]), 0)
         backend.list_vms.assert_called_once_with()
+
+    def test_lab_cli_create_list_show_delete(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp, "XDG_STATE_HOME": str(Path(tmp) / "state")}):
+            self.assertEqual(self.run_cli(["lab", "create", "Security Lab", "--description", "training"]), 0)
+            self.assertEqual(self.run_cli(["lab", "show", "security-lab"]), 0)
+            self.assertEqual(self.run_cli(["lab", "list"]), 0)
+            self.assertEqual(self.run_cli(["lab", "delete", "security-lab"]), 0)
+
+    def test_template_cli_list_show_delete(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp, "XDG_STATE_HOME": str(Path(tmp) / "state")}):
+            from hypergery_ubuntu.templates import TemplateStore
+
+            store = TemplateStore(Path(tmp) / "hypergery")
+            store.create_vm_template("Ubuntu Base")
+            self.assertEqual(self.run_cli(["template", "list", "vm"]), 0)
+            self.assertEqual(self.run_cli(["template", "show", "vm", "ubuntu-base"]), 0)
+            self.assertEqual(self.run_cli(["template", "delete", "vm", "ubuntu-base"]), 0)
 
 
 if __name__ == "__main__":
