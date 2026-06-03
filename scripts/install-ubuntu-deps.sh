@@ -13,7 +13,10 @@ sudo apt install -y \
   virt-viewer \
   qemu-utils \
   ovmf \
-  python3-tk
+  dnsmasq-base \
+  python3-tk \
+  python3-pip \
+  python3-venv
 
 if systemctl list-unit-files libvirtd.service >/dev/null 2>&1; then
   sudo systemctl enable --now libvirtd
@@ -53,4 +56,6 @@ fi
 
 echo
 echo "Done. Log out and back in so the kvm/libvirt group changes take effect."
+echo "Install Python UI dependencies from the project with:"
+echo "  cd hypergery-ubuntu && python3 -m pip install -e ."
 echo "After logging back in, run: ./scripts/preflight.sh"

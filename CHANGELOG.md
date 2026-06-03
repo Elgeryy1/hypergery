@@ -3,6 +3,9 @@
 ## v0.2.0 - En desarrollo
 
 - Inicio de la rama `develop` para la siguiente iteracion sin modificar `main` ni la release `v0.1.0`.
+- Migracion inicial de la UI principal a PySide6/Qt como interfaz por defecto.
+- Capa Qt separada en `hypergery_ubuntu/ui_qt/`, reutilizando el backend real existente.
+- UI Tkinter conservada temporalmente como `hypergery_ubuntu.app_tk` durante la migracion.
 - UI principal revisada para parecer mas una herramienta de gestion de VMs real: cabecera de producto, acciones principales separadas, estados de VM mas legibles y resumen de seleccion.
 - Lista de VMs ampliada con estado, lab, CPU y RAM visibles.
 - Panel de labs visible con lab id, numero de VMs y red asociada.

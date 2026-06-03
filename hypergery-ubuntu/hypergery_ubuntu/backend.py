@@ -1030,7 +1030,8 @@ class HyperGeryBackend:
         return "\n".join(
             [
                 "sudo apt update",
-                "sudo apt install qemu-kvm qemu-system-x86 libvirt-daemon-system libvirt-clients virt-viewer qemu-utils ovmf python3-tk",
+                "sudo apt install qemu-kvm qemu-system-x86 libvirt-daemon-system libvirt-clients virt-viewer qemu-utils ovmf python3-tk python3-pip python3-venv",
+                "cd hypergery-ubuntu && python3 -m pip install -e .",
                 "sudo systemctl enable --now libvirtd",
                 "sudo usermod -aG kvm,libvirt $USER",
                 "# Log out and back in after changing groups.",
