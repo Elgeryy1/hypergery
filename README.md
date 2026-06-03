@@ -95,6 +95,23 @@ cd hypergery-ubuntu
 python3 -m pip install -e .
 ```
 
+If the repository is stored on a NAS or on a filesystem that does not support
+Python virtualenv symlinks reliably, keep the virtual environment on a local
+Linux filesystem and install the project from there:
+
+```bash
+python3 -m venv --copies ~/.venvs/hypergery
+source ~/.venvs/hypergery/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ./hypergery-ubuntu
+```
+
+Then run HyperGery from the activated environment:
+
+```bash
+python -m hypergery_ubuntu
+```
+
 Manual equivalent:
 
 ```bash

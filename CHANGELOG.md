@@ -15,6 +15,7 @@
 - Logs visibles con refresco manual y desplazamiento automatico al final.
 - Wizard de creacion de VM dividido en Identity, Resources, Storage & Network y Review, con validacion temprana y confirmacion final.
 - Confirmaciones mas explicitas para force off, delete, clone, settings y operaciones destructivas de snapshots.
+- Documentadas instrucciones para crear el entorno virtual fuera del repositorio cuando este vive en un NAS o filesystem sin soporte fiable de symlinks.
 
 Limitaciones intencionales mantenidas en v0.2.0:
 

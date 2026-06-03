@@ -1,5 +1,24 @@
 # Troubleshooting
 
+## Virtualenv Fails on a NAS or Filesystem Without Symlinks
+
+Some NAS mounts and shared filesystems do not handle Python virtualenv symlinks
+reliably. Create the virtual environment on a local Linux filesystem and use
+copies instead of symlinks:
+
+```bash
+python3 -m venv --copies ~/.venvs/hypergery
+source ~/.venvs/hypergery/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ./hypergery-ubuntu
+```
+
+If you are already inside `hypergery-ubuntu`, install the current directory:
+
+```bash
+python -m pip install -e .
+```
+
 ## `qemu-kvm` Has No Installation Candidate
 
 Some Ubuntu versions or derivatives package QEMU differently. Install the explicit packages:
