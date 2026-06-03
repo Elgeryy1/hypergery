@@ -20,7 +20,9 @@ It provides:
   - VM Templates sub-tab: create, delete, export, import VM templates; detail panel per selection.
   - Lab Templates sub-tab: create, delete, export, import lab templates; detail panel with planned VM count.
   - **Create VM from Template**: opens the VM wizard with OS type, RAM, vCPUs, disk, network, display pre-filled from the template; user provides VM name, boot ISO, and lab.
-  - **Create Lab from Template**: dialog pre-filled from template name, description, and network mode; planned VMs listed for reference; lab created via `LabStore`; `templates_used` recorded.
+  - **Create Lab from Template** (v0.4.0 wizard): 3-page `InstantiateLabTemplateWizard` — Lab Identity with live preview, ISO Mapping table with per-VM Browse, Review summary. Calls `instantiate_lab_template()` in a background worker; handles rollback errors from partial failures.
+  - **Edit VM/Lab Template**: `EditVmTemplateDialog` and `EditLabTemplateDialog` with add/remove planned VMs via `_AddPlannedVmDialog`.
+  - **Lab Duplicate with VM Cloning**: `DuplicateLabDialog` enables clone checkbox when VMs exist; passes `clone_vm_callback` and `vm_state_callback` from the real backend.
 - Qt backend workers so long-running host operations do not block the UI thread.
 
 The old Tkinter UI remains temporarily available in:

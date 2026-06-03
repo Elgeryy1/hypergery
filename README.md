@@ -39,21 +39,30 @@ HyperGery v0.3.0 extends the modern PySide6/Qt desktop UI with Lab Manager and T
 - Lab manifests are JSON files at `~/.local/share/hypergery/labs/<lab-id>/lab.json`.
 - `templates_used` field tracks which templates contributed to the lab.
 
-### Templates Manager (v0.3.0)
+### Templates Manager (v0.3.0+)
 
 - **VM Templates** describe reusable VM resource profiles (OS type, RAM, vCPUs, disk, network, display).
 - **Lab Templates** describe reusable lab structures with a list of planned VMs.
-- Create, delete, export, and import templates via the Qt UI or CLI.
+- Create, delete, export, import, and **edit** templates via the Qt UI or CLI.
 - **Create VM from Template**: opens the wizard with resource fields pre-filled; user chooses VM name, ISO, and lab.
-- **Create Lab from Template**: creates a lab with name, description, and network mode from the template; planned VMs are listed but not created automatically yet.
+- **Create Lab from Template** (v0.4.0): 3-page wizard — Lab Identity, ISO Mapping (per-VM ISO browse), and Review. Creates the lab and all planned VMs in a background worker with transactional rollback.
 - Template IDs are normalized slugs: 3-64 lowercase alphanumeric characters with dashes.
 - Templates stored at `~/.local/share/hypergery/templates/vm/` and `.../templates/lab/`.
 
+### Lab Automation (v0.4.0)
+
+- Planned VMs inside Lab Templates now carry `iso_required`, `role`, and `notes` fields.
+- VM Template defaults are merged automatically when a planned VM references a `template_id`.
+- `dry_run` mode validates the full instantiation plan without creating anything.
+- Partial failure triggers automatic rollback of created VMs and the lab manifest.
+- **Edit VM/Lab Template**: update any field in place without delete + re-create.
+- **Add/Remove Planned VMs** from the Edit Lab Template dialog.
+- **Duplicate Lab with VM Cloning**: Clone VMs checkbox enabled when VMs are present; clones qcow2 disks via `qemu-img convert`; requires all VMs shut off.
+
 ### Not yet implemented
 
-- Auto-create planned VMs from a lab template (requires per-VM ISO selection).
-- Edit templates in place (workaround: delete + re-create).
-- Clone VM disks during lab duplicate.
+- CLI `template update` and `template instantiate` commands.
+- Auto-create planned VMs via CLI (UI only).
 - Android Hub, NAS, IsardVDI, P2P, live migration, GPU shadowing.
 
 ## Requirements

@@ -1,22 +1,71 @@
 # HyperGery Validation
 
-## v0.3.0 RC — Automated Tests Status
+## v0.4.0 — Automated Tests Status
 
 Run with system Python (PySide6 not required):
 
 ```bash
-python3 -m unittest discover -s hypergery-ubuntu/tests
-# Expected: Ran 101 tests — OK (skipped=4)
+cd hypergery-ubuntu && python3 -m unittest discover -s tests
+# Expected: Ran 121 tests — OK (skipped=4)
 ```
 
 Run inside the venv (all tests including Qt):
 
 ```bash
-/home/gerard/.venvs/hypergery/bin/python -m unittest discover -s hypergery-ubuntu/tests
-# Expected: Ran 101 tests — OK
+cd hypergery-ubuntu && /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
+# Expected: Ran 121 tests — OK
 ```
 
-The 4 skipped tests are the Qt widget tests that require PySide6 in the runtime environment. They pass cleanly in the venv.
+The 4 skipped tests are Qt widget tests that require PySide6. They pass cleanly in the venv.
+
+New in v0.4.0: 20 additional tests covering `instantiate_lab_template` (dry_run, ISO validation, rollback, iso_required=False), `update_vm/lab_template`, planned VM validation (duplicate names, empty names), and `_resolve_planned_vm` precedence.
+
+## v0.4.0 — Manual Smoke Validated (2026-06-03)
+
+Run from the Qt UI (`python -m hypergery_ubuntu` inside the venv). Validated on a real Ubuntu KVM/libvirt host.
+
+### Lab Template Instantiation
+
+- [x] Create VM template `hg-v04-ubuntu-template` (RAM=4096, vCPUs=2, Disk=40)
+- [x] Create lab template `hg-v04-asr-template` (Network=isolated)
+- [x] Edit `hg-v04-asr-template` → Add planned VM `hg-v04-ad-server` (role=server, iso_required=true)
+- [x] Edit `hg-v04-asr-template` → Add planned VM `hg-v04-client` (role=client, iso_required=true)
+- [x] Lab template detail panel shows VMs count = 2
+- [x] Click **Create Lab from Template**
+  - [x] Page 1: Enter name — preview shows lab_id and subnet
+  - [x] Page 2: Browse ISO for both VMs; Next disabled without ISOs
+  - [x] Page 3: Review shows both VMs with ISOs and resources
+  - [x] Click **Create Lab** — activity log shows progress
+- [x] Instances tab shows lab with both VMs listed
+- [x] Lab details panel shows `templates_used = hg-v04-asr-template`
+- [x] Start `hg-v04-ad-server` → Open Console → installer appears
+- [x] Shutdown / Force Off
+
+### Edit VM Template
+
+- [x] Select VM template → Click **Edit** → Change RAM, add note → Save
+- [x] Detail panel updates with new values
+
+### Edit Lab Template + Planned VMs
+
+- [x] Select `hg-v04-asr-template` → Click **Edit** → Add/remove planned VMs → Save
+- [x] Detail panel reflects updated VM count
+
+### Lab Duplicate with VM Cloning
+
+- [x] Select lab with VMs → Click **Duplicate Lab** → Clone VMs checkbox is enabled
+- [ ] Clone VMs with disk cloning (not completed in this smoke — requires all VMs shut off simultaneously; defer to extended test)
+
+### Cleanup
+
+- [x] Delete lab and VMs; delete both templates
+- [x] Activity log records all operations; no tracebacks
+
+### Not smoke-tested (requires extended setup)
+
+- CLI `template update` / `template instantiate` (not yet implemented)
+- Rollback from partial VM creation failure with a real ISO
+- Duplicate Lab with Clone VMs end-to-end (disk clone path)
 
 ## v0.3.0 — Manual Smoke Validated (2026-06-03)
 

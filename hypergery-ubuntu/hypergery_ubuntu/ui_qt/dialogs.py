@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -21,6 +22,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWizard,
     QWizardPage,
@@ -422,8 +426,11 @@ class DuplicateLabDialog(QDialog):
         self.preview_label.setObjectName("mutedLabel")
         self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.preview_label.setWordWrap(True)
-        self.clone_vms = QCheckBox("Clone VMs too (disk cloning not yet implemented)")
-        self.clone_vms.setEnabled(False)
+        has_vms = bool(source_lab.get("vms"))
+        self.clone_vms = QCheckBox("Clone VMs too (requires all VMs shut off; clones qcow2 disks)")
+        self.clone_vms.setEnabled(has_vms)
+        if not has_vms:
+            self.clone_vms.setToolTip("No VMs in this lab to clone.")
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -470,7 +477,11 @@ class DuplicateLabDialog(QDialog):
 
     def values(self) -> dict:
         preview = self.current_preview()
-        return {"new_name": self.name_edit.text().strip(), "lab_id": preview["lab_id"], "clone_vms": False}
+        return {
+            "new_name": self.name_edit.text().strip(),
+            "lab_id": preview["lab_id"],
+            "clone_vms": self.clone_vms.isChecked() and self.clone_vms.isEnabled(),
+        }
 
 
 class SettingsDialog(QDialog):
@@ -1060,4 +1071,429 @@ class CreateLabFromTemplateDialog(QDialog):
             "description": self.description_edit.text().strip(),
             "network_mode": self.network_mode.currentText(),
             "lab_id": preview["lab_id"],
+        }
+
+
+# ---------------------------------------------------------------------------
+# InstantiateLabTemplateWizard — Fase 2
+# ---------------------------------------------------------------------------
+
+class _LabIdentityPage(QWizardPage):
+    def __init__(self, template: dict, existing_lab_ids: set, existing_subnets: set) -> None:
+        super().__init__()
+        self.template = template
+        self.existing_lab_ids = existing_lab_ids
+        self.existing_subnets = existing_subnets
+        self.setTitle("Lab Identity")
+        self.setSubTitle("Choose a name for the new lab instance.")
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText(f"{template.get('name', 'Lab')} Instance")
+        self.description_edit = QLineEdit(str(template.get("description", "")))
+        self.network_mode = QComboBox()
+        self.network_mode.addItems(["nat", "isolated"])
+        tmpl_net = str(template.get("network_mode", "nat"))
+        net_idx = self.network_mode.findText(tmpl_net)
+        if net_idx >= 0:
+            self.network_mode.setCurrentIndex(net_idx)
+        self.preview_label = QLabel("")
+        self.preview_label.setObjectName("mutedLabel")
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form = QFormLayout(self)
+        form.addRow("Template", QLabel(f"{template.get('name', '')} ({template.get('template_id', '')})"))
+        form.addRow("New lab name *", self.name_edit)
+        form.addRow("Description", self.description_edit)
+        form.addRow("Network mode", self.network_mode)
+        form.addRow("Preview", self.preview_label)
+        self.name_edit.textChanged.connect(self._refresh)
+        self.network_mode.currentTextChanged.connect(self._refresh)
+        self._refresh()
+
+    def _preview(self) -> dict:
+        return build_lab_preview(
+            self.name_edit.text(),
+            self.network_mode.currentText(),
+            self.existing_lab_ids,
+            self.existing_subnets,
+        )
+
+    def _refresh(self) -> None:
+        p = self._preview()
+        if p["valid"]:
+            self.preview_label.setText(
+                details_block(
+                    ("Lab ID", p["lab_id"]),
+                    ("Network", p["network_id"]),
+                    ("Bridge", p["bridge_name"]),
+                    ("Subnet", p["subnet"]),
+                )
+            )
+        else:
+            self.preview_label.setText(p["error"] or "Enter a valid lab name.")
+        self.completeChanged.emit()
+
+    def isComplete(self) -> bool:
+        return bool(self._preview()["valid"])
+
+    def lab_name(self) -> str:
+        return self.name_edit.text().strip()
+
+    def lab_description(self) -> str:
+        return self.description_edit.text().strip()
+
+    def lab_id(self) -> str:
+        return self._preview()["lab_id"]
+
+
+class _IsoMappingPage(QWizardPage):
+    def __init__(self, template: dict) -> None:
+        super().__init__()
+        self.setTitle("ISO Mapping")
+        self.setSubTitle(
+            "Select a boot ISO for each VM that requires one. "
+            "VMs with ISO Required = No can be created without a boot image."
+        )
+        vms = template.get("vms", [])
+        self.vm_rows: list[dict] = []
+        self.iso_edits: list[QLineEdit] = []
+
+        self.table = QTableWidget(len(vms), 5)
+        self.table.setHorizontalHeaderLabels(["ISO Path", "VM Name", "Role", "RAM MiB", "Required"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+
+        for row, vm in enumerate(vms):
+            iso_edit = QLineEdit()
+            iso_edit.setPlaceholderText("/path/to/ubuntu.iso")
+            iso_edit.textChanged.connect(self.completeChanged)
+            browse_btn = QPushButton("…")
+            browse_btn.setFixedWidth(30)
+            browse_btn.clicked.connect(lambda _checked, e=iso_edit: self._browse(e))
+            iso_cell = QHBoxLayout()
+            iso_cell.setContentsMargins(2, 2, 2, 2)
+            iso_cell.addWidget(iso_edit)
+            iso_cell.addWidget(browse_btn)
+            iso_widget = QFrame()
+            iso_widget.setLayout(iso_cell)
+            self.table.setCellWidget(row, 0, iso_widget)
+            self.table.setItem(row, 1, QTableWidgetItem(str(vm.get("name", ""))))
+            self.table.setItem(row, 2, QTableWidgetItem(str(vm.get("role", ""))))
+            self.table.setItem(row, 3, QTableWidgetItem(str(vm.get("ram_mib", ""))))
+            required_text = "Yes" if vm.get("iso_required", True) else "No"
+            req_item = QTableWidgetItem(required_text)
+            req_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 4, req_item)
+            self.iso_edits.append(iso_edit)
+            self.vm_rows.append({"name": str(vm.get("name", "")), "iso_required": vm.get("iso_required", True)})
+            self.table.setRowHeight(row, 44)
+
+        layout = QVBoxLayout(self)
+        if not vms:
+            layout.addWidget(QLabel("This template has no planned VMs. The lab structure will be created."))
+        else:
+            layout.addWidget(self.table)
+
+    def _browse(self, edit: QLineEdit) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select ISO", "", "ISO images (*.iso);;All files (*)", "", FILE_DIALOG_OPTIONS
+        )
+        if path:
+            edit.setText(path)
+
+    def isComplete(self) -> bool:
+        for row_info, iso_edit in zip(self.vm_rows, self.iso_edits):
+            if row_info["iso_required"] and not iso_edit.text().strip():
+                return False
+        return True
+
+    def iso_map(self) -> dict:
+        return {row_info["name"]: iso_edit.text().strip()
+                for row_info, iso_edit in zip(self.vm_rows, self.iso_edits)}
+
+
+class _InstantiateReviewPage(QWizardPage):
+    def __init__(self, template: dict, identity_page: _LabIdentityPage, iso_page: _IsoMappingPage) -> None:
+        super().__init__()
+        self.template = template
+        self.identity_page = identity_page
+        self.iso_page = iso_page
+        self.setTitle("Review")
+        self.setSubTitle("Confirm the lab and VMs that will be created.")
+        self.summary = QTextEdit()
+        self.summary.setReadOnly(True)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.summary)
+
+    def initializePage(self) -> None:
+        vms = self.template.get("vms", [])
+        iso_map = self.iso_page.iso_map()
+        lines = [
+            f"Template:    {self.template.get('name', '')} ({self.template.get('template_id', '')})",
+            f"Lab name:    {self.identity_page.lab_name()}",
+            f"Lab ID:      {self.identity_page.lab_id()}",
+            f"Network:     {self.template.get('network_mode', 'nat')}",
+            f"Description: {self.identity_page.lab_description()}",
+            "",
+            f"VMs to create ({len(vms)}):",
+        ]
+        for vm in vms:
+            name = str(vm.get("name", ""))
+            iso = iso_map.get(name, "")
+            role = vm.get("role", "")
+            role_str = f"  role={role}" if role else ""
+            lines.append(
+                f"  • {name}{role_str}  RAM={vm.get('ram_mib', '?')}MiB"
+                f"  vCPUs={vm.get('vcpus', '?')}  Disk={vm.get('disk_gb', '?')}GB"
+            )
+            lines.append(f"    ISO: {iso or '(none)'}")
+        if not vms:
+            lines.append("  (no planned VMs — lab structure only)")
+        lines += [
+            "",
+            "Click 'Create Lab' to start. VMs are created sequentially.",
+            "If creation fails partway, already-created VMs will be removed.",
+        ]
+        self.summary.setPlainText("\n".join(lines))
+
+
+class InstantiateLabTemplateWizard(QWizard):
+    def __init__(self, template: dict, existing_lab_ids: set, existing_subnets: set, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Create Lab from Template: {template.get('template_id', '')}")
+        self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
+        self.identity_page = _LabIdentityPage(template, existing_lab_ids, existing_subnets)
+        self.iso_page = _IsoMappingPage(template)
+        self.review_page = _InstantiateReviewPage(template, self.identity_page, self.iso_page)
+        self.addPage(self.identity_page)
+        self.addPage(self.iso_page)
+        self.addPage(self.review_page)
+        self.setButtonText(QWizard.WizardButton.FinishButton, "Create Lab")
+        self.resize(760, 500)
+
+    def values(self) -> dict:
+        return {
+            "lab_name": self.identity_page.lab_name(),
+            "lab_description": self.identity_page.lab_description(),
+            "lab_id": self.identity_page.lab_id(),
+            "vm_iso_map": self.iso_page.iso_map(),
+        }
+
+
+# ---------------------------------------------------------------------------
+# EditVmTemplateDialog — Fase 3
+# ---------------------------------------------------------------------------
+
+class EditVmTemplateDialog(QDialog):
+    def __init__(self, template: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.template = template
+        self.setWindowTitle(f"Edit VM Template: {template.get('template_id', '')}")
+        self.name_edit = QLineEdit(str(template.get("name", "")))
+        self.os_type = QComboBox()
+        self.os_type.addItems(["linux", "windows", "other"])
+        idx = self.os_type.findText(str(template.get("os_type", "linux")))
+        if idx >= 0:
+            self.os_type.setCurrentIndex(idx)
+        self.ram = QSpinBox()
+        self.ram.setRange(256, 262144)
+        self.ram.setSingleStep(512)
+        self.ram.setSuffix(" MiB")
+        self.ram.setValue(int(template.get("ram_mib", 4096)))
+        self.vcpus = QSpinBox()
+        self.vcpus.setRange(1, 128)
+        self.vcpus.setValue(int(template.get("vcpus", 2)))
+        self.disk = QSpinBox()
+        self.disk.setRange(1, 65536)
+        self.disk.setSuffix(" GB")
+        self.disk.setValue(int(template.get("disk_gb", 40)))
+        self.network_mode = QComboBox()
+        self.network_mode.addItems(["nat", "isolated"])
+        net_idx = self.network_mode.findText(str(template.get("network_mode", "nat")))
+        if net_idx >= 0:
+            self.network_mode.setCurrentIndex(net_idx)
+        self.display = QComboBox()
+        self.display.addItems(["spice", "vnc"])
+        disp_idx = self.display.findText(str(template.get("display", "spice")))
+        if disp_idx >= 0:
+            self.display.setCurrentIndex(disp_idx)
+        self.notes_edit = QTextEdit(str(template.get("notes", "")))
+        self.notes_edit.setMaximumHeight(80)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form = QFormLayout()
+        form.addRow("Template ID", QLabel(str(template.get("template_id", ""))))
+        form.addRow("Name", self.name_edit)
+        form.addRow("OS type", self.os_type)
+        form.addRow("RAM", self.ram)
+        form.addRow("vCPUs", self.vcpus)
+        form.addRow("Disk", self.disk)
+        form.addRow("Network", self.network_mode)
+        form.addRow("Display", self.display)
+        form.addRow("Notes", self.notes_edit)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.resize(540, 420)
+
+    def values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip() or self.template.get("template_id", ""),
+            "os_type": self.os_type.currentText(),
+            "ram_mib": self.ram.value(),
+            "vcpus": self.vcpus.value(),
+            "disk_gb": self.disk.value(),
+            "network_mode": self.network_mode.currentText(),
+            "display": self.display.currentText(),
+            "notes": self.notes_edit.toPlainText().strip(),
+        }
+
+
+# ---------------------------------------------------------------------------
+# EditLabTemplateDialog — Fase 3
+# ---------------------------------------------------------------------------
+
+class _AddPlannedVmDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Add Planned VM")
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("server-01")
+        self.role_edit = QLineEdit()
+        self.role_edit.setPlaceholderText("server / client / router (optional)")
+        self.os_type = QComboBox()
+        self.os_type.addItems(["linux", "windows", "other"])
+        self.ram = QSpinBox()
+        self.ram.setRange(256, 262144)
+        self.ram.setSingleStep(512)
+        self.ram.setSuffix(" MiB")
+        self.ram.setValue(2048)
+        self.vcpus = QSpinBox()
+        self.vcpus.setRange(1, 128)
+        self.vcpus.setValue(2)
+        self.disk = QSpinBox()
+        self.disk.setRange(1, 65536)
+        self.disk.setSuffix(" GB")
+        self.disk.setValue(20)
+        self.display = QComboBox()
+        self.display.addItems(["spice", "vnc"])
+        self.iso_required = QCheckBox("ISO required at instantiation time")
+        self.iso_required.setChecked(True)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form = QFormLayout()
+        form.addRow("VM name *", self.name_edit)
+        form.addRow("Role", self.role_edit)
+        form.addRow("OS type", self.os_type)
+        form.addRow("RAM", self.ram)
+        form.addRow("vCPUs", self.vcpus)
+        form.addRow("Disk", self.disk)
+        form.addRow("Display", self.display)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.iso_required)
+        layout.addWidget(buttons)
+        self.resize(440, 360)
+
+    def values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip(),
+            "role": self.role_edit.text().strip(),
+            "os_type": self.os_type.currentText(),
+            "ram_mib": self.ram.value(),
+            "vcpus": self.vcpus.value(),
+            "disk_gb": self.disk.value(),
+            "display": self.display.currentText(),
+            "iso_required": self.iso_required.isChecked(),
+        }
+
+
+class EditLabTemplateDialog(QDialog):
+    def __init__(self, template: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.template = template
+        self.setWindowTitle(f"Edit Lab Template: {template.get('template_id', '')}")
+        self.name_edit = QLineEdit(str(template.get("name", "")))
+        self.description_edit = QLineEdit(str(template.get("description", "")))
+        self.network_mode = QComboBox()
+        self.network_mode.addItems(["nat", "isolated"])
+        net_idx = self.network_mode.findText(str(template.get("network_mode", "nat")))
+        if net_idx >= 0:
+            self.network_mode.setCurrentIndex(net_idx)
+        self.notes_edit = QTextEdit(str(template.get("notes", "")))
+        self.notes_edit.setMaximumHeight(80)
+
+        vms = template.get("vms", [])
+        self.vm_list = QListWidget()
+        for vm in vms:
+            self.vm_list.addItem(f"{vm.get('name', '?')}  RAM={vm.get('ram_mib', '?')}MiB  role={vm.get('role', '')}")
+        self._vms: list[dict] = list(vms)
+        add_vm_btn = QPushButton("Add Planned VM…")
+        remove_vm_btn = QPushButton("Remove Selected")
+        add_vm_btn.clicked.connect(self._add_vm)
+        remove_vm_btn.clicked.connect(self._remove_vm)
+        vm_buttons = QHBoxLayout()
+        vm_buttons.addWidget(add_vm_btn)
+        vm_buttons.addWidget(remove_vm_btn)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        form = QFormLayout()
+        form.addRow("Template ID", QLabel(str(template.get("template_id", ""))))
+        form.addRow("Name", self.name_edit)
+        form.addRow("Description", self.description_edit)
+        form.addRow("Network mode", self.network_mode)
+        form.addRow("Notes", self.notes_edit)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(QLabel("Planned VMs:"))
+        layout.addWidget(self.vm_list)
+        layout.addLayout(vm_buttons)
+        layout.addWidget(buttons)
+        self.resize(600, 500)
+
+    def _add_vm(self) -> None:
+        dialog = _AddPlannedVmDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            vm = dialog.values()
+            if not vm["name"]:
+                QMessageBox.warning(self, "Invalid name", "VM name cannot be empty.")
+                return
+            existing_names = {v["name"] for v in self._vms}
+            if vm["name"] in existing_names:
+                QMessageBox.warning(self, "Duplicate name", f"A planned VM named '{vm['name']}' already exists.")
+                return
+            self._vms.append(vm)
+            role = vm.get("role", "")
+            self.vm_list.addItem(f"{vm['name']}  RAM={vm['ram_mib']}MiB  role={role}")
+
+    def _remove_vm(self) -> None:
+        row = self.vm_list.currentRow()
+        if row < 0:
+            return
+        self._vms.pop(row)
+        self.vm_list.takeItem(row)
+
+    def values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip() or self.template.get("template_id", ""),
+            "description": self.description_edit.text().strip(),
+            "network_mode": self.network_mode.currentText(),
+            "vms": list(self._vms),
+            "notes": self.notes_edit.toPlainText().strip(),
         }

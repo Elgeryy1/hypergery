@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.4.0 - Lab Automation
+
+HyperGery v0.4.0 — automatización de entornos de laboratorio.
+
+Cambios implementados en v0.4:
+
+- Modelo de Planned VMs ampliado: campos `iso_required` (por defecto `true`), `role`, `notes`; validación de nombres duplicados; validación de formato de nombre de VM.
+- `TemplateStore.update_vm_template()` y `update_lab_template()`: edición in-place de plantillas sin borrar y recrear.
+- `TemplateStore._resolve_planned_vm()`: resuelve defaults de VM Template referenciado y los combina con overrides de la planned VM.
+- `TemplateStore.instantiate_lab_template()`: crea lab real y todas las VMs planificadas secuencialmente; `dry_run=True` valida sin crear nada; rollback transaccional si falla a mitad.
+- UI Wizard `InstantiateLabTemplateWizard` (3 páginas): Lab Identity con preview, ISO Mapping con Browse por VM, Review completo.
+- `create_lab_from_template()` usa el wizard y ejecuta `instantiate_lab_template()` en un worker en background; surfacea errores y warnings de rollback parcial.
+- `EditVmTemplateDialog`: edición de todos los campos de VM Template excepto template_id y schema_version.
+- `EditLabTemplateDialog`: edición de nombre, descripción, red y notas; gestión de planned VMs (add/remove via `_AddPlannedVmDialog`).
+- `DuplicateLabDialog`: checkbox Clone VMs now enabled cuando el lab tiene VMs; `duplicate_lab()` pasa callbacks reales del backend cuando clone_vms=True, ejecutado en worker.
+- 20 nuevos tests: dry_run, ISO faltante, rollback parcial, update, validación de planned VMs, resolución de defaults con y sin VM Template.
+- Docs: `docs/TEMPLATES.md` reescrito completo; nuevo `docs/LAB_AUTOMATION.md` con explicación del flujo de instantiation, dry-run, rollback, edición y smoke test.
+
+Pendiente en v0.4 (roadmap):
+
+- CLI `template update` y `template instantiate`.
+- Vista de topología de lab.
+- Flujo mejorado template-to-ISO para reutilizar ISO en varias VMs.
+- Edición inline de campos de planned VMs (actualmente: remove + re-add).
+
 ## v0.3.0 - Labs and Templates
 
 HyperGery v0.3.0 — Lab Manager & Templates Manager.
