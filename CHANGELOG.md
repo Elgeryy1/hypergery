@@ -31,7 +31,7 @@ No implementar todavia en v0.3:
 - Migracion en caliente.
 - GPU shadowing.
 
-Cambios iniciales implementados:
+Cambios implementados:
 
 - Nuevo modulo `hypergery_ubuntu.labs` con `LabStore`, migracion a `schema_version: 2`, export/import portable y duplicacion segura de labs.
 - Nuevo modulo `hypergery_ubuntu.templates` con `TemplateStore`, plantillas de VM y plantillas de laboratorio.
@@ -42,6 +42,20 @@ Cambios iniciales implementados:
 - Preview de nuevo lab y duplicado con `lab_id`, red libvirt, bridge y subred antes de crear.
 - Filtro de lista de VMs entre `All VMs` y `Selected Lab`, con empty state `No VMs in this lab yet` y acceso a `New VM in Lab`.
 - Clonado/borrado masivo de VMs desde dialogs de labs queda explicitamente deshabilitado hasta conectar el flujo real de discos.
+- Templates Manager UI Qt conectado a `TemplateStore` real: tab `Templates` con sub-tabs `VM Templates` y `Lab Templates`.
+- Lista real de VM Templates con columnas Name, ID, OS, RAM, vCPUs, Disk, Net, Display.
+- Lista real de Lab Templates con columnas Name, ID, Net, VMs, Desc/Notes.
+- Panel de detalles al seleccionar plantilla (nombre, id, recursos, red, notas).
+- Dialogo `New VM Template` con Name, OS type, RAM, vCPUs, Disk, Network, Display, Notes y preview de template_id; Create desactivado si invalido.
+- Dialogo `New Lab Template` con Name, Description, Network, Notes y preview de template_id; Create desactivado si invalido.
+- Dialogo `Delete VM Template` con confirmacion escribiendo template_id.
+- Dialogo `Delete Lab Template` con confirmacion escribiendo template_id.
+- Export/Import de VM Templates y Lab Templates con `QFileDialog`, validacion JSON y manejo de colisiones.
+- Boton `Create VM from Template` deshabilitado con tooltip "Coming in next release".
+- Boton `Create Lab from Template` deshabilitado con tooltip "Coming in next release".
+- Activity log registra todas las operaciones de plantillas.
+- `refresh_all` carga plantillas junto con VMs y labs en el arranque.
+- Tests unitarios para validacion de template_id, conteo de VMs en lab template, validacion de campos, import invalido, delete inexistente y no sobreescritura en import.
 
 ## v0.2.0 - Modern PySide6 UI
 

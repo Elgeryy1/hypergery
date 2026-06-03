@@ -234,6 +234,22 @@ class TemplateStore:
             raise HyperGeryError(f"Lab template does not exist: {template_id}")
         path.unlink()
 
+    def export_vm_template(self, template_id: str, output_path: str | Path) -> Path:
+        template = self.get_vm_template(template_id)
+        output = Path(output_path).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        self.write_json(output, template)
+        return output
+
+    def import_vm_template(self, input_path: str | Path) -> dict:
+        path = Path(input_path).expanduser()
+        template = validate_vm_template(self.read_json(path))
+        destination = self.vm_path(template["template_id"])
+        if destination.exists():
+            raise HyperGeryError(f"VM template already exists: {template['template_id']}")
+        self.write_json(destination, template)
+        return template
+
     def export_lab_template(self, template_id: str, output_path: str | Path) -> Path:
         template = self.get_lab_template(template_id)
         output = Path(output_path).expanduser()

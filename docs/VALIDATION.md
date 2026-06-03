@@ -122,3 +122,50 @@ Repeat CLI acceptance:
 ./scripts/preflight.sh
 ./scripts/acceptance-ubuntu.sh --iso /path/to/ubuntu-or-debian.iso --name hg-acceptance-ubuntu-test
 ```
+
+## Templates Manager smoke test (v0.3.0)
+
+Run this after starting the Qt UI (`python -m hypergery_ubuntu`).
+
+1. Open the **Templates** tab in the left panel.
+
+2. **Create VM template**
+   - Click **New VM Template**.
+   - Enter Name: `HG v03 Ubuntu Template`.
+   - Verify Template ID preview shows `hg-v03-ubuntu-template`.
+   - Set OS=linux, RAM=4096, vCPUs=2, Disk=40, Network=nat, Display=spice.
+   - Click **Create** — template appears in the VM Templates table.
+
+3. **Create Lab template**
+   - Click **New Lab Template**.
+   - Enter Name: `HG v03 ASR Template`.
+   - Verify Template ID preview shows `hg-v03-asr-template`.
+   - Set Network=isolated.
+   - Click **Create** — template appears in the Lab Templates table.
+
+4. **Select and inspect**
+   - Click on `hg-v03-ubuntu-template` — detail panel shows all fields.
+   - Click on `hg-v03-asr-template` — detail panel updates.
+
+5. **Export VM template**
+   - Select `hg-v03-ubuntu-template`.
+   - Click **Export** — choose a path like `/tmp/hg-v03-ubuntu-template.json`.
+   - File is created with valid JSON.
+
+6. **Import VM template**
+   - Delete `hg-v03-ubuntu-template` (type the ID in the confirm dialog).
+   - Click **Import** — select `/tmp/hg-v03-ubuntu-template.json`.
+   - Template reappears in the table.
+
+7. **Import collision**
+   - With `hg-v03-ubuntu-template` present, click **Import** and select the same file.
+   - An error is shown: "VM template already exists" — no silent overwrite.
+
+8. **Delete templates**
+   - Select each test template and delete it by typing the template_id.
+   - Tables are empty after deletion.
+
+9. **Refresh**
+   - Click **Refresh** — tables show the current state from disk.
+
+Expected: no tracebacks, activity log records each operation, UI stays responsive.

@@ -33,13 +33,18 @@ from PySide6.QtWidgets import (
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary, now_iso
 from ..labs import LabStore
+from ..templates import TemplateStore
 from .dialogs import (
     CloneDialog,
     DeleteConfirmationDialog,
     DeleteLabDialog,
+    DeleteLabTemplateDialog,
+    DeleteVmTemplateDialog,
     DuplicateLabDialog,
     FILE_DIALOG_OPTIONS,
     NewLabDialog,
+    NewLabTemplateDialog,
+    NewVmTemplateDialog,
     RenameLabDialog,
     SettingsDialog,
     SnapshotDialog,
@@ -63,11 +68,16 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.backend = HyperGeryBackend()
+        self.template_store = TemplateStore(self.backend.data_dir, backend=self.backend, lab_store=self.lab_store())
         self.all_vms: list[VmSummary] = []
         self.vms: list[VmSummary] = []
         self.selected_vm: VmSummary | None = None
         self.labs: list[dict[str, Any]] = []
         self.selected_lab: dict[str, Any] | None = None
+        self.vm_templates: list[dict] = []
+        self.lab_templates: list[dict] = []
+        self.selected_vm_template: dict | None = None
+        self.selected_lab_template: dict | None = None
         self.jobs: list[BackendJob] = []
         self.completed_jobs: list[BackendJob] = []
         self.setWindowTitle(f"HyperGery v{APP_DISPLAY_VERSION}")
@@ -148,9 +158,17 @@ class MainWindow(QMainWindow):
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
-        layout = QVBoxLayout(panel)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.main_tabs = QTabWidget()
+        panel_layout.addWidget(self.main_tabs)
+
+        instances_tab = QWidget()
+        layout = QVBoxLayout(instances_tab)
         layout.setContentsMargins(18, 18, 12, 18)
         layout.setSpacing(12)
+        
         header = QHBoxLayout()
         title = QLabel("Virtual Machines")
         title.setObjectName("sectionTitle")
@@ -224,6 +242,111 @@ class MainWindow(QMainWindow):
         lab_actions.addWidget(self.export_lab_button, 2, 0)
         lab_actions.addWidget(self.import_lab_button, 2, 1)
         layout.addLayout(lab_actions)
+
+        self.main_tabs.addTab(instances_tab, "Instances")
+
+        templates_tab = QWidget()
+        templates_layout = QVBoxLayout(templates_tab)
+        templates_layout.setContentsMargins(18, 18, 12, 18)
+        templates_layout.setSpacing(12)
+
+        self.templates_tabs = QTabWidget()
+        templates_layout.addWidget(self.templates_tabs)
+
+        # --- VM Templates Tab ---
+        vm_templates_tab = QWidget()
+        vm_templates_layout = QVBoxLayout(vm_templates_tab)
+        vm_templates_layout.setContentsMargins(8, 8, 8, 8)
+        vm_templates_layout.setSpacing(8)
+
+        self.vm_template_table = QTableWidget(0, 8)
+        self.vm_template_table.setHorizontalHeaderLabels(["Name", "ID", "OS", "RAM", "vCPUs", "Disk", "Net", "Display"])
+        self.vm_template_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.vm_template_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.vm_template_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.vm_template_table.setAlternatingRowColors(True)
+        self.vm_template_table.verticalHeader().setVisible(False)
+        self.vm_template_table.horizontalHeader().setStretchLastSection(True)
+        self.vm_template_table.itemSelectionChanged.connect(self.on_vm_template_selection_changed)
+        vm_templates_layout.addWidget(self.vm_template_table)
+
+        vm_template_actions = QGridLayout()
+        vm_template_actions.setHorizontalSpacing(8)
+        vm_template_actions.setVerticalSpacing(8)
+        self.new_vm_template_button = self._button("New VM Template", self.new_vm_template, primary=True)
+        self.delete_vm_template_button = self._button("Delete", self.delete_vm_template, danger=True)
+        self.export_vm_template_button = self._button("Export", self.export_vm_template)
+        self.import_vm_template_button = self._button("Import", self.import_vm_template)
+        self.refresh_vm_templates_button = self._button("Refresh", self.refresh_templates)
+        self.create_vm_from_template_button = self._button("Create VM from Template", lambda: None)
+        self.create_vm_from_template_button.setEnabled(False)
+        self.create_vm_from_template_button.setToolTip("Coming in next release")
+
+        vm_template_actions.addWidget(self.new_vm_template_button, 0, 0)
+        vm_template_actions.addWidget(self.import_vm_template_button, 0, 1)
+        vm_template_actions.addWidget(self.refresh_vm_templates_button, 0, 2)
+        vm_template_actions.addWidget(self.delete_vm_template_button, 1, 0)
+        vm_template_actions.addWidget(self.export_vm_template_button, 1, 1)
+        vm_template_actions.addWidget(self.create_vm_from_template_button, 1, 2)
+
+        vm_templates_layout.addLayout(vm_template_actions)
+
+        self.vm_template_detail = QTextEdit()
+        self.vm_template_detail.setReadOnly(True)
+        self.vm_template_detail.setPlaceholderText("Select a VM template to see details.")
+        self.vm_template_detail.setMaximumHeight(120)
+        vm_templates_layout.addWidget(self.vm_template_detail)
+
+        self.templates_tabs.addTab(vm_templates_tab, "VM Templates")
+
+        # --- Lab Templates Tab ---
+        lab_templates_tab = QWidget()
+        lab_templates_layout = QVBoxLayout(lab_templates_tab)
+        lab_templates_layout.setContentsMargins(8, 8, 8, 8)
+        lab_templates_layout.setSpacing(8)
+
+        self.lab_template_table = QTableWidget(0, 5)
+        self.lab_template_table.setHorizontalHeaderLabels(["Name", "ID", "Net", "VMs", "Desc/Notes"])
+        self.lab_template_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.lab_template_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.lab_template_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.lab_template_table.setAlternatingRowColors(True)
+        self.lab_template_table.verticalHeader().setVisible(False)
+        self.lab_template_table.horizontalHeader().setStretchLastSection(True)
+        self.lab_template_table.itemSelectionChanged.connect(self.on_lab_template_selection_changed)
+        lab_templates_layout.addWidget(self.lab_template_table)
+
+        lab_template_actions = QGridLayout()
+        lab_template_actions.setHorizontalSpacing(8)
+        lab_template_actions.setVerticalSpacing(8)
+        self.new_lab_template_button = self._button("New Lab Template", self.new_lab_template, primary=True)
+        self.delete_lab_template_button = self._button("Delete", self.delete_lab_template, danger=True)
+        self.export_lab_template_button = self._button("Export", self.export_action_lab_template)
+        self.import_lab_template_button = self._button("Import", self.import_action_lab_template)
+        self.refresh_lab_templates_button = self._button("Refresh", self.refresh_templates)
+        self.create_lab_from_template_button = self._button("Create Lab from Template", lambda: None)
+        self.create_lab_from_template_button.setEnabled(False)
+        self.create_lab_from_template_button.setToolTip("Coming in next release")
+
+        lab_template_actions.addWidget(self.new_lab_template_button, 0, 0)
+        lab_template_actions.addWidget(self.import_lab_template_button, 0, 1)
+        lab_template_actions.addWidget(self.refresh_lab_templates_button, 0, 2)
+        lab_template_actions.addWidget(self.delete_lab_template_button, 1, 0)
+        lab_template_actions.addWidget(self.export_lab_template_button, 1, 1)
+        lab_template_actions.addWidget(self.create_lab_from_template_button, 1, 2)
+
+        lab_templates_layout.addLayout(lab_template_actions)
+
+        self.lab_template_detail = QTextEdit()
+        self.lab_template_detail.setReadOnly(True)
+        self.lab_template_detail.setPlaceholderText("Select a lab template to see details.")
+        self.lab_template_detail.setMaximumHeight(120)
+        lab_templates_layout.addWidget(self.lab_template_detail)
+
+        self.templates_tabs.addTab(lab_templates_tab, "Lab Templates")
+
+        self.main_tabs.addTab(templates_tab, "Templates")
+        
         return panel
 
     def _build_vm_empty_state(self) -> QWidget:
@@ -440,6 +563,16 @@ class MainWindow(QMainWindow):
             self.export_lab_button,
             self.import_lab_button,
             self.new_vm_in_lab_button,
+            self.new_vm_template_button,
+            self.delete_vm_template_button,
+            self.export_vm_template_button,
+            self.import_vm_template_button,
+            self.refresh_vm_templates_button,
+            self.new_lab_template_button,
+            self.delete_lab_template_button,
+            self.export_lab_template_button,
+            self.import_lab_template_button,
+            self.refresh_lab_templates_button,
         ):
             button.setEnabled(not busy)
         if busy:
@@ -486,6 +619,8 @@ class MainWindow(QMainWindow):
             ("vms", self.backend.list_vms),
             ("labs", self.backend.load_labs),
             ("logs", self.backend.recent_logs),
+            ("vm_templates", self.template_store.list_vm_templates),
+            ("lab_templates", self.template_store.list_lab_templates),
         )
         for key, callback in jobs:
             try:
@@ -513,6 +648,10 @@ class MainWindow(QMainWindow):
             self.render_logs(overview["logs"])
         elif "logs" in errors:
             self.render_logs(f"Logs unavailable: {errors['logs']}")
+        if "vm_templates" in overview:
+            self.render_vm_templates(overview["vm_templates"])
+        if "lab_templates" in overview:
+            self.render_lab_templates(overview["lab_templates"])
         self.render_selected()
         if not errors:
             self.status.showMessage("Ready")
@@ -1120,3 +1259,263 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.run_operation(f"Deleting {vm.name}", lambda: self.backend.delete_vm(vm.name, delete_disks=dialog.delete_disks()))
+
+    # ------------------------------------------------------------------ #
+    # Templates                                                            #
+    # ------------------------------------------------------------------ #
+
+    def on_vm_template_selection_changed(self) -> None:
+        indexes = self.vm_template_table.selectionModel().selectedRows()
+        if not indexes:
+            self.selected_vm_template = None
+        else:
+            row = indexes[0].row()
+            self.selected_vm_template = self.vm_templates[row] if 0 <= row < len(self.vm_templates) else None
+        self.render_vm_template_detail()
+
+    def on_lab_template_selection_changed(self) -> None:
+        indexes = self.lab_template_table.selectionModel().selectedRows()
+        if not indexes:
+            self.selected_lab_template = None
+        else:
+            row = indexes[0].row()
+            self.selected_lab_template = self.lab_templates[row] if 0 <= row < len(self.lab_templates) else None
+        self.render_lab_template_detail()
+
+    def render_vm_template_detail(self) -> None:
+        tmpl = self.selected_vm_template
+        if tmpl is None:
+            self.vm_template_detail.clear()
+            return
+        self.vm_template_detail.setPlainText(
+            details_block(
+                ("Name", str(tmpl.get("name", ""))),
+                ("Template ID", str(tmpl.get("template_id", ""))),
+                ("OS Type", str(tmpl.get("os_type", ""))),
+                ("RAM", format_mib(tmpl.get("ram_mib"))),
+                ("vCPUs", str(tmpl.get("vcpus", ""))),
+                ("Disk", f"{tmpl.get('disk_gb', '')} GiB"),
+                ("Network", str(tmpl.get("network_mode", ""))),
+                ("Display", str(tmpl.get("display", ""))),
+                ("Notes", str(tmpl.get("notes", ""))),
+            )
+        )
+
+    def render_lab_template_detail(self) -> None:
+        tmpl = self.selected_lab_template
+        if tmpl is None:
+            self.lab_template_detail.clear()
+            return
+        self.lab_template_detail.setPlainText(
+            details_block(
+                ("Name", str(tmpl.get("name", ""))),
+                ("Template ID", str(tmpl.get("template_id", ""))),
+                ("Network", str(tmpl.get("network_mode", ""))),
+                ("VMs", str(len(tmpl.get("vms", [])))),
+                ("Description", str(tmpl.get("description", ""))),
+                ("Notes", str(tmpl.get("notes", ""))),
+            )
+        )
+
+    def refresh_templates(self) -> None:
+        try:
+            vm_templates = self.template_store.list_vm_templates()
+            lab_templates = self.template_store.list_lab_templates()
+        except Exception as exc:
+            self.log_activity(f"Template refresh failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.render_vm_templates(vm_templates)
+        self.render_lab_templates(lab_templates)
+
+    def render_vm_templates(self, templates: list[dict]) -> None:
+        self.vm_templates = templates
+        was_blocked = self.vm_template_table.blockSignals(True)
+        self.vm_template_table.setRowCount(0)
+        for tmpl in templates:
+            row = self.vm_template_table.rowCount()
+            self.vm_template_table.insertRow(row)
+            self._set_table_item(self.vm_template_table, row, 0, str(tmpl.get("name", "")))
+            self._set_table_item(self.vm_template_table, row, 1, str(tmpl.get("template_id", "")))
+            self._set_table_item(self.vm_template_table, row, 2, str(tmpl.get("os_type", "")))
+            self._set_table_item(self.vm_template_table, row, 3, format_mib(tmpl.get("ram_mib")))
+            self._set_table_item(self.vm_template_table, row, 4, str(tmpl.get("vcpus", "")))
+            self._set_table_item(self.vm_template_table, row, 5, f"{tmpl.get('disk_gb', '')} GiB")
+            self._set_table_item(self.vm_template_table, row, 6, str(tmpl.get("network_mode", "")))
+            self._set_table_item(self.vm_template_table, row, 7, str(tmpl.get("display", "")))
+        self.vm_template_table.blockSignals(was_blocked)
+
+    def render_lab_templates(self, templates: list[dict]) -> None:
+        self.lab_templates = templates
+        was_blocked = self.lab_template_table.blockSignals(True)
+        self.lab_template_table.setRowCount(0)
+        for tmpl in templates:
+            row = self.lab_template_table.rowCount()
+            self.lab_template_table.insertRow(row)
+            self._set_table_item(self.lab_template_table, row, 0, str(tmpl.get("name", "")))
+            self._set_table_item(self.lab_template_table, row, 1, str(tmpl.get("template_id", "")))
+            self._set_table_item(self.lab_template_table, row, 2, str(tmpl.get("network_mode", "")))
+            self._set_table_item(self.lab_template_table, row, 3, str(len(tmpl.get("vms", []))))
+            notes = str(tmpl.get("description") or tmpl.get("notes", ""))
+            self._set_table_item(self.lab_template_table, row, 4, notes[:60] + ("..." if len(notes) > 60 else ""))
+        self.lab_template_table.blockSignals(was_blocked)
+
+    def new_vm_template(self) -> None:
+        dialog = NewVmTemplateDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            template = self.template_store.create_vm_template(**values)
+        except Exception as exc:
+            self.log_activity(f"Create VM template failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.log_activity(f"Created VM template {template['template_id']}")
+        self.refresh_templates()
+
+    def delete_vm_template(self) -> None:
+        if self.selected_vm_template is None:
+            self.show_error("Select a VM template first.")
+            return
+        tmpl = self.selected_vm_template
+        dialog = DeleteVmTemplateDialog(tmpl, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.template_store.delete_vm_template(str(tmpl["template_id"]))
+        except Exception as exc:
+            self.log_activity(f"Delete VM template failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.selected_vm_template = None
+        self.log_activity(f"Deleted VM template {tmpl['template_id']}")
+        self.refresh_templates()
+
+    def export_vm_template(self) -> None:
+        if self.selected_vm_template is None:
+            self.show_error("Select a VM template first.")
+            return
+        tmpl = self.selected_vm_template
+        template_id = str(tmpl["template_id"])
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export VM Template",
+            f"{template_id}.json",
+            "Template (*.json);;All files (*)",
+            "",
+            FILE_DIALOG_OPTIONS,
+        )
+        if not path:
+            return
+        try:
+            output = self.template_store.export_vm_template(template_id, path)
+        except Exception as exc:
+            self.log_activity(f"Export VM template failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.log_activity(f"Exported VM template {template_id} to {output}")
+        self.status.showMessage(f"Exported {template_id}", 3500)
+
+    def import_vm_template(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Import VM Template",
+            "",
+            "Template (*.json);;All files (*)",
+            "",
+            FILE_DIALOG_OPTIONS,
+        )
+        if not path:
+            return
+        try:
+            template = self.template_store.import_vm_template(path)
+        except Exception as exc:
+            if "already exists" in str(exc):
+                self.show_error(f"{exc}\n\nDelete the existing template first, then re-import.")
+            else:
+                self.show_error(str(exc))
+            self.log_activity(f"Import VM template failed: {exc}")
+            return
+        self.log_activity(f"Imported VM template {template['template_id']} from {path}")
+        self.refresh_templates()
+
+    def new_lab_template(self) -> None:
+        dialog = NewLabTemplateDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            template = self.template_store.create_lab_template(**values)
+        except Exception as exc:
+            self.log_activity(f"Create lab template failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.log_activity(f"Created lab template {template['template_id']}")
+        self.refresh_templates()
+
+    def delete_lab_template(self) -> None:
+        if self.selected_lab_template is None:
+            self.show_error("Select a lab template first.")
+            return
+        tmpl = self.selected_lab_template
+        dialog = DeleteLabTemplateDialog(tmpl, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.template_store.delete_lab_template(str(tmpl["template_id"]))
+        except Exception as exc:
+            self.log_activity(f"Delete lab template failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.selected_lab_template = None
+        self.log_activity(f"Deleted lab template {tmpl['template_id']}")
+        self.refresh_templates()
+
+    def export_action_lab_template(self) -> None:
+        if self.selected_lab_template is None:
+            self.show_error("Select a lab template first.")
+            return
+        tmpl = self.selected_lab_template
+        template_id = str(tmpl["template_id"])
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Lab Template",
+            f"{template_id}.json",
+            "Template (*.json);;All files (*)",
+            "",
+            FILE_DIALOG_OPTIONS,
+        )
+        if not path:
+            return
+        try:
+            output = self.template_store.export_lab_template(template_id, path)
+        except Exception as exc:
+            self.log_activity(f"Export lab template failed: {exc}")
+            self.show_error(str(exc))
+            return
+        self.log_activity(f"Exported lab template {template_id} to {output}")
+        self.status.showMessage(f"Exported {template_id}", 3500)
+
+    def import_action_lab_template(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Import Lab Template",
+            "",
+            "Template (*.json);;All files (*)",
+            "",
+            FILE_DIALOG_OPTIONS,
+        )
+        if not path:
+            return
+        try:
+            template = self.template_store.import_lab_template(path)
+        except Exception as exc:
+            if "already exists" in str(exc):
+                self.show_error(f"{exc}\n\nDelete the existing template first, then re-import.")
+            else:
+                self.show_error(str(exc))
+            self.log_activity(f"Import lab template failed: {exc}")
+            return
+        self.log_activity(f"Imported lab template {template['template_id']} from {path}")
+        self.refresh_templates()

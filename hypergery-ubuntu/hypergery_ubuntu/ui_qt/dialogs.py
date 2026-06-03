@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
+from ..templates import normalize_template_id
 from .lab_helpers import build_lab_preview
 from .styles import details_block
 
@@ -704,3 +705,235 @@ class SnapshotDialog(QDialog):
             lambda: self.backend.delete_snapshot(self.vm_name, snapshot),
             on_success=lambda _result: self.refresh(),
         )
+
+
+class NewVmTemplateDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("New VM Template")
+        self.setMinimumWidth(400)
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit()
+        self.name_edit.textChanged.connect(self.validate)
+        form.addRow("Name:", self.name_edit)
+
+        self.id_preview = QLabel()
+        self.id_preview.setObjectName("mutedLabel")
+        form.addRow("Template ID:", self.id_preview)
+
+        self.os_type = QComboBox()
+        self.os_type.addItems(["linux", "windows", "other"])
+        form.addRow("OS Type:", self.os_type)
+
+        self.ram_mib = QSpinBox()
+        self.ram_mib.setRange(512, 65536)
+        self.ram_mib.setSingleStep(1024)
+        self.ram_mib.setValue(4096)
+        self.ram_mib.setSuffix(" MiB")
+        form.addRow("RAM:", self.ram_mib)
+
+        self.vcpus = QSpinBox()
+        self.vcpus.setRange(1, 128)
+        self.vcpus.setValue(2)
+        form.addRow("vCPUs:", self.vcpus)
+
+        self.disk_gb = QSpinBox()
+        self.disk_gb.setRange(1, 1024)
+        self.disk_gb.setValue(40)
+        self.disk_gb.setSuffix(" GiB")
+        form.addRow("Disk:", self.disk_gb)
+
+        self.network_mode = QComboBox()
+        self.network_mode.addItems(["nat", "isolated"])
+        form.addRow("Network:", self.network_mode)
+
+        self.display_mode = QComboBox()
+        self.display_mode.addItems(["spice", "vnc"])
+        form.addRow("Display:", self.display_mode)
+
+        self.notes_edit = QLineEdit()
+        form.addRow("Notes:", self.notes_edit)
+
+        layout.addLayout(form)
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+        self.validate()
+
+    def validate(self) -> None:
+        try:
+            tid = normalize_template_id(self.name_edit.text())
+            self.id_preview.setText(tid)
+            self.id_preview.setStyleSheet("")
+            valid = True
+        except (ValueError, HyperGeryError):
+            self.id_preview.setText("Invalid ID")
+            self.id_preview.setStyleSheet("color: #ff5555;")
+            valid = False
+
+        if not self.name_edit.text().strip():
+            valid = False
+
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
+
+    def values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip(),
+            "os_type": self.os_type.currentText(),
+            "ram_mib": self.ram_mib.value(),
+            "vcpus": self.vcpus.value(),
+            "disk_gb": self.disk_gb.value(),
+            "network_mode": self.network_mode.currentText(),
+            "display": self.display_mode.currentText(),
+            "notes": self.notes_edit.text().strip(),
+        }
+
+
+class NewLabTemplateDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("New Lab Template")
+        self.setMinimumWidth(400)
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit()
+        self.name_edit.textChanged.connect(self.validate)
+        form.addRow("Name:", self.name_edit)
+
+        self.id_preview = QLabel()
+        self.id_preview.setObjectName("mutedLabel")
+        form.addRow("Template ID:", self.id_preview)
+
+        self.desc_edit = QLineEdit()
+        form.addRow("Description:", self.desc_edit)
+
+        self.network_mode = QComboBox()
+        self.network_mode.addItems(["nat", "isolated"])
+        form.addRow("Network:", self.network_mode)
+
+        self.notes_edit = QLineEdit()
+        form.addRow("Notes:", self.notes_edit)
+
+        layout.addLayout(form)
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+        self.validate()
+
+    def validate(self) -> None:
+        try:
+            tid = normalize_template_id(self.name_edit.text())
+            self.id_preview.setText(tid)
+            self.id_preview.setStyleSheet("")
+            valid = True
+        except (ValueError, HyperGeryError):
+            self.id_preview.setText("Invalid ID")
+            self.id_preview.setStyleSheet("color: #ff5555;")
+            valid = False
+
+        if not self.name_edit.text().strip():
+            valid = False
+
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
+
+    def values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip(),
+            "description": self.desc_edit.text().strip(),
+            "network_mode": self.network_mode.currentText(),
+            "notes": self.notes_edit.text().strip(),
+            "vms": [],
+        }
+
+
+class DeleteVmTemplateDialog(QDialog):
+    def __init__(self, template: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.template = template
+        template_id = str(template.get("template_id", ""))
+        self.setWindowTitle(f"Delete VM Template: {template_id}")
+        title = QLabel(f"Delete VM template {template_id}?")
+        title.setObjectName("sectionTitle")
+        warning = QLabel("This removes the template JSON file. No VMs or disks will be deleted.")
+        warning.setWordWrap(True)
+        self.confirm_id = QLineEdit()
+        self.confirm_id.setPlaceholderText(template_id)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.delete_button = buttons.addButton("Delete Template", QDialogButtonBox.ButtonRole.DestructiveRole)
+        self.delete_button.setObjectName("dangerButton")
+        self.delete_button.setEnabled(False)
+        buttons.rejected.connect(self.reject)
+        self.delete_button.clicked.connect(self.accept)
+        self.confirm_id.textChanged.connect(self.update_state)
+        form = QFormLayout()
+        form.addRow("Type template ID", self.confirm_id)
+        layout = QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addWidget(warning)
+        layout.addLayout(form)
+        layout.addWidget(self.error_label)
+        layout.addWidget(buttons)
+        self.resize(520, 240)
+
+    def update_state(self) -> None:
+        self.delete_button.setEnabled(self.confirm_id.text().strip() == str(self.template.get("template_id", "")))
+
+    def accept(self) -> None:
+        if self.confirm_id.text().strip() != str(self.template.get("template_id", "")):
+            self.error_label.setText("Type the exact template ID to confirm deletion.")
+            return
+        super().accept()
+
+
+class DeleteLabTemplateDialog(QDialog):
+    def __init__(self, template: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.template = template
+        template_id = str(template.get("template_id", ""))
+        self.setWindowTitle(f"Delete Lab Template: {template_id}")
+        title = QLabel(f"Delete lab template {template_id}?")
+        title.setObjectName("sectionTitle")
+        warning = QLabel("This removes the template JSON file. No labs or VMs will be deleted.")
+        warning.setWordWrap(True)
+        self.confirm_id = QLineEdit()
+        self.confirm_id.setPlaceholderText(template_id)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.delete_button = buttons.addButton("Delete Template", QDialogButtonBox.ButtonRole.DestructiveRole)
+        self.delete_button.setObjectName("dangerButton")
+        self.delete_button.setEnabled(False)
+        buttons.rejected.connect(self.reject)
+        self.delete_button.clicked.connect(self.accept)
+        self.confirm_id.textChanged.connect(self.update_state)
+        form = QFormLayout()
+        form.addRow("Type template ID", self.confirm_id)
+        layout = QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addWidget(warning)
+        layout.addLayout(form)
+        layout.addWidget(self.error_label)
+        layout.addWidget(buttons)
+        self.resize(520, 240)
+
+    def update_state(self) -> None:
+        self.delete_button.setEnabled(self.confirm_id.text().strip() == str(self.template.get("template_id", "")))
+
+    def accept(self) -> None:
+        if self.confirm_id.text().strip() != str(self.template.get("template_id", "")):
+            self.error_label.setText("Type the exact template ID to confirm deletion.")
+            return
+        super().accept()
