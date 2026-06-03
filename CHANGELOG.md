@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.5.0 - Lab Topology & UX (en desarrollo)
+
+HyperGery v0.5.0 — topología visual de labs y mejoras de UX.
+
+Roadmap:
+
+- Vista de topología de lab: diagrama de red con VMs, bridges y subnets.
+- Editor mejorado de planned VMs: edición inline de campos sin remove + re-add.
+- Edición inline de templates desde el panel de detalles.
+- CLI `template update` y `template instantiate`.
+- UI de rollback mejorada: progreso de creación de VMs con estado por cada paso.
+- Mejora de cleanup: opciones claras al fallar una creación parcial.
+
 ## v0.4.0 - Lab Automation
 
 HyperGery v0.4.0 — automatización de entornos de laboratorio.
