@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.5.0 - Lab Topology & UX
+
+HyperGery v0.5.0 — topología visual de labs y mejoras de UX.
+
+Cambios implementados en v0.5:
+
+- `LabTopologyWidget` (topology.py): canvas QPainter con nodo de red a la izquierda y nodos de VM a la derecha; líneas bezier; color por estado (running=verde, shut off=gris, paused=ámbar, not created=pizarra); RAM/vCPUs badge; clic en nodo selecciona VM en la lista.
+- `build_lab_topology()`: mezcla VMs live (libvirt) con VMs del manifiesto; marca VMs solo en manifiesto como "not created"; excluye VMs de otros labs.
+- `topology_to_json()`: exporta topología como dict serializable.
+- Panel de detalles del lab ahora tiene dos sub-tabs: "Details" (texto existente) y "Topology" (nuevo canvas).
+- `PlannedVmDialog`: reemplaza `_AddPlannedVmDialog`; soporta tanto añadir como editar (pre-rellena campos); incluye `template_id` opcional, `notes`, validación de nombre en el dialog.
+- `EditLabTemplateDialog` mejorado: usa `QTableWidget` con columnas Name/Role/OS/RAM/vCPUs/Disk/Display/ISO req.; doble-clic para editar VM; validación de duplicados al editar.
+- `_IsoMappingPage` del wizard: botón "Apply same ISO to all VMs…" para reutilizar una ISO; status label indicando exactamente qué VMs faltan ISO.
+- `CleanupPreviewDialog`: vista de lectura de todos los recursos HyperGery (VMs, labs, VM templates, lab templates); accessible desde botón "Resources…" en la barra de acciones.
+- CLI `template update vm|lab <id> --set key=value`: actualiza campos de templates.
+- CLI `lab-topology <lab_id>`: imprime topología como JSON.
+- CLI `lab-instantiate <template_id> <lab_name> --iso vm=path [--dry-run]`: instancia un lab template desde CLI.
+- Corrección final: `get_vm()` convierte memoria de libvirt (`KiB`, `MiB`, `GiB`, bytes) a MiB para que Topology/CLI no muestren RAM como `0` cuando `virsh dumpxml` normaliza `<memory>` a KiB.
+- 10 nuevos tests: topología (vacía, con VMs, VMs de otros labs, not created, deduplicación, JSON), CLI update template, CLI lab-topology, CLI lab-instantiate dry-run, parseo de memoria KiB de libvirt.
+
+Pendiente en v0.5 (roadmap):
+
+- Role badges en nodos de topología.
+- Export de topología como PNG/SVG.
+- Zoom/pan para labs grandes.
+- UI de progreso por VM durante instanciación.
+
 ## v0.4.0 - Lab Automation
 
 HyperGery v0.4.0 — automatización de entornos de laboratorio.

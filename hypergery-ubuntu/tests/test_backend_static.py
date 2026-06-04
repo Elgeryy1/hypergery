@@ -322,6 +322,31 @@ class BackendStaticTests(unittest.TestCase):
         self.assertIsNone(vm.ram_mib)
         self.assertIsNone(vm.vcpus)
 
+    def test_get_vm_converts_libvirt_kib_memory_to_mib(self):
+        xml = f"""<domain type="kvm">
+  <name>kib-memory</name>
+  <metadata>
+    <hg:hypergery xmlns:hg="{HG_NS}">
+      <hg:managed>true</hg:managed>
+      <hg:lab_id>default-lab</hg:lab_id>
+    </hg:hypergery>
+  </metadata>
+  <memory unit="KiB">1048576</memory>
+  <vcpu>1</vcpu>
+  <devices/>
+</domain>"""
+
+        class FakeBackend(HyperGeryBackend):
+            def virsh(self, args, *, timeout=120, check=True):
+                if args[0] == "dumpxml":
+                    return CommandResult(["virsh", *args], 0, xml, "")
+                if args[0] == "domstate":
+                    return CommandResult(["virsh", *args], 0, "shut off\n", "")
+                return CommandResult(["virsh", *args], 0, "", "")
+
+        vm = FakeBackend().get_vm("kib-memory")
+        self.assertEqual(vm.ram_mib, 1024)
+
     def test_update_settings_creates_missing_graphics_and_network_nodes(self):
         source_xml = f"""<domain type="kvm">
   <name>minimal</name>

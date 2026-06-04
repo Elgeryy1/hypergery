@@ -35,6 +35,7 @@ from ..backend import HyperGeryBackend, HyperGeryError, VmSummary, now_iso
 from ..labs import LabStore
 from ..templates import TemplateStore
 from .dialogs import (
+    CleanupPreviewDialog,
     CloneDialog,
     DeleteConfirmationDialog,
     DeleteLabDialog,
@@ -53,7 +54,8 @@ from .dialogs import (
     SnapshotDialog,
     VMWizard,
 )
-from .lab_helpers import filter_vms_for_lab, vm_count_for_lab
+from .lab_helpers import build_lab_topology, filter_vms_for_lab, vm_count_for_lab
+from .topology import LabTopologyWidget
 from .styles import (
     APP_DISPLAY_VERSION,
     APP_STYLESHEET,
@@ -134,6 +136,7 @@ class MainWindow(QMainWindow):
         self.refresh_button = self._button("Refresh", self.refresh_all)
         self.force_button = self._button("Force Off", self.force_off_vm, danger=True)
         self.delete_button = self._button("Delete", self.delete_vm, danger=True)
+        self.overview_button = self._button("Resources…", self.show_cleanup_preview)
         for button in (
             self.new_button,
             self.settings_button,
@@ -146,6 +149,7 @@ class MainWindow(QMainWindow):
         ):
             layout.addWidget(button)
         layout.addStretch()
+        layout.addWidget(self.overview_button)
         layout.addWidget(self.force_button)
         layout.addWidget(self.delete_button)
         return bar
@@ -429,9 +433,14 @@ class MainWindow(QMainWindow):
         self.lab_details_text = QTextEdit()
         self.lab_details_text.setReadOnly(True)
         self.lab_details_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.lab_details_text.setMaximumHeight(185)
+        self.lab_topology = LabTopologyWidget()
+        self.lab_topology.vm_selected.connect(self._select_vm_by_name)
+        self.lab_detail_tabs = QTabWidget()
+        self.lab_detail_tabs.setMaximumHeight(220)
+        self.lab_detail_tabs.addTab(self.lab_details_text, "Details")
+        self.lab_detail_tabs.addTab(self.lab_topology, "Topology")
         lab_layout.addLayout(lab_header)
-        lab_layout.addWidget(self.lab_details_text)
+        lab_layout.addWidget(self.lab_detail_tabs)
         layout.addWidget(lab_box)
 
         vertical = QSplitter(Qt.Orientation.Vertical)
@@ -576,6 +585,7 @@ class MainWindow(QMainWindow):
             self.export_vm_template_button,
             self.import_vm_template_button,
             self.refresh_vm_templates_button,
+            self.overview_button,
             self.new_lab_template_button,
             self.delete_lab_template_button,
             self.edit_lab_template_button,
@@ -803,6 +813,7 @@ class MainWindow(QMainWindow):
         lab = self.selected_lab
         if lab is None:
             self.lab_details_text.setPlainText("No lab selected.")
+            self.lab_topology.set_topology(None)
             return
         templates_used = lab.get("templates_used", [])
         self.lab_details_text.setPlainText(
@@ -821,6 +832,15 @@ class MainWindow(QMainWindow):
                 ("Notes", str(lab.get("notes", ""))),
             )
         )
+        self.lab_topology.set_topology(build_lab_topology(lab, self.all_vms))
+
+    def _select_vm_by_name(self, vm_name: str) -> None:
+        for row in range(self.vm_table.rowCount()):
+            item = self.vm_table.item(row, 0)
+            if item and item.text() == vm_name:
+                self.vm_table.selectRow(row)
+                self.lab_detail_tabs.setCurrentIndex(0)
+                break
 
     def log_activity(self, message: str) -> None:
         logging.info(message)
@@ -1125,6 +1145,16 @@ class MainWindow(QMainWindow):
         self.status.showMessage(message)
         QMessageBox.critical(self, "HyperGery", message)
         self.refresh_logs()
+
+    def show_cleanup_preview(self) -> None:
+        dialog = CleanupPreviewDialog(
+            self.all_vms,
+            self.labs,
+            self.vm_templates,
+            self.lab_templates,
+            self,
+        )
+        dialog.exec()
 
     def run_operation(
         self,

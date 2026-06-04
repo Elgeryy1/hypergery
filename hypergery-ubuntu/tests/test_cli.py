@@ -118,6 +118,62 @@ class CliTests(unittest.TestCase):
             self.assertEqual(self.run_cli(["template", "show", "vm", "ubuntu-base"]), 0)
             self.assertEqual(self.run_cli(["template", "delete", "vm", "ubuntu-base"]), 0)
 
+    def test_template_update_cli_changes_field(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp, "XDG_STATE_HOME": str(Path(tmp) / "state")}):
+            from hypergery_ubuntu.templates import TemplateStore
+            import json
+            from io import StringIO
+
+            store = TemplateStore(Path(tmp) / "hypergery")
+            store.create_vm_template("Ubuntu Base", ram_mib=2048)
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = cli.main(["template", "update", "vm", "ubuntu-base", "--set", "ram_mib=8192", "--set", "notes=updated"])
+            self.assertEqual(code, 0)
+            data = json.loads(buf.getvalue())
+            self.assertEqual(data["ram_mib"], 8192)
+            self.assertEqual(data["notes"], "updated")
+
+    def test_lab_topology_cli_returns_json(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp, "XDG_STATE_HOME": str(Path(tmp) / "state")}):
+            import json
+            from io import StringIO
+            from unittest.mock import Mock
+
+            with patch("hypergery_ubuntu.cli.HyperGeryBackend") as backend_cls:
+                backend = backend_cls.return_value
+                backend.data_dir = Path(tmp) / "hypergery"
+                backend.list_vms.return_value = []
+                from hypergery_ubuntu.labs import LabStore
+                LabStore(backend.data_dir).create_lab("Security Lab", lab_id="security-lab")
+                buf = StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["lab-topology", "security-lab"])
+            self.assertEqual(code, 0)
+            data = json.loads(buf.getvalue())
+            self.assertEqual(data["lab_id"], "security-lab")
+            self.assertIn("vms", data)
+
+    def test_lab_instantiate_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp, "XDG_STATE_HOME": str(Path(tmp) / "state")}):
+            import json
+            from io import StringIO
+
+            with patch("hypergery_ubuntu.cli.HyperGeryBackend") as backend_cls:
+                backend = backend_cls.return_value
+                backend.data_dir = Path(tmp) / "hypergery"
+                from hypergery_ubuntu.templates import TemplateStore
+                from hypergery_ubuntu.labs import LabStore
+                store = TemplateStore(backend.data_dir, backend=backend, lab_store=LabStore(backend.data_dir))
+                store.create_lab_template("ASR Lab", "asr", "nat", [])
+                buf = StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["lab-instantiate", "asr-lab", "ASR Instance", "--dry-run"])
+            self.assertEqual(code, 0)
+            data = json.loads(buf.getvalue())
+            self.assertTrue(data["dry_run"])
+            self.assertIsNone(data["lab"])
+
 
 if __name__ == "__main__":
     unittest.main()
