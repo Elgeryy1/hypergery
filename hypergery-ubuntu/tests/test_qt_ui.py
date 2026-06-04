@@ -4,9 +4,28 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from tests.test_migration import FakeBackend as MigrationFakeBackend
 
 HAS_PYSIDE6 = importlib.util.find_spec("PySide6") is not None
+
+FAKE_ONLINE_HOST = {
+    "host_id": "target",
+    "status": "online",
+    "hostname": "target.local",
+    "kvm_ok": True,
+    "libvirt_ok": True,
+    "ram_total_mib": 8192,
+    "ram_free_mib": 4096,
+    "disk_free_mib": 20000,
+    "active_vms": [],
+}
+
+
+def migration_fake_backend():
+    try:
+        from tests.test_migration import FakeBackend
+    except ModuleNotFoundError:
+        from test_migration import FakeBackend
+    return FakeBackend
 
 if HAS_PYSIDE6:
     from PySide6.QtCore import Qt
@@ -66,15 +85,37 @@ class QtUiTests(unittest.TestCase):
     def test_live_migration_dialog_blocks_running_vm(self):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
 
         with tempfile.TemporaryDirectory() as tmp:
             backend = MigrationFakeBackend(Path(tmp), state="running")
-            dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
             dialog.nas_path.setText(str(Path(tmp) / "nas"))
+            dialog.target_host.setCurrentIndex(0)
             dialog.run_preflight()
 
             self.assertFalse(dialog.package_button.isEnabled())
             self.assertIn("Running VM migration is blocked", dialog.result_view.toPlainText())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_live_migration_dialog_shows_registry_unavailable(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.backend import HyperGeryError
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp))
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.side_effect = HyperGeryError("registry offline")
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+
+            self.assertFalse(dialog.package_button.isEnabled())
+            self.assertIn("Registry is not reachable or not configured", dialog.result_view.toPlainText())
+            self.assertIn("registry offline", dialog.result_view.toPlainText())
             dialog.close()
         self.assertIsNotNone(app)
 
