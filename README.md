@@ -101,6 +101,17 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 
 v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.
 
+Current development CLI:
+
+```bash
+python -m hypergery_ubuntu.cli registry serve --host 127.0.0.1 --port 8765
+python -m hypergery_ubuntu.cli registry health
+python -m hypergery_ubuntu.cli agent config show
+python -m hypergery_ubuntu.cli agent once
+python -m hypergery_ubuntu.cli host list
+python -m hypergery_ubuntu.cli host test <host_id>
+```
+
 ### Not yet implemented
 
 - True live RAM migration with custom dirty-page transfer.

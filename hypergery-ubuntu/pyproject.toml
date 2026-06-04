@@ -10,6 +10,7 @@ dependencies = [
 [project.scripts]
 hypergery = "hypergery_ubuntu.app:main"
 hypergery-cli = "hypergery_ubuntu.cli:main"
+hypergery-agent = "hypergery_ubuntu.agent:main"
 
 [build-system]
 requires = ["setuptools>=61"]

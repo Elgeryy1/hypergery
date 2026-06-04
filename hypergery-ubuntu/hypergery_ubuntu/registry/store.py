@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -92,12 +93,12 @@ class RegistryStore:
         self._init_db()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_db(self) -> None:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hosts (
@@ -191,7 +192,7 @@ class RegistryStore:
             "active_vms": _json_dump(payload.get("active_vms") or []),
             "notes": str(payload.get("notes") or ""),
         }
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             conn.execute(
                 """
                 INSERT INTO hosts (
@@ -226,12 +227,12 @@ class RegistryStore:
         return self.register_host(payload)
 
     def list_hosts(self) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute("SELECT * FROM hosts ORDER BY host_id").fetchall()
         return [self._host_from_row(row) for row in rows]
 
     def get_host(self, host_id: str) -> dict[str, Any]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             row = conn.execute("SELECT * FROM hosts WHERE host_id = ?", (_host_id(host_id),)).fetchone()
         if row is None:
             raise HyperGeryError(f"Host does not exist: {host_id}")
@@ -254,7 +255,7 @@ class RegistryStore:
             "created_at": timestamp,
             "updated_at": timestamp,
         }
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             conn.execute(
                 """
                 INSERT INTO commands (
@@ -276,14 +277,14 @@ class RegistryStore:
         return command
 
     def get_command(self, command_id: str) -> dict[str, Any]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             row = conn.execute("SELECT * FROM commands WHERE command_id = ?", (command_id,)).fetchone()
         if row is None:
             raise HyperGeryError(f"Command does not exist: {command_id}")
         return self._command_from_row(row)
 
     def pending_commands_for_host(self, host_id: str) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute(
                 "SELECT * FROM commands WHERE target_host_id = ? AND status = 'pending' ORDER BY created_at",
                 (_host_id(host_id),),
@@ -295,7 +296,7 @@ class RegistryStore:
         if status not in {"running", "done", "failed"}:
             raise HyperGeryError("Command result status must be running, done, or failed.")
         result = payload.get("result") or {}
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             changed = conn.execute(
                 "UPDATE commands SET status = ?, result = ?, updated_at = ? WHERE command_id = ?",
                 (status, _json_dump(result), now_iso(), command_id),
@@ -312,12 +313,12 @@ class RegistryStore:
         return {key: migration.get(key) for key in MIGRATION_FIELDS}
 
     def list_migrations(self) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute("SELECT * FROM migrations ORDER BY created_at DESC").fetchall()
         return [self._migration_from_row(row) for row in rows]
 
     def get_migration(self, migration_id: str) -> dict[str, Any]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             row = conn.execute("SELECT * FROM migrations WHERE migration_id = ?", (migration_id,)).fetchone()
         if row is None:
             raise HyperGeryError(f"Migration does not exist: {migration_id}")
@@ -345,7 +346,7 @@ class RegistryStore:
             "errors": _json_dump(payload.get("errors") or []),
             "warnings": _json_dump(payload.get("warnings") or []),
         }
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             existing = conn.execute("SELECT created_at FROM migrations WHERE migration_id = ?", (clean_id,)).fetchone()
             if existing:
                 migration["created_at"] = existing["created_at"]

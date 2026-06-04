@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import threading
+import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+from hypergery_ubuntu import cli
+from hypergery_ubuntu.agent import AgentConfig, HyperGeryAgent
+from hypergery_ubuntu.backend import HyperGeryError, PreflightItem, VmSummary
+from hypergery_ubuntu.registry import RegistryServer, RegistryStore
+
+
+class FakeBackend:
+    data_dir = Path("/tmp/hypergery-test")
+
+    def list_vms(self):
+        return [
+            VmSummary(name="running-vm", state="running", lab_id="lab1", ram_mib=1024, vcpus=1, disk_path="/tmp/a.qcow2"),
+            VmSummary(name="off-vm", state="shut off", lab_id="lab1", ram_mib=1024, vcpus=1, disk_path="/tmp/b.qcow2"),
+        ]
+
+    def virsh(self, args, *, check=True, timeout=120):
+        raise AssertionError("virsh should not be needed when list_vms works")
+
+    def preflight(self):
+        return [PreflightItem("kvm", "OK", "ready")]
+
+
+class FakeClient:
+    def __init__(self):
+        self.results = []
+        self.commands = [
+            {"command_id": "cmd-1", "command_type": "ping", "payload": {}},
+            {"command_id": "cmd-2", "command_type": "list_vms", "payload": {}},
+        ]
+
+    def register_host(self, payload):
+        return dict(payload, status="online")
+
+    def heartbeat(self, payload):
+        return dict(payload, status="online")
+
+    def pending_commands(self, host_id):
+        return list(self.commands)
+
+    def set_command_result(self, command_id, status, result):
+        payload = {"command_id": command_id, "status": status, "result": result}
+        self.results.append(payload)
+        return payload
+
+
+class AgentTests(unittest.TestCase):
+    def test_config_loads_json_without_password_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "agent.json"
+            path.write_text(
+                json.dumps({
+                    "registry_url": "http://nas.local:8765",
+                    "host_id": "pc-casa",
+                    "name": "PC Casa",
+                    "nas_staging_path": "/mnt/hypergery-nas/migrations",
+                }),
+                encoding="utf-8",
+            )
+            config = AgentConfig.load(path)
+        self.assertEqual(config.registry_url, "http://nas.local:8765")
+        self.assertEqual(config.host_id, "pc-casa")
+        self.assertNotIn("password", config.to_public_dict())
+
+    def test_heartbeat_payload_reports_active_vms_and_capabilities(self):
+        config = AgentConfig(host_id="local", name="Local", nas_staging_path="/tmp")
+        agent = HyperGeryAgent(config, backend=FakeBackend(), client=FakeClient())
+        payload = agent.host_payload()
+        self.assertEqual(payload["host_id"], "local")
+        self.assertIn("running-vm", payload["active_vms"])
+        self.assertNotIn("off-vm", payload["active_vms"])
+        self.assertIn("kvm_ok", payload)
+        self.assertIn("libvirt_ok", payload)
+
+    def test_agent_allowlist_blocks_arbitrary_command(self):
+        agent = HyperGeryAgent(AgentConfig(host_id="local"), backend=FakeBackend(), client=FakeClient())
+        with self.assertRaises(HyperGeryError):
+            agent.execute_command({"command_type": "shell", "payload": {"cmd": "rm -rf /"}})
+
+    def test_run_once_executes_safe_pending_commands(self):
+        client = FakeClient()
+        agent = HyperGeryAgent(AgentConfig(host_id="local"), backend=FakeBackend(), client=client)
+        result = agent.run_once()
+        self.assertEqual(result["host"]["host_id"], "local")
+        done_results = [item for item in client.results if item["status"] == "done"]
+        self.assertEqual(len(done_results), 2)
+        self.assertTrue(done_results[0]["result"]["pong"])
+        self.assertEqual(done_results[1]["result"]["vms"][0]["name"], "running-vm")
+
+
+class AgentCliTests(unittest.TestCase):
+    def test_agent_config_show_does_not_require_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "missing-agent.json"
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = cli.main(["agent", "config", "show", "--config", str(path)])
+            self.assertEqual(code, 0)
+            data = json.loads(buf.getvalue())
+            self.assertFalse(data["exists"])
+            self.assertEqual(data["config"]["host_id"], AgentConfig().host_id)
+
+    def test_host_test_queues_ping_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RegistryStore(Path(tmp) / "registry.sqlite3")
+            store.register_host({"host_id": "local", "hostname": "localhost"})
+            server = RegistryServer(("127.0.0.1", 0), store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address
+            try:
+                buf = StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["host", "test", "local", "--registry-url", f"http://{host}:{port}"])
+                self.assertEqual(code, 0)
+                data = json.loads(buf.getvalue())
+                self.assertEqual(data["command_type"], "ping")
+                self.assertEqual(data["target_host_id"], "local")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+
+if __name__ == "__main__":
+    unittest.main()

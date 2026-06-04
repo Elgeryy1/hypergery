@@ -30,16 +30,24 @@ Bootstrap smoke on prepared host (2026-06-04):
 
 Required local smoke:
 
-- [ ] Start local registry on port `8765`.
-- [ ] Start local HyperGery agent.
-- [ ] Confirm local host registration and heartbeat.
+- [ ] Start local registry on port `8765`: `python -m hypergery_ubuntu.cli registry serve`.
+- [ ] Start local HyperGery agent or run one cycle: `python -m hypergery_ubuntu.cli agent once`.
+- [ ] Confirm local host registration and heartbeat with `python -m hypergery_ubuntu.cli host list`.
 - [ ] List hosts from CLI and UI.
-- [ ] Create a safe `ping` command and confirm the agent returns a result.
+- [ ] Create a safe `ping` command with `python -m hypergery_ubuntu.cli host test <host_id>` and confirm the agent returns a result.
 - [ ] Run migration preflight with a fake/offline target and confirm a clear blocking error.
 - [ ] Package an existing stopped test VM if available.
 - [ ] Validate the migration package manifest and checksums.
 - [ ] Import package locally in dry-run or isolated test mode if no second host is available.
 - [ ] Confirm source VM still exists and source disks remain untouched.
+
+Registry/agent local smoke on prepared host (2026-06-04):
+
+- [x] Started local registry with a temporary SQLite DB on `127.0.0.1:18765`.
+- [x] Ran `agent once` with a temporary config and registered `local-smoke`.
+- [x] Listed hosts through CLI and confirmed `local-smoke` was present.
+- [x] Queued a safe `ping` command through `host test local-smoke`.
+- [x] Ran `agent once` again and confirmed command status `done` with `pong=true`.
 
 Recommended real NAS/two-host smoke:
 

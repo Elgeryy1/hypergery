@@ -231,6 +231,35 @@ def registry_action(args: argparse.Namespace) -> int:
     return 2
 
 
+def agent_action(args: argparse.Namespace) -> int:
+    from .agent import AgentConfig, HyperGeryAgent, main as agent_main
+
+    if args.agent_command == "config" and args.config_command == "show":
+        return agent_main(["config", "show", *(["--config", args.config] if args.config else [])])
+    config = AgentConfig.load(args.config or None)
+    agent = HyperGeryAgent(config)
+    if args.agent_command == "once":
+        return print_json(agent.run_once())
+    if args.agent_command == "run":
+        agent.run_forever()
+        return 0
+    return 2
+
+
+def host_action(args: argparse.Namespace) -> int:
+    from .registry import RegistryClient
+
+    client = RegistryClient(args.registry_url)
+    if args.host_command == "list":
+        return print_json({"hosts": client.list_hosts()})
+    if args.host_command == "show":
+        return print_json(client.get_host(args.host_id))
+    if args.host_command == "test":
+        command = client.create_command(args.host_id, "ping", {})
+        return print_json(command)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hypergery-cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -333,6 +362,26 @@ def main(argv: list[str] | None = None) -> int:
     registry_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90")))
     registry_health = registry_sub.add_parser("health")
     registry_health.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    agent_parser = sub.add_parser("agent", help="Run the HyperGery host agent.")
+    agent_sub = agent_parser.add_subparsers(dest="agent_command", required=True)
+    agent_run = agent_sub.add_parser("run")
+    agent_run.add_argument("--config", default="")
+    agent_once = agent_sub.add_parser("once")
+    agent_once.add_argument("--config", default="")
+    agent_config = agent_sub.add_parser("config")
+    agent_config_sub = agent_config.add_subparsers(dest="config_command", required=True)
+    agent_config_show = agent_config_sub.add_parser("show")
+    agent_config_show.add_argument("--config", default="")
+    host_parser = sub.add_parser("host", help="Query registry hosts and queue safe host commands.")
+    host_sub = host_parser.add_subparsers(dest="host_command", required=True)
+    host_list = host_sub.add_parser("list")
+    host_list.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    host_show = host_sub.add_parser("show")
+    host_show.add_argument("host_id")
+    host_show.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    host_test = host_sub.add_parser("test")
+    host_test.add_argument("host_id")
+    host_test.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
     args = parser.parse_args(argv)
 
     try:
@@ -340,6 +389,10 @@ def main(argv: list[str] | None = None) -> int:
             if getattr(args, "db_path", "") == "":
                 args.db_path = None
             return registry_action(args)
+        if args.command == "agent":
+            return agent_action(args)
+        if args.command == "host":
+            return host_action(args)
         backend = HyperGeryBackend()
         if args.command == "preflight":
             return print_preflight(backend)
