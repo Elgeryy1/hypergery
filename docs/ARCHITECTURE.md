@@ -58,7 +58,7 @@ The migration architecture has four parts:
 
 Running VM copy is not treated as safe by default. If HyperGery cannot use a real libvirt/QEMU-safe strategy, preflight blocks the migration with a clear error and asks for paused/offline packaging. The source VM, source disks, and source lab metadata are never deleted by v0.6.0 migration flows.
 
-The registry command queue is not a shell execution mechanism. Supported command types are explicit and limited to safe operations such as `ping`, `preflight`, `list_vms`, `receive_vm_package`, `import_vm_package`, and `migration_status`.
+The registry command queue is not a shell execution mechanism. Supported command types are explicit and limited to safe operations such as `ping`, `preflight`, `list_vms`, `receive_vm_package`, `import_vm_package`, and `migration_status`. Package validation/import commands only accept package directories inside the agent's configured `nas_staging_path` or its `migrations/` child.
 
 The first migration implementation lives in `hypergery_ubuntu.migration` and is intentionally offline-first:
 

@@ -26,6 +26,7 @@ Implemented in development so far:
 - First-run Ubuntu bootstrap in `scripts/dev-run.sh` and `scripts/bootstrap-ubuntu.sh`.
 - Migration package module with VM asset collection, offline preflight, package export, package validation, target identity regeneration, import rollback, and package listing.
 - CLI `migrate preflight`, `migrate package`, `migrate validate-package`, `migrate import`, `migrate list`, and `migrate status`.
+- Agent migration command execution for VM preflight, staged package validation, staged package import, and package status with NAS staging path restrictions.
 
 Future topology polish:
 

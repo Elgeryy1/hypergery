@@ -12,7 +12,9 @@ from unittest.mock import patch
 from hypergery_ubuntu import cli
 from hypergery_ubuntu.agent import AgentConfig, HyperGeryAgent
 from hypergery_ubuntu.backend import HyperGeryError, PreflightItem, VmSummary
+from hypergery_ubuntu.migration import export_vm_package
 from hypergery_ubuntu.registry import RegistryServer, RegistryStore
+from tests.test_migration import FakeBackend as MigrationFakeBackend
 
 
 class FakeBackend:
@@ -96,6 +98,75 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(len(done_results), 2)
         self.assertTrue(done_results[0]["result"]["pong"])
         self.assertEqual(done_results[1]["result"]["vms"][0]["name"], "running-vm")
+
+    def test_agent_vm_migration_preflight_command_blocks_running_vm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp), state="running")
+            config = AgentConfig(host_id="local", nas_staging_path=str(Path(tmp) / "nas"))
+            agent = HyperGeryAgent(config, backend=backend, client=FakeClient())
+            status, result = agent.execute_command(
+                {
+                    "command_type": "preflight",
+                    "payload": {"vm_name": "hg-source", "target_vm_name": "hg-target"},
+                }
+            )
+        self.assertEqual(status, "failed")
+        self.assertFalse(result["source_will_be_deleted"])
+        self.assertIn("Running VM migration is blocked", "; ".join(result["errors"]))
+
+    def test_agent_receive_vm_package_validates_only_staged_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = MigrationFakeBackend(root / "source")
+            export = export_vm_package(backend, "hg-source", root / "nas", target_vm_name="hg-target")
+            agent = HyperGeryAgent(
+                AgentConfig(host_id="local", nas_staging_path=str(root / "nas")),
+                backend=backend,
+                client=FakeClient(),
+            )
+
+            status, result = agent.execute_command(
+                {
+                    "command_type": "receive_vm_package",
+                    "payload": {"package_dir": export["package_dir"]},
+                }
+            )
+            self.assertEqual(status, "done")
+            self.assertTrue(result["validation"]["ok"])
+
+            with self.assertRaises(HyperGeryError):
+                agent.execute_command(
+                    {
+                        "command_type": "receive_vm_package",
+                        "payload": {"package_dir": str(root / "outside")},
+                    }
+                )
+
+    def test_agent_import_vm_package_uses_migration_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_backend = MigrationFakeBackend(root / "source")
+            export = export_vm_package(source_backend, "hg-source", root / "nas", target_vm_name="hg-target")
+            target_backend = MigrationFakeBackend(root / "target")
+            agent = HyperGeryAgent(
+                AgentConfig(host_id="target", nas_staging_path=str(root / "nas")),
+                backend=target_backend,
+                client=FakeClient(),
+            )
+
+            status, result = agent.execute_command(
+                {
+                    "command_type": "import_vm_package",
+                    "payload": {
+                        "package_dir": export["package_dir"],
+                        "target_vm_name": "hg-target",
+                        "target_lab_id": "target-lab",
+                    },
+                }
+            )
+            self.assertEqual(status, "done")
+            self.assertEqual(result["target_vm_name"], "hg-target")
+            self.assertIn("hg-target", target_backend.defined_xml)
 
 
 class AgentCliTests(unittest.TestCase):

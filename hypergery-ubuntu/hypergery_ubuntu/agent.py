@@ -94,6 +94,23 @@ class HyperGeryAgent:
         self.backend = backend or HyperGeryBackend()
         self.client = client or RegistryClient(self.config.registry_url)
 
+    def staging_roots(self) -> list[Path]:
+        configured = Path(self.config.nas_staging_path).expanduser().resolve()
+        roots = [configured]
+        if configured.name != "migrations":
+            roots.append((configured / "migrations").resolve())
+        return roots
+
+    def resolve_staged_package(self, package_dir: str) -> Path:
+        if not package_dir:
+            raise HyperGeryError("package_dir is required.")
+        candidate = Path(package_dir).expanduser().resolve()
+        roots = self.staging_roots()
+        if not any(candidate == root or root in candidate.parents for root in roots):
+            allowed = ", ".join(str(root) for root in roots)
+            raise HyperGeryError(f"Package path is outside configured NAS staging roots: {candidate}. Allowed: {allowed}")
+        return candidate
+
     def host_payload(self) -> dict[str, Any]:
         ram_total, ram_free = read_meminfo_mib()
         active_vms: list[str] = []
@@ -139,6 +156,20 @@ class HyperGeryAgent:
         if command_type == "ping":
             return "done", {"pong": True, "host_id": self.config.host_id}
         if command_type == "preflight":
+            if payload.get("vm_name"):
+                from .migration import migration_preflight
+
+                result = migration_preflight(
+                    self.backend,
+                    str(payload["vm_name"]),
+                    target_host=str(payload.get("target_host", "")),
+                    target_vm_name=str(payload.get("target_vm_name", "")),
+                    nas_path=str(payload.get("nas_path") or self.config.nas_staging_path),
+                    allow_paused=bool(payload.get("allow_paused", False)),
+                    include_iso=not bool(payload.get("no_iso", False)),
+                    include_snapshots=not bool(payload.get("no_snapshots", False)),
+                )
+                return ("done" if result["ok"] else "failed"), result
             items = [
                 {"name": item.name, "status": item.status, "detail": item.detail, "fix": item.fix}
                 for item in self.backend.preflight()
@@ -159,13 +190,45 @@ class HyperGeryAgent:
                     for vm in self.backend.list_vms()
                 ]
             }
-        if command_type in {"receive_vm_package", "import_vm_package"}:
-            return "failed", {
-                "error": f"{command_type} is reserved for the VM package phase and is not implemented yet.",
-                "payload": payload,
+        if command_type == "receive_vm_package":
+            from .migration import validate_vm_package
+
+            package = self.resolve_staged_package(str(payload.get("package_dir", "")))
+            validation = validate_vm_package(package)
+            return ("done" if validation["ok"] else "failed"), {
+                "package_dir": str(package),
+                "validation": validation,
             }
+        if command_type == "import_vm_package":
+            from .migration import import_vm_package
+
+            package = self.resolve_staged_package(str(payload.get("package_dir", "")))
+            result = import_vm_package(
+                self.backend,
+                package,
+                target_vm_name=str(payload.get("target_vm_name", "")),
+                target_lab_id=str(payload.get("target_lab_id", "")),
+            )
+            return "done", result
         if command_type == "migration_status":
-            return "done", {"migration_id": payload.get("migration_id", ""), "status": "unknown"}
+            from .migration import list_migration_packages, validate_vm_package
+
+            if payload.get("package_dir"):
+                package = self.resolve_staged_package(str(payload.get("package_dir", "")))
+                validation = validate_vm_package(package)
+                return "done", {
+                    "package_dir": str(package),
+                    "status": "package-valid" if validation["ok"] else "package-invalid",
+                    "validation": validation,
+                }
+            migration_id = str(payload.get("migration_id", ""))
+            packages = list_migration_packages(self.config.nas_staging_path)
+            match = next((item for item in packages if item.get("migration_id") == migration_id), None)
+            return "done", {
+                "migration_id": migration_id,
+                "status": "staged" if match else "unknown",
+                "package": match,
+            }
         return "failed", {"error": f"Unhandled command_type: {command_type}"}
 
     def run_once(self) -> dict[str, Any]:

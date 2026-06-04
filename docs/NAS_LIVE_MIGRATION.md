@@ -75,6 +75,17 @@ List staged packages:
 python -m hypergery_ubuntu.cli migrate list --path /mnt/hypergery-nas
 ```
 
+## Agent Commands
+
+The registry can queue only allowlisted commands. For migration packages, the agent supports:
+
+- `preflight` with `vm_name`: runs VM migration preflight and returns `done` only when the VM can be packaged safely.
+- `receive_vm_package`: validates a staged package manifest and checksums.
+- `import_vm_package`: imports a validated staged package on the target host.
+- `migration_status`: reports whether a package is staged/valid/invalid.
+
+`receive_vm_package`, `import_vm_package`, and package-based `migration_status` reject paths outside the configured `nas_staging_path` or its `migrations/` child.
+
 ## Not Implemented Yet
 
 - Remote orchestration from the Qt UI.

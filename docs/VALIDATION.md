@@ -56,6 +56,9 @@ Migration package unit/CLI smoke on prepared host (2026-06-04):
 - [x] `validate_vm_package()` accepts a clean package and reports checksum mismatch after asset tampering.
 - [x] `import_vm_package()` rewrites target VM name, UUID, MAC address, disk paths, ISO paths, network metadata, and lab association using a simulated backend.
 - [x] CLI `migrate preflight` returns JSON and preserves `source_will_be_deleted=false`.
+- [x] Agent `preflight` command runs VM migration preflight and fails safely for running VMs.
+- [x] Agent `receive_vm_package` validates only packages inside configured NAS staging.
+- [x] Agent `import_vm_package` calls the package import flow and blocks paths outside staging.
 
 Recommended real NAS/two-host smoke:
 
