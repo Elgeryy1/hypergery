@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.6.0 - Topology Export & Polish
+
+Roadmap:
+
+- Export topology to PNG/SVG.
+- Zoom and pan for large labs.
+- Role badges in topology nodes.
+- Progress per VM during lab instantiation.
+- Improved cleanup actions.
+- Optional removal of Tkinter legacy fallback.
+
 ## v0.5.0 - Lab Topology & UX
 
 HyperGery v0.5.0 — topología visual de labs y mejoras de UX.
