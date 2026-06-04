@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from .backend import HyperGeryBackend, HyperGeryError
 from .labs import LabStore
@@ -206,6 +209,28 @@ def lab_instantiate_action(backend: HyperGeryBackend, args: argparse.Namespace) 
     return print_json(result)
 
 
+def registry_action(args: argparse.Namespace) -> int:
+    if args.registry_command == "serve":
+        from .registry import serve_registry
+
+        serve_registry(
+            args.host,
+            args.port,
+            db_path=args.db_path,
+            offline_timeout_seconds=args.offline_timeout,
+        )
+        return 0
+    if args.registry_command == "health":
+        url = args.registry_url.rstrip("/") + "/health"
+        try:
+            with urlopen(Request(url, method="GET"), timeout=5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except (OSError, URLError, json.JSONDecodeError) as exc:
+            raise HyperGeryError(f"Registry health check failed for {url}: {exc}") from exc
+        return print_json(data)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hypergery-cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -299,9 +324,22 @@ def main(argv: list[str] | None = None) -> int:
     lab_instantiate_p.add_argument("--description", default="")
     lab_instantiate_p.add_argument("--dry-run", action="store_true",
                                    help="Validate and show plan without creating anything.")
+    registry_parser = sub.add_parser("registry", help="Run or query the NAS control plane registry.")
+    registry_sub = registry_parser.add_subparsers(dest="registry_command", required=True)
+    registry_serve = registry_sub.add_parser("serve")
+    registry_serve.add_argument("--host", default=os.environ.get("HYPERGERY_REGISTRY_HOST", "127.0.0.1"))
+    registry_serve.add_argument("--port", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_PORT", "8765")))
+    registry_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_REGISTRY_DB", ""))
+    registry_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90")))
+    registry_health = registry_sub.add_parser("health")
+    registry_health.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "registry":
+            if getattr(args, "db_path", "") == "":
+                args.db_path = None
+            return registry_action(args)
         backend = HyperGeryBackend()
         if args.command == "preflight":
             return print_preflight(backend)
