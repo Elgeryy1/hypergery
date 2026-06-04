@@ -5,7 +5,16 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
-from hypergery_ubuntu.backend import CommandResult, HG_NS, HyperGeryBackend, HyperGeryError, VmSummary, validate_vm_name, xdg_data_home
+from hypergery_ubuntu.backend import (
+    CommandResult,
+    HG_NS,
+    HyperGeryBackend,
+    HyperGeryError,
+    VmSummary,
+    parse_console_display,
+    validate_vm_name,
+    xdg_data_home,
+)
 
 
 class BackendStaticTests(unittest.TestCase):
@@ -234,7 +243,60 @@ class BackendStaticTests(unittest.TestCase):
         )
         root = ET.fromstring(xml)
         self.assertEqual(root.find("./devices/graphics").attrib["type"], "vnc")
+        self.assertEqual(root.find("./devices/graphics").attrib["listen"], "127.0.0.1")
+        self.assertEqual(root.find("./devices/graphics").attrib["autoport"], "yes")
         self.assertEqual(root.findall("./devices/channel"), [])
+
+    def test_parse_console_display_vnc_domdisplay_display_number(self):
+        display = parse_console_display("vnc://127.0.0.1:1")
+        self.assertEqual(display.type, "vnc")
+        self.assertEqual(display.host, "127.0.0.1")
+        self.assertEqual(display.port, 5901)
+        self.assertEqual(display.display, ":1")
+        self.assertEqual(display.uri, "vnc://127.0.0.1:5901")
+
+    def test_parse_console_display_spice_domdisplay_port(self):
+        display = parse_console_display("spice://127.0.0.1:5902")
+        self.assertEqual(display.type, "spice")
+        self.assertEqual(display.port, 5902)
+
+    def test_parse_console_display_xml_fallback(self):
+        xml = '<domain><devices><graphics type="vnc" listen="127.0.0.1" port="5903"/></devices></domain>'
+        display = parse_console_display("", xml)
+        self.assertEqual(display.type, "vnc")
+        self.assertEqual(display.port, 5903)
+        self.assertEqual(display.display, ":3")
+
+    def test_parse_console_display_rewrites_wildcard_to_localhost(self):
+        display = parse_console_display("vnc://0.0.0.0:2")
+        self.assertEqual(display.host, "127.0.0.1")
+        self.assertEqual(display.uri, "vnc://127.0.0.1:5902")
+
+    def test_parse_console_display_raises_when_display_missing(self):
+        with self.assertRaises(HyperGeryError):
+            parse_console_display("", "<domain><devices/></domain>")
+
+    def test_get_console_display_uses_domdisplay_and_vm_xml(self):
+        class FakeConsoleBackend(HyperGeryBackend):
+            def __init__(self):
+                pass
+
+            def get_vm(self, name):
+                return VmSummary(
+                    name=name,
+                    state="running",
+                    lab_id="default-lab",
+                    graphics="vnc",
+                    xml='<domain><devices><graphics type="vnc" listen="127.0.0.1" port="5904"/></devices></domain>',
+                )
+
+            def virsh(self, args, *, timeout=120, check=True):
+                return CommandResult(["virsh", *args], 0, "vnc://127.0.0.1:4\n", "")
+
+        display = FakeConsoleBackend().get_console_display("hg-vnc")
+        self.assertEqual(display["type"], "vnc")
+        self.assertEqual(display["port"], 5904)
+        self.assertEqual(display["uri"], "vnc://127.0.0.1:5904")
 
     def test_manifest_disk_paths_records_custom_disk_ownership(self):
         disk = Path(self.temp.name) / "custom" / "vm.qcow2"

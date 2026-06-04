@@ -186,3 +186,24 @@ Fix `/dev/kvm`, `libvirt` group membership, or libvirt service issues before sta
 python -m hypergery_ubuntu.cli agent config show
 python -m hypergery_ubuntu.cli migrate validate-package /mnt/hypergery-nas/migrations/<migration_id>
 ```
+
+## Integrated Console Does Not Connect
+
+The integrated console currently targets local VNC displays. Check the VM display mode:
+
+```bash
+virsh --connect qemu:///system dumpxml <vm-name> | grep graphics
+virsh --connect qemu:///system domdisplay <vm-name>
+```
+
+Expected for integrated console:
+
+```xml
+<graphics type="vnc" autoport="yes" listen="127.0.0.1"/>
+```
+
+If the VM uses SPICE, use **External Console** or change the VM display mode to `vnc` in Settings while the VM is shut off.
+
+If the integrated console says authentication is required, use **External Console**. The built-in client intentionally supports only local no-auth VNC because libvirt binds it to `127.0.0.1`.
+
+Click inside the console to capture keyboard and mouse input. Press Right Ctrl to release input. Disconnecting or closing the console does not stop the VM.

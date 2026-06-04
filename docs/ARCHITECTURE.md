@@ -27,6 +27,18 @@ It provides:
   - **Resource Overview**: `CleanupPreviewDialog` shows all VMs, labs, and templates — read-only.
 - Qt backend workers so long-running host operations do not block the UI thread.
 
+### Integrated Console
+
+The integrated console lives in `hypergery_ubuntu/ui_qt/console.py`.
+
+- It uses Qt networking (`QTcpSocket`) and a small RFB/VNC client rather than a browser or bundled noVNC.
+- It supports local no-auth VNC with Raw framebuffer encoding.
+- It is intended for libvirt/QEMU displays configured as `type="vnc" autoport="yes" listen="127.0.0.1"`.
+- Input capture is explicit: click inside the console to capture input, press Right Ctrl to release.
+- `virt-viewer` / `remote-viewer` remain the external fallback path and continue to support SPICE.
+
+Backend console discovery is handled by `HyperGeryBackend.get_console_display(vm_name)`, which uses `virsh domdisplay` plus domain XML fallback and returns normalized local URIs such as `vnc://127.0.0.1:5901`.
+
 The old Tkinter UI remains temporarily available in:
 
 ```text
@@ -41,7 +53,8 @@ The backend is Python and wraps real host tools:
 
 - `virsh` for libvirt domains, networks, state, snapshots, and console display URIs.
 - `qemu-img` for qcow2 disk creation and disk information.
-- `virt-viewer` or `remote-viewer` for real graphical consoles.
+- integrated local VNC for in-window graphical consoles.
+- `virt-viewer` or `remote-viewer` for external graphical consoles and SPICE fallback.
 
 Commands are executed with argument lists, not shell-concatenated strings. External command output is forced to locale `C` where possible so VM states remain stable even on localized desktops.
 

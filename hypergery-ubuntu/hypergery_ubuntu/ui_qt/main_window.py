@@ -56,6 +56,7 @@ from .dialogs import (
     SnapshotDialog,
     VMWizard,
 )
+from .console import IntegratedConsoleWidget
 from .lab_helpers import build_lab_topology, filter_vms_for_lab, vm_count_for_lab
 from .topology import LabTopologyWidget
 from .styles import (
@@ -134,6 +135,7 @@ class MainWindow(QMainWindow):
         self.start_button = self._button("Start", self.start_vm)
         self.shutdown_button = self._button("ACPI Shutdown", self.shutdown_vm)
         self.console_button = self._button("Console", self.open_console)
+        self.external_console_button = self._button("External Console", self.open_external_console)
         self.snapshots_button = self._button("Snapshots", self.snapshots_vm)
         self.clone_button = self._button("Clone", self.clone_vm)
         self.migrate_button = self._button("Live Migration", self.live_migration_vm)
@@ -147,6 +149,7 @@ class MainWindow(QMainWindow):
             self.start_button,
             self.shutdown_button,
             self.console_button,
+            self.external_console_button,
             self.snapshots_button,
             self.clone_button,
             self.migrate_button,
@@ -557,6 +560,8 @@ class MainWindow(QMainWindow):
             text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
             self.tabs.addTab(text, name)
             self.detail_views[name] = text
+        self.console_widget = IntegratedConsoleWidget(self.backend)
+        self.tabs.addTab(self.console_widget, "Console")
         return self.tabs
 
     def _build_logs_panel(self) -> QWidget:
@@ -610,6 +615,7 @@ class MainWindow(QMainWindow):
             self.start_button,
             self.shutdown_button,
             self.console_button,
+            self.external_console_button,
             self.snapshots_button,
             self.clone_button,
             self.migrate_button,
@@ -657,6 +663,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(has_vm and not running)
         self.shutdown_button.setEnabled(has_vm and running)
         self.console_button.setEnabled(has_vm and running)
+        self.external_console_button.setEnabled(has_vm and running)
         self.snapshots_button.setEnabled(has_vm)
         self.clone_button.setEnabled(has_vm and shut_off)
         self.migrate_button.setEnabled(has_vm)
@@ -1236,6 +1243,7 @@ class MainWindow(QMainWindow):
             empty = "No VM selected."
             for view in self.detail_views.values():
                 view.setPlainText(empty)
+            self.console_widget.set_vm(None)
             return
         self.detail_stack.setCurrentIndex(1)
         self.selection_label.setText(f"{vm.name}  -  {vm.state}  -  {vm.lab_id or 'unknown lab'}")
@@ -1249,7 +1257,12 @@ class MainWindow(QMainWindow):
         )
         self.detail_views["System"].setPlainText(details_block(("RAM", format_mib(vm.ram_mib)), ("vCPUs", str(vm.vcpus or "unknown"))))
         self.detail_views["Display"].setPlainText(
-            details_block(("Graphics", vm.graphics or "unknown"), ("Console", "virt-viewer or remote-viewer"))
+            details_block(
+                ("Graphics", vm.graphics or "unknown"),
+                ("Integrated console", "VNC local display" if vm.graphics == "vnc" else "switch display to VNC or use external viewer"),
+                ("External console", "virt-viewer or remote-viewer"),
+                ("Host Key", "Right Ctrl"),
+            )
         )
         self.detail_views["Storage"].setPlainText(
             details_block(
@@ -1267,6 +1280,7 @@ class MainWindow(QMainWindow):
             body = f"Snapshot status unavailable:\n{exc}"
         self.detail_views["Snapshots"].setPlainText(body)
         self.detail_views["Logs"].setPlainText(self.backend.recent_logs(80))
+        self.console_widget.set_vm(vm)
 
     def selected_name(self) -> str:
         if self.selected_vm is None:
@@ -1422,7 +1436,16 @@ class MainWindow(QMainWindow):
         except HyperGeryError as exc:
             self.show_error(str(exc))
             return
-        self.run_operation(f"Opening console for {name}", lambda: self.backend.open_console(name))
+        self.tabs.setCurrentWidget(self.console_widget)
+        self.console_widget.connect_console()
+
+    def open_external_console(self) -> None:
+        try:
+            name = self.selected_name()
+        except HyperGeryError as exc:
+            self.show_error(str(exc))
+            return
+        self.run_operation(f"Opening external console for {name}", lambda: self.backend.open_console(name))
 
     def snapshots_vm(self) -> None:
         if self.selected_vm is None:

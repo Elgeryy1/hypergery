@@ -16,6 +16,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 APP_NAME = "HyperGery"
@@ -60,11 +61,73 @@ class VmSummary:
     xml: str = ""
 
 
+@dataclass
+class ConsoleDisplay:
+    type: str
+    host: str
+    port: int
+    display: str
+    uri: str
+
+
 def is_snap_private_xdg_path(path: Path) -> bool:
     try:
         return bool(os.environ.get("SNAP")) and (Path.home() / "snap") in path.parents
     except RuntimeError:
         return False
+
+
+def _console_port(display_type: str, value: str) -> tuple[int, str]:
+    try:
+        raw = int(value)
+    except (TypeError, ValueError):
+        raise HyperGeryError("Console display does not expose a usable TCP port.")
+    if display_type == "vnc" and 0 <= raw < 100:
+        return 5900 + raw, f":{raw}"
+    if raw <= 0:
+        raise HyperGeryError("Console display does not expose a usable TCP port.")
+    if display_type == "vnc" and raw >= 5900:
+        return raw, f":{raw - 5900}"
+    return raw, f":{raw}"
+
+
+def parse_console_display(uri: str = "", xml: str = "") -> ConsoleDisplay:
+    display_type = ""
+    host = "127.0.0.1"
+    port = 0
+    display = ""
+    uri = (uri or "").strip()
+    if uri:
+        parsed = urlparse(uri)
+        display_type = parsed.scheme.lower()
+        if display_type not in {"vnc", "spice"}:
+            raise HyperGeryError(f"Unsupported console display type: {display_type or uri}")
+        if parsed.hostname and parsed.hostname not in {"0.0.0.0", "::", "[::]"}:
+            host = parsed.hostname
+        if parsed.port is not None:
+            port, display = _console_port(display_type, str(parsed.port))
+    if xml and (not display_type or not port):
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as exc:
+            raise HyperGeryError(f"Cannot parse libvirt domain XML for console display: {exc}") from exc
+        graphics = root.find("./devices/graphics")
+        if graphics is not None:
+            display_type = display_type or graphics.attrib.get("type", "").lower()
+            listen = graphics.attrib.get("listen", "")
+            if listen and listen not in {"0.0.0.0", "::"}:
+                host = listen
+            if not port:
+                port_attr = graphics.attrib.get("port") or graphics.attrib.get("tlsPort") or ""
+                port, display = _console_port(display_type, port_attr)
+    if display_type not in {"vnc", "spice"}:
+        raise HyperGeryError("VM has no supported graphical console display.")
+    if not port:
+        raise HyperGeryError("VM console display is not ready yet. Start the VM and retry.")
+    normalized_uri = f"{display_type}://{host}:{port}"
+    if not display:
+        display = f":{port - 5900}" if display_type == "vnc" and port >= 5900 else f":{port}"
+    return ConsoleDisplay(display_type, host, port, display, normalized_uri)
 
 
 def xdg_data_home() -> Path:
@@ -843,6 +906,13 @@ class HyperGeryBackend:
             logging.info("opened remote-viewer for vm: %s uri=%s", name, uri)
             return
         raise HyperGeryError("No console viewer installed. Install virt-viewer or remote-viewer.")
+
+    def get_console_display(self, name: str) -> dict[str, object]:
+        name = validate_vm_name(name)
+        vm = self.get_vm(name)
+        domdisplay = self.virsh(["domdisplay", name], check=False)
+        uri = domdisplay.stdout.strip() if domdisplay.returncode == 0 else ""
+        return parse_console_display(uri, vm.xml).__dict__
 
     def launch_viewer(self, args: list[str]) -> None:
         proc = subprocess.Popen(

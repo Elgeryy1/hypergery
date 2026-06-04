@@ -31,6 +31,8 @@ Implemented in development so far:
 - Qt **Remote Hosts** panel with registry host list, online/offline state, last seen, RAM/disk info, KVM/libvirt readiness, active VMs, Refresh, and Test command.
 - Qt **Live Migration** VM action with real target host selection, target VM name, include ISO/snapshots, start-after-import, preflight output, and Start Migration gated by successful preflight.
 - CLI `migrate remote` and `migrate status --migration-id` for registry-backed orchestration and polling.
+- Integrated VM console tab for local VNC displays, with explicit input capture/release and Right Ctrl as Host Key.
+- Toolbar split between integrated **Console** and **External Console** so `virt-viewer` / `remote-viewer` remain available for SPICE and fallback.
 
 Future topology polish:
 
