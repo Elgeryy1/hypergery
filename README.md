@@ -135,28 +135,56 @@ The current user must belong to the `kvm` and `libvirt` groups.
 
 ## Installation
 
-Install system dependencies:
+### First run on a fresh Ubuntu laptop
+
+For a new Ubuntu/Linux laptop, the launcher can check and prepare most of the host automatically:
+
+```bash
+git clone https://github.com/Elgeryy1/hypergery.git
+cd hypergery
+./scripts/dev-run.sh
+```
+
+On first run, `dev-run.sh` checks QEMU/libvirt tools, `/dev/kvm`, libvirt services, `kvm`/`libvirt` group membership, Python venv state, and PySide6. If something is missing, it prints a summary and asks:
+
+```text
+Continue? [y/N]
+```
+
+If accepted, sudo or pkexec may request your password. The script installs only the Ubuntu packages HyperGery needs, enables libvirt services where available, creates `~/.venvs/hypergery` with `python3 -m venv --copies`, installs HyperGery editable into that venv, runs preflight, and opens the Qt app.
+
+If group membership is changed, log out and back in before KVM/libvirt permissions fully apply.
+
+Useful modes:
+
+```bash
+./scripts/dev-run.sh --check-only  # report only
+./scripts/dev-run.sh --no-install  # fail instead of installing
+./scripts/dev-run.sh --install     # install/fix without interactive prompt except sudo/pkexec
+./scripts/dev-run.sh --legacy-tk   # launch legacy Tk fallback
+```
+
+Manual system dependency install is still available:
 
 ```bash
 ./scripts/install-ubuntu-deps.sh
-sudo systemctl enable --now libvirtd
-sudo usermod -aG kvm,libvirt "$USER"
-# Log out and back in after changing groups
 ```
 
-Install HyperGery. If the repository lives on a local filesystem:
-
-```bash
-cd hypergery-ubuntu && python3 -m pip install -e .
-```
-
-Recommended setup when on a NAS or filesystem without reliable symlink support:
+Manual Python setup:
 
 ```bash
 python3 -m venv --copies ~/.venvs/hypergery
 source ~/.venvs/hypergery/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ./hypergery-ubuntu
+```
+
+HyperGery intentionally uses `~/.venvs/hypergery` for the launcher path so a repo cloned onto a NAS or filesystem with unreliable symlinks does not get a local `.venv`.
+
+If the repository lives on a local filesystem and you want a manual editable install with your current Python:
+
+```bash
+cd hypergery-ubuntu && python3 -m pip install -e .
 ```
 
 Optional desktop launcher:
@@ -176,7 +204,6 @@ Run preflight:
 Run the Qt desktop app:
 
 ```bash
-source ~/.venvs/hypergery/bin/activate
 ./scripts/dev-run.sh
 # or: python -m hypergery_ubuntu
 ```

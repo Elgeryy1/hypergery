@@ -10,8 +10,23 @@ Required automated checks:
 cd hypergery-ubuntu && python3 -m unittest discover -s tests
 cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
 python3 -m compileall hypergery-ubuntu
-bash -n scripts/dev-run.sh scripts/preflight.sh scripts/acceptance-ubuntu.sh scripts/acceptance-real-host.sh scripts/install-ubuntu-deps.sh scripts/install-desktop-launcher.sh
+bash -n scripts/dev-run.sh scripts/bootstrap-ubuntu.sh scripts/preflight.sh scripts/acceptance-ubuntu.sh scripts/acceptance-real-host.sh scripts/install-ubuntu-deps.sh scripts/install-desktop-launcher.sh
 ```
+
+First-run bootstrap smoke:
+
+- [ ] `./scripts/dev-run.sh --check-only` prints system/package/service/group/Python readiness and does not install.
+- [ ] `./scripts/dev-run.sh --no-install` exits clearly if anything is missing.
+- [ ] On a prepared host, `./scripts/dev-run.sh --no-install` runs preflight and starts the Qt app without reinstalling.
+- [ ] On a fresh Ubuntu laptop, `./scripts/dev-run.sh` asks before installing packages.
+- [ ] `./scripts/dev-run.sh --install` installs/fixes missing items without the interactive question, while sudo/pkexec still prompts normally.
+- [ ] If `kvm`/`libvirt` membership changes, the script prints the logout/login warning.
+- [ ] The venv is created at `~/.venvs/hypergery` with `--copies`, not inside the repo.
+
+Bootstrap smoke on prepared host (2026-06-04):
+
+- [x] `./scripts/dev-run.sh --check-only` reported no missing system tools, no inactive services, no missing groups, and Python environment ready.
+- [x] `timeout 8s ./scripts/dev-run.sh --no-install` did not reinstall anything, ran preflight successfully, and reached Qt app startup before the controlled timeout.
 
 Required local smoke:
 

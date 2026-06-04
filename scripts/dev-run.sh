@@ -1,29 +1,86 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/../hypergery-ubuntu"
-python_bin="${HYPERGERY_PYTHON:-python3}"
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+venv_dir="${HYPERGERY_VENV:-$HOME/.venvs/hypergery}"
+python_bin="${HYPERGERY_PYTHON:-$venv_dir/bin/python}"
+bootstrap_mode=()
+check_only=0
+legacy_tk=0
 
-if ! "$python_bin" - <<'PY' >/dev/null 2>&1
-import PySide6
-PY
-then
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/dev-run.sh [--check-only] [--install] [--no-install] [--legacy-tk] [--help]
+
+First-run friendly launcher for HyperGery on Ubuntu/Linux.
+
+Options:
+  --check-only   Check host, services, groups, and Python env; do not install or launch.
+  --install      Install/fix missing dependencies without an interactive prompt except sudo/pkexec.
+  --no-install   Do not install; fail if anything required is missing.
+  --legacy-tk    Launch the legacy Tk fallback instead of the PySide6 UI.
+  --help         Show this help.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check-only)
+      bootstrap_mode=(--check-only)
+      check_only=1
+      ;;
+    --install)
+      bootstrap_mode=(--install)
+      ;;
+    --no-install)
+      bootstrap_mode=(--no-install)
+      ;;
+    --legacy-tk)
+      legacy_tk=1
+      ;;
+    --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [[ "${#bootstrap_mode[@]}" -eq 0 ]]; then
+  bootstrap_mode=()
+fi
+
+"$repo_root/scripts/bootstrap-ubuntu.sh" "${bootstrap_mode[@]}"
+
+if [[ "$check_only" -eq 1 ]]; then
+  exit 0
+fi
+
+if [[ ! -x "$python_bin" ]]; then
+  echo "Python environment is missing: $python_bin" >&2
+  echo "Run ./scripts/dev-run.sh --install to create $venv_dir safely with --copies." >&2
+  exit 2
+fi
+
+echo "Running HyperGery preflight..."
+if ! "$python_bin" -m hypergery_ubuntu.cli preflight; then
   cat >&2 <<EOF
-HyperGery Qt UI requires PySide6 in the Python environment used to run it.
 
-Recommended setup, especially when the repo is on a NAS:
-  python3 -m venv --copies ~/.venvs/hypergery
-  source ~/.venvs/hypergery/bin/activate
-  python -m pip install --upgrade pip
-  python -m pip install -e ./hypergery-ubuntu
-
-Then run:
-  source ~/.venvs/hypergery/bin/activate
-  ./scripts/dev-run.sh
-
-You can also set HYPERGERY_PYTHON=/path/to/python.
+Preflight did not pass. If user groups were just changed, log out and back in
+before starting HyperGery so kvm/libvirt permissions apply.
 EOF
   exit 2
+fi
+
+cd "$repo_root/hypergery-ubuntu"
+
+if [[ "$legacy_tk" -eq 1 ]]; then
+  exec "$python_bin" -m hypergery_ubuntu.app_tk
 fi
 
 exec "$python_bin" -m hypergery_ubuntu

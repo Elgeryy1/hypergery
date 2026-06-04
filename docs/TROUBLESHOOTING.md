@@ -1,5 +1,36 @@
 # Troubleshooting
 
+## First Run on a Fresh Ubuntu Laptop
+
+Use the first-run launcher:
+
+```bash
+git clone https://github.com/Elgeryy1/hypergery.git
+cd hypergery
+./scripts/dev-run.sh
+```
+
+The script checks:
+
+- `qemu-system-x86_64`, `qemu-img`, `virsh`, and a console viewer (`virt-viewer` or `remote-viewer`).
+- `libvirtd` or modular `virtqemud` services.
+- `/dev/kvm` existence and current-user access.
+- `kvm` and `libvirt` group membership.
+- `python3`, `python3-venv`, `python3-pip`.
+- PySide6 and HyperGery inside `~/.venvs/hypergery`.
+
+If anything is missing, the script prints a summary and asks before installing. It does not run sudo silently. `--install` skips the interactive question but sudo/pkexec can still ask for your password.
+
+```bash
+./scripts/dev-run.sh --check-only
+./scripts/dev-run.sh --no-install
+./scripts/dev-run.sh --install
+```
+
+The launcher always creates the venv at `~/.venvs/hypergery` with `--copies`; it does not create a local `.venv` inside the repository.
+
+If the script adds you to `kvm` or `libvirt`, log out and back in before expecting `/dev/kvm` and `qemu:///system` access to work reliably.
+
 ## Virtualenv Fails on a NAS or Filesystem Without Symlinks
 
 Some NAS mounts and shared filesystems do not handle Python virtualenv symlinks
@@ -57,7 +88,7 @@ Log out and back in before rerunning HyperGery.
 If `/etc/group` already lists your user in `libvirt` but `id -nG` does not, the current login session has not inherited the new group yet. Log out completely and back in, or use a temporary subsession:
 
 ```bash
-sg libvirt -c 'cd /path/to/miversiondevirtualbox && source ~/.venvs/hypergery/bin/activate && ./scripts/dev-run.sh'
+sg libvirt -c 'cd /path/to/hypergery && ./scripts/dev-run.sh --no-install'
 ```
 
 ## VM State Looks Wrong or Does Not Refresh
