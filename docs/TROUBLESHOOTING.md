@@ -204,6 +204,8 @@ Expected for the integrated console:
 
 If the VM uses SPICE, the HyperGery Console window shows a card instead of a black screen. Use **Open External Viewer** for SPICE, or use **Switch to VNC** while the VM is shut off. HyperGery will configure the display as local VNC with `listen="127.0.0.1"` and `autoport="yes"`.
 
+If libvirt reports `spice audio is not supported without spice graphics` or a localized variant such as `Sonido de especia no esta admitido sin graficos de especia`, the VM XML still has SPICE audio while using VNC graphics. HyperGery removes `audio type="spice"` and SPICE-only channels when switching a shut off VM to VNC.
+
 If the integrated console says authentication is required, use **External Console**. The built-in client intentionally supports only local no-auth VNC because libvirt binds it to `127.0.0.1`.
 
 Click inside the console window to capture keyboard and mouse input only after a VNC connection is active. Press Right Ctrl to release input. Right Ctrl does not apply to SPICE fallback mode. Disconnecting or closing the console window does not stop the VM.

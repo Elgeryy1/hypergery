@@ -130,6 +130,33 @@ def parse_console_display(uri: str = "", xml: str = "") -> ConsoleDisplay:
     return ConsoleDisplay(display_type, host, port, display, normalized_uri)
 
 
+def normalize_graphics_audio_for_display(root: ET.Element, display_mode: str) -> None:
+    if display_mode not in {"spice", "vnc"}:
+        raise HyperGeryError("Display mode must be spice or vnc.")
+    devices = root.find("./devices")
+    if devices is None:
+        devices = ET.SubElement(root, "devices")
+
+    graphics = devices.find("graphics")
+    if graphics is None:
+        graphics = ET.SubElement(devices, "graphics")
+    graphics.attrib.clear()
+    graphics.attrib.update({"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
+
+    spice_channels = [channel for channel in devices.findall("channel") if channel.attrib.get("type") == "spicevmc"]
+    if display_mode == "spice":
+        if not spice_channels:
+            channel = ET.SubElement(devices, "channel", {"type": "spicevmc"})
+            ET.SubElement(channel, "target", {"type": "virtio", "name": "com.redhat.spice.0"})
+        return
+
+    for channel in spice_channels:
+        devices.remove(channel)
+    for audio in list(devices.findall("audio")):
+        if audio.attrib.get("type") == "spice":
+            devices.remove(audio)
+
+
 def xdg_data_home() -> Path:
     override = os.environ.get("HYPERGERY_DATA_HOME")
     if override:
@@ -1016,22 +1043,7 @@ class HyperGeryBackend:
             model = interface.find("model")
             if model is None:
                 ET.SubElement(interface, "model", {"type": "virtio"})
-        graphics = root.find("./devices/graphics")
-        if graphics is None:
-            graphics = ET.SubElement(devices, "graphics")
-        graphics.attrib.clear()
-        graphics.attrib.update({"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
-        spice_channels = [
-            channel
-            for channel in devices.findall("channel")
-            if channel.attrib.get("type") == "spicevmc"
-        ]
-        if display_mode == "spice" and not spice_channels:
-            channel = ET.SubElement(devices, "channel", {"type": "spicevmc"})
-            ET.SubElement(channel, "target", {"type": "virtio", "name": "com.redhat.spice.0"})
-        if display_mode == "vnc":
-            for channel in spice_channels:
-                devices.remove(channel)
+        normalize_graphics_audio_for_display(root, display_mode)
         cdrom_source = None
         for disk in root.findall("./devices/disk"):
             if disk.attrib.get("device") == "cdrom":

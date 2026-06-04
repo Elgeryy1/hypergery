@@ -11,6 +11,7 @@ from hypergery_ubuntu.backend import (
     HyperGeryBackend,
     HyperGeryError,
     VmSummary,
+    normalize_graphics_audio_for_display,
     parse_console_display,
     validate_vm_name,
     xdg_data_home,
@@ -246,6 +247,65 @@ class BackendStaticTests(unittest.TestCase):
         self.assertEqual(root.find("./devices/graphics").attrib["listen"], "127.0.0.1")
         self.assertEqual(root.find("./devices/graphics").attrib["autoport"], "yes")
         self.assertEqual(root.findall("./devices/channel"), [])
+
+    def test_normalize_display_to_vnc_removes_spice_audio_and_channel(self):
+        root = ET.fromstring(
+            """<domain>
+  <devices>
+    <graphics type="spice" autoport="yes" listen="127.0.0.1"/>
+    <audio id="1" type="spice"/>
+    <sound model="ich9"/>
+    <channel type="spicevmc">
+      <target type="virtio" name="com.redhat.spice.0"/>
+    </channel>
+  </devices>
+</domain>"""
+        )
+
+        normalize_graphics_audio_for_display(root, "vnc")
+
+        graphics = root.find("./devices/graphics")
+        self.assertEqual(graphics.attrib["type"], "vnc")
+        self.assertEqual(graphics.attrib["listen"], "127.0.0.1")
+        self.assertEqual(graphics.attrib["autoport"], "yes")
+        self.assertEqual(root.findall("./devices/audio"), [])
+        self.assertEqual(root.findall("./devices/channel"), [])
+        self.assertIsNotNone(root.find("./devices/sound"))
+
+    def test_normalize_display_to_vnc_does_not_leave_spice_graphics_or_audio(self):
+        root = ET.fromstring(
+            """<domain>
+  <devices>
+    <graphics type="spice"/>
+    <audio type="spice"/>
+  </devices>
+</domain>"""
+        )
+
+        normalize_graphics_audio_for_display(root, "vnc")
+        rendered = ET.tostring(root, encoding="unicode")
+
+        self.assertIn('type="vnc"', rendered)
+        self.assertNotIn('graphics type="spice"', rendered)
+        self.assertNotIn('audio type="spice"', rendered)
+
+    def test_normalize_display_to_spice_keeps_spice_compatible_channel(self):
+        root = ET.fromstring(
+            """<domain>
+  <devices>
+    <graphics type="vnc" autoport="yes" listen="127.0.0.1"/>
+  </devices>
+</domain>"""
+        )
+
+        normalize_graphics_audio_for_display(root, "spice")
+
+        self.assertEqual(root.find("./devices/graphics").attrib["type"], "spice")
+        self.assertEqual(root.find("./devices/graphics").attrib["listen"], "127.0.0.1")
+        self.assertEqual(root.find("./devices/graphics").attrib["autoport"], "yes")
+        channel = root.find("./devices/channel")
+        self.assertIsNotNone(channel)
+        self.assertEqual(channel.attrib["type"], "spicevmc")
 
     def test_parse_console_display_vnc_domdisplay_display_number(self):
         display = parse_console_display("vnc://127.0.0.1:1")

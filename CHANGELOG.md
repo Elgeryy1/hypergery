@@ -34,6 +34,7 @@ Implemented in development so far:
 - Separate HyperGery Console window for local VNC displays, with toolbar actions, explicit input capture/release, and Right Ctrl as Host Key.
 - SPICE VMs now show a clear integrated-console fallback message and keep using the external viewer path.
 - SPICE console UX now uses a clear VNC-required card, avoids input capture without an active VNC connection, and offers **Switch to VNC** while the VM is shut off.
+- Switching a shut off VM from SPICE to VNC now removes SPICE-only audio/channel XML so libvirt can redefine the domain.
 - Toolbar split between integrated **Console** and **External Console** so `virt-viewer` / `remote-viewer` remain available for SPICE and fallback.
 
 Future topology polish:
