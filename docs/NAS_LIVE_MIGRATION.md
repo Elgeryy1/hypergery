@@ -75,6 +75,30 @@ List staged packages:
 python -m hypergery_ubuntu.cli migrate list --path /mnt/hypergery-nas
 ```
 
+Remote registry/agent orchestration:
+
+```bash
+python -m hypergery_ubuntu.cli migrate remote hg-demo \
+  --nas-path /mnt/hypergery-nas \
+  --source-host-id source-host \
+  --target-host-id target-host \
+  --target-vm-name hg-demo-target \
+  --registry-url http://nas-or-registry-host:8765
+
+python -m hypergery_ubuntu.cli migrate status \
+  --migration-id <migration_id> \
+  --registry-url http://nas-or-registry-host:8765
+```
+
+Remote flow:
+
+1. Source runs preflight and records `preflight`.
+2. Source exports package into NAS staging and records `packaging` then `uploaded`.
+3. Registry creates `import_vm_package` for the target host and records `waiting_target`.
+4. Target agent picks up the command and records `importing`.
+5. Target import defines the VM, rewrites identity/media paths, and records `defining_vm` then `done`.
+6. Any exception records `failed` with a clear error.
+
 ## Agent Commands
 
 The registry can queue only allowlisted commands. For migration packages, the agent supports:
@@ -96,11 +120,9 @@ The first v0.6 UI entry point is the **Live Migration** VM action in the main to
 - runs migration preflight
 - enables package creation only after a successful preflight
 
-This UI currently creates the source-side NAS package only. Remote target selection, registry orchestration, and target import progress remain pending.
+The UI now includes a **Remote Hosts** panel and a **Live Migration** dialog. The dialog loads real target hosts from the registry, blocks offline or KVM/libvirt-unready hosts, runs local preflight, creates the NAS package, queues the target import command, and records migration IDs for status polling.
 
 ## Not Implemented Yet
 
-- Remote orchestration from the Qt UI.
-- Target host capacity checks through the registry.
-- Streaming progress from agent commands.
 - True live RAM migration.
+- Streaming byte-level progress from agent commands.

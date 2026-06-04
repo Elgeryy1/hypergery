@@ -263,9 +263,11 @@ def host_action(args: argparse.Namespace) -> int:
 def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
     from .migration import (
         export_vm_package,
+        poll_remote_migration_status,
         import_vm_package,
         list_migration_packages,
         migration_preflight,
+        start_remote_migration,
         validate_vm_package,
     )
 
@@ -308,6 +310,13 @@ def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
     if args.migrate_command == "list":
         return print_json({"packages": list_migration_packages(args.path)})
     if args.migrate_command == "status":
+        if getattr(args, "migration_id", ""):
+            from .registry import RegistryClient
+
+            client = RegistryClient(args.registry_url)
+            return print_json(poll_remote_migration_status(client, args.migration_id))
+        if not args.package_dir:
+            raise HyperGeryError("migrate status requires a package_dir or --migration-id.")
         validation = validate_vm_package(args.package_dir)
         manifest = validation.get("manifest") or {}
         return print_json(
@@ -320,6 +329,26 @@ def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
                 "errors": validation["errors"],
                 "warnings": validation["warnings"],
             }
+        )
+    if args.migrate_command == "remote":
+        from .registry import RegistryClient
+
+        client = RegistryClient(args.registry_url)
+        return print_json(
+            start_remote_migration(
+                backend,
+                client,
+                args.vm_name,
+                args.nas_path,
+                source_host_id=args.source_host_id,
+                target_host_id=args.target_host_id,
+                target_vm_name=args.target_vm_name or "",
+                target_lab_id=args.target_lab_id or "",
+                allow_paused=args.allow_paused,
+                include_iso=not args.no_iso,
+                include_snapshots=not args.no_snapshots,
+                start_after_import=args.start_after_import,
+            )
         )
     return 2
 
@@ -472,7 +501,21 @@ def main(argv: list[str] | None = None) -> int:
     migrate_list = migrate_sub.add_parser("list", help="List migration packages under a path.")
     migrate_list.add_argument("--path", default=".")
     migrate_status = migrate_sub.add_parser("status", help="Show package status and validation summary.")
-    migrate_status.add_argument("package_dir")
+    migrate_status.add_argument("package_dir", nargs="?")
+    migrate_status.add_argument("--migration-id", default="")
+    migrate_status.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    migrate_remote = migrate_sub.add_parser("remote", help="Package a VM and queue target import through the registry.")
+    migrate_remote.add_argument("vm_name")
+    migrate_remote.add_argument("--nas-path", required=True)
+    migrate_remote.add_argument("--source-host-id", required=True)
+    migrate_remote.add_argument("--target-host-id", required=True)
+    migrate_remote.add_argument("--target-vm-name", default="")
+    migrate_remote.add_argument("--target-lab-id", default="")
+    migrate_remote.add_argument("--allow-paused", action="store_true")
+    migrate_remote.add_argument("--no-iso", action="store_true")
+    migrate_remote.add_argument("--no-snapshots", action="store_true")
+    migrate_remote.add_argument("--start-after-import", action="store_true")
+    migrate_remote.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
     args = parser.parse_args(argv)
 
     try:

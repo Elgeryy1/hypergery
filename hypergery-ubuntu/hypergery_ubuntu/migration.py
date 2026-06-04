@@ -7,6 +7,7 @@ import shutil
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
 
 from .backend import HG_NS, HyperGeryError, now_iso, validate_lab_id, validate_vm_name
 from .labs import LabStore
@@ -15,6 +16,16 @@ from .templates import TemplateStore
 
 MIGRATION_SCHEMA_VERSION = 1
 PACKAGE_ROOT_NAME = "migrations"
+REMOTE_MIGRATION_STEPS = [
+    "preflight",
+    "packaging",
+    "uploaded",
+    "waiting_target",
+    "importing",
+    "defining_vm",
+    "done",
+    "failed",
+]
 
 
 def _sha256(path: Path) -> str:
@@ -347,6 +358,7 @@ def export_vm_package(
     vm_name: str,
     output_dir: str | Path,
     *,
+    migration_id: str = "",
     target_vm_name: str = "",
     allow_paused: bool = False,
     include_iso: bool = True,
@@ -365,7 +377,7 @@ def export_vm_package(
     if not preflight["ok"]:
         raise HyperGeryError("Migration preflight failed: " + "; ".join(preflight["errors"]))
 
-    migration_id = f"{vm_name}-{uuid.uuid4().hex[:12]}"
+    migration_id = migration_id or f"{vm_name}-{uuid.uuid4().hex[:12]}"
     package_dir = Path(output_dir).expanduser().resolve() / PACKAGE_ROOT_NAME / migration_id
     package_dir.mkdir(parents=True, exist_ok=False)
     manifest = create_migration_manifest(
@@ -656,3 +668,231 @@ def list_migration_packages(path: str | Path) -> list[dict]:
             }
         )
     return results
+
+
+def _migration_status_payload(
+    *,
+    source_host_id: str,
+    target_host_id: str,
+    source_vm_name: str,
+    target_vm_name: str,
+    status: str,
+    result: dict[str, Any] | None = None,
+    errors: list[str] | None = None,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "source_host_id": source_host_id,
+        "target_host_id": target_host_id,
+        "source_vm_name": source_vm_name,
+        "target_vm_name": target_vm_name,
+        "strategy": "nas_clone",
+        "status": status,
+        "result": result or {},
+        "errors": errors or [],
+        "warnings": warnings or [],
+    }
+
+
+def create_remote_import_command(
+    client: object,
+    *,
+    migration_id: str,
+    source_host_id: str,
+    target_host_id: str,
+    source_vm_name: str,
+    target_vm_name: str,
+    package_dir: str,
+    target_lab_id: str = "",
+    start_after_import: bool = False,
+) -> dict[str, Any]:
+    if not target_host_id:
+        raise HyperGeryError("target_host_id is required.")
+    if not package_dir:
+        raise HyperGeryError("package_dir is required.")
+    command = client.create_command(
+        target_host_id,
+        "import_vm_package",
+        {
+            "migration_id": migration_id,
+            "source_host_id": source_host_id,
+            "source_vm_name": source_vm_name,
+            "package_dir": package_dir,
+            "target_vm_name": target_vm_name,
+            "target_lab_id": target_lab_id,
+            "start_after_import": start_after_import,
+        },
+    )
+    client.update_migration_status(
+        migration_id,
+        _migration_status_payload(
+            source_host_id=source_host_id,
+            target_host_id=target_host_id,
+            source_vm_name=source_vm_name,
+            target_vm_name=target_vm_name,
+            status="waiting_target",
+            result={"package_dir": package_dir, "command_id": command["command_id"]},
+        ),
+    )
+    return command
+
+
+def start_remote_migration(
+    backend: object,
+    client: object,
+    vm_name: str,
+    nas_path: str | Path,
+    *,
+    source_host_id: str,
+    target_host_id: str,
+    target_vm_name: str = "",
+    target_lab_id: str = "",
+    allow_paused: bool = False,
+    include_iso: bool = True,
+    include_snapshots: bool = True,
+    start_after_import: bool = False,
+) -> dict[str, Any]:
+    if not source_host_id:
+        raise HyperGeryError("source_host_id is required.")
+    if not target_host_id:
+        raise HyperGeryError("target_host_id is required.")
+    target_host = client.get_host(target_host_id)
+    if target_host.get("status") != "online":
+        raise HyperGeryError(f"Target host is offline: {target_host_id}")
+    if not target_host.get("kvm_ok") or not target_host.get("libvirt_ok"):
+        raise HyperGeryError(f"Target host is not ready for KVM/libvirt import: {target_host_id}")
+
+    target_vm_name = target_vm_name or vm_name
+    preflight = migration_preflight(
+        backend,
+        vm_name,
+        target_host=target_host_id,
+        target_vm_name=target_vm_name,
+        nas_path=str(nas_path),
+        allow_paused=allow_paused,
+        include_iso=include_iso,
+        include_snapshots=include_snapshots,
+    )
+    migration_id = f"{vm_name}-{uuid.uuid4().hex[:12]}"
+    client.update_migration_status(
+        migration_id,
+        _migration_status_payload(
+            source_host_id=source_host_id,
+            target_host_id=target_host_id,
+            source_vm_name=vm_name,
+            target_vm_name=target_vm_name,
+            status="preflight",
+            result={"preflight": preflight},
+            errors=preflight["errors"],
+            warnings=preflight["warnings"],
+        ),
+    )
+    if not preflight["ok"]:
+        client.update_migration_status(
+            migration_id,
+            _migration_status_payload(
+                source_host_id=source_host_id,
+                target_host_id=target_host_id,
+                source_vm_name=vm_name,
+                target_vm_name=target_vm_name,
+                status="failed",
+                result={"preflight": preflight},
+                errors=preflight["errors"],
+                warnings=preflight["warnings"],
+            ),
+        )
+        raise HyperGeryError("Migration preflight failed: " + "; ".join(preflight["errors"]))
+
+    client.update_migration_status(
+        migration_id,
+        _migration_status_payload(
+            source_host_id=source_host_id,
+            target_host_id=target_host_id,
+            source_vm_name=vm_name,
+            target_vm_name=target_vm_name,
+            status="packaging",
+            result={"preflight": preflight},
+            warnings=preflight["warnings"],
+        ),
+    )
+    exported = export_vm_package(
+        backend,
+        vm_name,
+        nas_path,
+        target_vm_name=target_vm_name,
+        allow_paused=allow_paused,
+        include_iso=include_iso,
+        include_snapshots=include_snapshots,
+        migration_id=migration_id,
+    )
+    package_dir = exported["package_dir"]
+    client.update_migration_status(
+        migration_id,
+        _migration_status_payload(
+            source_host_id=source_host_id,
+            target_host_id=target_host_id,
+            source_vm_name=vm_name,
+            target_vm_name=target_vm_name,
+            status="uploaded",
+            result={"package_dir": package_dir, "preflight": preflight},
+            warnings=preflight["warnings"],
+        ),
+    )
+    command = create_remote_import_command(
+        client,
+        migration_id=migration_id,
+        source_host_id=source_host_id,
+        target_host_id=target_host_id,
+        source_vm_name=vm_name,
+        target_vm_name=target_vm_name,
+        package_dir=package_dir,
+        target_lab_id=target_lab_id,
+        start_after_import=start_after_import,
+    )
+    return {
+        "migration_id": migration_id,
+        "command_id": command["command_id"],
+        "package_dir": package_dir,
+        "source_will_be_deleted": False,
+        "steps": REMOTE_MIGRATION_STEPS,
+        "preflight": preflight,
+    }
+
+
+def poll_remote_migration_status(client: object, migration_id: str) -> dict[str, Any]:
+    migration = client.migration(migration_id)
+    result = dict(migration.get("result") or {})
+    command_id = result.get("command_id", "")
+    command: dict[str, Any] | None = None
+    if command_id:
+        command = client.command(command_id)
+        command_status = command.get("status")
+        if command_status == "pending":
+            status = "waiting_target"
+        elif command_status == "running":
+            status = "importing"
+        elif command_status == "done":
+            status = "done"
+        elif command_status == "failed":
+            status = "failed"
+        else:
+            status = str(migration.get("status") or "created")
+        if status != migration.get("status"):
+            errors = []
+            if status == "failed":
+                error = (command.get("result") or {}).get("error", "Target import failed.")
+                errors = [str(error)]
+            migration = client.update_migration_status(
+                migration_id,
+                _migration_status_payload(
+                    source_host_id=str(migration.get("source_host_id") or ""),
+                    target_host_id=str(migration.get("target_host_id") or ""),
+                    source_vm_name=str(migration.get("source_vm_name") or ""),
+                    target_vm_name=str(migration.get("target_vm_name") or ""),
+                    status=status,
+                    result={**result, "command": command},
+                    errors=errors,
+                    warnings=list(migration.get("warnings") or []),
+                ),
+            )
+    return {"migration": migration, "command": command, "steps": REMOTE_MIGRATION_STEPS}

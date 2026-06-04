@@ -204,6 +204,38 @@ class CliTests(unittest.TestCase):
         self.assertEqual(data["target_vm_name"], "hg-target")
         self.assertFalse(data["source_will_be_deleted"])
 
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_migrate_status_registry_parses_remote_command_status(self, backend_cls):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def migration(self, migration_id):
+                return {
+                    "migration_id": migration_id,
+                    "source_host_id": "source",
+                    "target_host_id": "target",
+                    "source_vm_name": "hg-source",
+                    "target_vm_name": "hg-target",
+                    "status": "waiting_target",
+                    "result": {"command_id": "cmd-1"},
+                    "warnings": [],
+                }
+
+            def command(self, command_id):
+                return {"command_id": command_id, "status": "running", "result": {}}
+
+            def update_migration_status(self, migration_id, payload):
+                return {"migration_id": migration_id, **payload}
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient):
+            with redirect_stdout(buf):
+                code = cli.main(["migrate", "status", "--migration-id", "mig-1", "--registry-url", "http://registry:8765"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["migration"]["status"], "importing")
+
 
 if __name__ == "__main__":
     unittest.main()

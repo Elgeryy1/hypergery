@@ -36,6 +36,7 @@ class FakeBackend:
 class FakeClient:
     def __init__(self):
         self.results = []
+        self.migration_updates = []
         self.commands = [
             {"command_id": "cmd-1", "command_type": "ping", "payload": {}},
             {"command_id": "cmd-2", "command_type": "list_vms", "payload": {}},
@@ -54,6 +55,11 @@ class FakeClient:
         payload = {"command_id": command_id, "status": status, "result": result}
         self.results.append(payload)
         return payload
+
+    def update_migration_status(self, migration_id, payload):
+        update = {"migration_id": migration_id, **payload}
+        self.migration_updates.append(update)
+        return update
 
 
 class AgentTests(unittest.TestCase):
@@ -167,6 +173,35 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(status, "done")
             self.assertEqual(result["target_vm_name"], "hg-target")
             self.assertIn("hg-target", target_backend.defined_xml)
+
+    def test_agent_import_vm_package_reports_migration_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_backend = MigrationFakeBackend(root / "source")
+            export = export_vm_package(source_backend, "hg-source", root / "nas", target_vm_name="hg-target", migration_id="mig-1")
+            target_backend = MigrationFakeBackend(root / "target")
+            client = FakeClient()
+            agent = HyperGeryAgent(
+                AgentConfig(host_id="target", nas_staging_path=str(root / "nas")),
+                backend=target_backend,
+                client=client,
+            )
+
+            status, result = agent.execute_command(
+                {
+                    "command_type": "import_vm_package",
+                    "payload": {
+                        "migration_id": "mig-1",
+                        "source_host_id": "source",
+                        "source_vm_name": "hg-source",
+                        "package_dir": export["package_dir"],
+                        "target_vm_name": "hg-target",
+                    },
+                }
+            )
+            self.assertEqual(status, "done")
+            self.assertEqual(result["target_vm_name"], "hg-target")
+            self.assertEqual([item["status"] for item in client.migration_updates], ["importing", "defining_vm", "done"])
 
 
 class AgentCliTests(unittest.TestCase):

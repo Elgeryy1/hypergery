@@ -203,12 +203,55 @@ class HyperGeryAgent:
             from .migration import import_vm_package
 
             package = self.resolve_staged_package(str(payload.get("package_dir", "")))
+            migration_id = str(payload.get("migration_id") or "")
+            if migration_id:
+                self.client.update_migration_status(
+                    migration_id,
+                    {
+                        "source_host_id": str(payload.get("source_host_id") or ""),
+                        "target_host_id": self.config.host_id,
+                        "source_vm_name": str(payload.get("source_vm_name") or ""),
+                        "target_vm_name": str(payload.get("target_vm_name") or ""),
+                        "strategy": "nas_clone",
+                        "status": "importing",
+                        "result": {"package_dir": str(package), "agent_host_id": self.config.host_id},
+                    },
+                )
             result = import_vm_package(
                 self.backend,
                 package,
                 target_vm_name=str(payload.get("target_vm_name", "")),
                 target_lab_id=str(payload.get("target_lab_id", "")),
             )
+            if migration_id:
+                self.client.update_migration_status(
+                    migration_id,
+                    {
+                        "source_host_id": str(payload.get("source_host_id") or ""),
+                        "target_host_id": self.config.host_id,
+                        "source_vm_name": str(payload.get("source_vm_name") or ""),
+                        "target_vm_name": result["target_vm_name"],
+                        "strategy": "nas_clone",
+                        "status": "defining_vm",
+                        "result": result,
+                    },
+                )
+            if payload.get("start_after_import"):
+                self.backend.start_vm(result["target_vm_name"])
+                result["started"] = True
+            if migration_id:
+                self.client.update_migration_status(
+                    migration_id,
+                    {
+                        "source_host_id": str(payload.get("source_host_id") or ""),
+                        "target_host_id": self.config.host_id,
+                        "source_vm_name": str(payload.get("source_vm_name") or ""),
+                        "target_vm_name": result["target_vm_name"],
+                        "strategy": "nas_clone",
+                        "status": "done",
+                        "result": result,
+                    },
+                )
             return "done", result
         if command_type == "migration_status":
             from .migration import list_migration_packages, validate_vm_package
@@ -242,6 +285,24 @@ class HyperGeryAgent:
                 status, result = self.execute_command(command)
             except Exception as exc:
                 status, result = "failed", {"error": str(exc)}
+                migration_id = str((command.get("payload") or {}).get("migration_id") or "")
+                if migration_id:
+                    try:
+                        self.client.update_migration_status(
+                            migration_id,
+                            {
+                                "source_host_id": str((command.get("payload") or {}).get("source_host_id") or ""),
+                                "target_host_id": self.config.host_id,
+                                "source_vm_name": str((command.get("payload") or {}).get("source_vm_name") or ""),
+                                "target_vm_name": str((command.get("payload") or {}).get("target_vm_name") or ""),
+                                "strategy": "nas_clone",
+                                "status": "failed",
+                                "result": result,
+                                "errors": [str(exc)],
+                            },
+                        )
+                    except Exception:
+                        pass
             processed.append(self.client.set_command_result(command_id, status, result))
         return {"host": host, "processed": processed}
 

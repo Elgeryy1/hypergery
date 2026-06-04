@@ -329,7 +329,18 @@ class RegistryStore:
         if not clean_id:
             raise HyperGeryError("migration_id is required.")
         status = str(payload.get("status") or "created")
-        if status not in {"created", "preflight", "packaging", "uploaded", "importing", "done", "failed", "rolled_back"}:
+        if status not in {
+            "created",
+            "preflight",
+            "packaging",
+            "uploaded",
+            "waiting_target",
+            "importing",
+            "defining_vm",
+            "done",
+            "failed",
+            "rolled_back",
+        }:
             raise HyperGeryError(f"Unsupported migration status: {status}")
         timestamp = now_iso()
         migration = {

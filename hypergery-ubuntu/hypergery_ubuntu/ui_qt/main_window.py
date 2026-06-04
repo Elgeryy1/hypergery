@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -84,6 +85,7 @@ class MainWindow(QMainWindow):
         self.lab_templates: list[dict] = []
         self.selected_vm_template: dict | None = None
         self.selected_lab_template: dict | None = None
+        self.remote_hosts: list[dict[str, Any]] = []
         self.jobs: list[BackendJob] = []
         self.completed_jobs: list[BackendJob] = []
         self.setWindowTitle(f"HyperGery v{APP_DISPLAY_VERSION}")
@@ -360,6 +362,45 @@ class MainWindow(QMainWindow):
         self.templates_tabs.addTab(lab_templates_tab, "Lab Templates")
 
         self.main_tabs.addTab(templates_tab, "Templates")
+
+        remote_tab = QWidget()
+        remote_layout = QVBoxLayout(remote_tab)
+        remote_layout.setContentsMargins(18, 18, 12, 18)
+        remote_layout.setSpacing(12)
+        remote_header = QHBoxLayout()
+        remote_title = QLabel("Remote Hosts")
+        remote_title.setObjectName("sectionTitle")
+        self.remote_status_label = QLabel("Registry not loaded")
+        self.remote_status_label.setObjectName("mutedLabel")
+        self.refresh_remote_button = self._button("Refresh", self.refresh_remote_hosts)
+        self.test_remote_button = self._button("Test", self.test_selected_remote_host)
+        remote_header.addWidget(remote_title)
+        remote_header.addStretch()
+        remote_header.addWidget(self.remote_status_label)
+        remote_header.addWidget(self.refresh_remote_button)
+        remote_header.addWidget(self.test_remote_button)
+        remote_layout.addLayout(remote_header)
+        self.remote_host_table = QTableWidget(0, 8)
+        self.remote_host_table.setHorizontalHeaderLabels(["Host", "Status", "Last seen", "RAM", "Disk free", "KVM", "libvirt", "Active VMs"])
+        self.remote_host_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.remote_host_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.remote_host_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.remote_host_table.setAlternatingRowColors(True)
+        self.remote_host_table.verticalHeader().setVisible(False)
+        self.remote_host_table.horizontalHeader().setStretchLastSection(True)
+        self.remote_host_table.setColumnWidth(0, 130)
+        self.remote_host_table.setColumnWidth(1, 80)
+        self.remote_host_table.setColumnWidth(2, 165)
+        self.remote_host_table.setColumnWidth(3, 120)
+        self.remote_host_table.setColumnWidth(4, 90)
+        self.remote_host_table.itemSelectionChanged.connect(self.update_actions)
+        remote_layout.addWidget(self.remote_host_table, 1)
+        self.remote_detail = QTextEdit()
+        self.remote_detail.setReadOnly(True)
+        self.remote_detail.setMaximumHeight(160)
+        self.remote_detail.setPlaceholderText("Select Refresh to load hosts from the NAS registry.")
+        remote_layout.addWidget(self.remote_detail)
+        self.main_tabs.addTab(remote_tab, "Remote Hosts")
         
         return panel
 
@@ -596,6 +637,8 @@ class MainWindow(QMainWindow):
             self.export_lab_template_button,
             self.import_lab_template_button,
             self.refresh_lab_templates_button,
+            self.refresh_remote_button,
+            self.test_remote_button,
         ):
             button.setEnabled(not busy)
         if busy:
@@ -635,6 +678,82 @@ class MainWindow(QMainWindow):
         self.delete_lab_template_button.setEnabled(has_lab_tmpl)
         self.edit_lab_template_button.setEnabled(has_lab_tmpl)
         self.export_lab_template_button.setEnabled(has_lab_tmpl)
+        self.test_remote_button.setEnabled(bool(self.remote_host_table.selectionModel().selectedRows()))
+
+    def registry_url(self) -> str:
+        return os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765")
+
+    def refresh_remote_hosts(self) -> None:
+        self.run_operation(
+            "Loading remote hosts",
+            self._load_remote_hosts,
+            on_success=self.render_remote_hosts,
+            refresh_after=False,
+        )
+
+    def _load_remote_hosts(self) -> list[dict[str, Any]]:
+        from ..registry import RegistryClient
+
+        return RegistryClient(self.registry_url()).list_hosts()
+
+    def render_remote_hosts(self, hosts: list[dict[str, Any]]) -> None:
+        self.remote_hosts = hosts
+        self.remote_host_table.setRowCount(0)
+        for host in hosts:
+            row = self.remote_host_table.rowCount()
+            self.remote_host_table.insertRow(row)
+            active = ", ".join(host.get("active_vms") or [])
+            ram = f"{host.get('ram_free_mib', 0)}/{host.get('ram_total_mib', 0)} MiB"
+            values = [
+                str(host.get("host_id", "")),
+                str(host.get("status", "offline")),
+                str(host.get("last_seen", "")),
+                ram,
+                f"{host.get('disk_free_mib', 0)} MiB",
+                "OK" if host.get("kvm_ok") else "Blocked",
+                "OK" if host.get("libvirt_ok") else "Blocked",
+                active or "none",
+            ]
+            for col, value in enumerate(values):
+                self._set_table_item(self.remote_host_table, row, col, value)
+        self.remote_status_label.setText(f"{len(hosts)} host(s)")
+        if hosts:
+            self.remote_detail.setPlainText(details_block(("Registry", self.registry_url()), ("Status", "reachable")))
+        else:
+            self.remote_detail.setPlainText(
+                "Registry is reachable but has no hosts. Start a HyperGery agent on each participating host."
+            )
+        self.update_actions()
+
+    def test_selected_remote_host(self) -> None:
+        indexes = self.remote_host_table.selectionModel().selectedRows()
+        if not indexes:
+            self.show_error("Select a remote host first.")
+            return
+        row = indexes[0].row()
+        host = self.remote_hosts[row] if 0 <= row < len(self.remote_hosts) else None
+        if not host:
+            self.show_error("Selected host is no longer available.")
+            return
+        host_id = str(host.get("host_id", ""))
+
+        def do_test() -> dict:
+            from ..registry import RegistryClient
+
+            return RegistryClient(self.registry_url()).create_command(host_id, "ping", {})
+
+        def on_done(result: dict) -> None:
+            self.remote_detail.setPlainText(
+                details_block(
+                    ("Registry", self.registry_url()),
+                    ("Host", host_id),
+                    ("Queued command", str(result.get("command_id", ""))),
+                    ("Status", str(result.get("status", ""))),
+                )
+            )
+            self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
+
+        self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
 
     def refresh_all(self) -> None:
         self.status.showMessage("Loading host state...")
@@ -655,6 +774,7 @@ class MainWindow(QMainWindow):
             ("logs", self.backend.recent_logs),
             ("vm_templates", self.template_store.list_vm_templates),
             ("lab_templates", self.template_store.list_lab_templates),
+            ("remote_hosts", self._load_remote_hosts),
         )
         for key, callback in jobs:
             try:
@@ -686,6 +806,13 @@ class MainWindow(QMainWindow):
             self.render_vm_templates(overview["vm_templates"])
         if "lab_templates" in overview:
             self.render_lab_templates(overview["lab_templates"])
+        if "remote_hosts" in overview:
+            self.render_remote_hosts(overview["remote_hosts"])
+        elif "remote_hosts" in errors:
+            self.remote_hosts = []
+            self.remote_host_table.setRowCount(0)
+            self.remote_status_label.setText("Registry unavailable")
+            self.remote_detail.setPlainText(f"Registry is not configured or not reachable at {self.registry_url()}:\n{errors['remote_hosts']}")
         self.render_selected()
         if not errors:
             self.status.showMessage("Ready")
@@ -1327,41 +1454,58 @@ class MainWindow(QMainWindow):
         if (
             QMessageBox.question(
                 self,
-                "Create Migration Package",
+                "Start NAS Live Migration",
                 (
-                    f"Create NAS migration package for {values['vm_name']}?\n\n"
+                    f"Start NAS migration for {values['vm_name']}?\n\n"
+                    f"Source host: {values['source_host_id']}\n"
+                    f"Target host: {values['target_host_id']}\n"
                     f"Target VM: {values['target_vm_name']}\n"
                     f"NAS staging path: {values['nas_path']}\n\n"
-                    "The source VM and source disks will not be deleted."
+                    "HyperGery will package the source VM, queue an import command on the target agent, "
+                    "and leave the source VM and disks untouched."
                 ),
             )
             != QMessageBox.StandardButton.Yes
         ):
             return
 
-        def do_package() -> dict:
-            from ..migration import export_vm_package
+        def do_migration() -> dict:
+            from ..migration import start_remote_migration
+            from ..registry import RegistryClient
 
-            return export_vm_package(
+            return start_remote_migration(
                 self.backend,
+                RegistryClient(values["registry_url"]),
                 values["vm_name"],
                 values["nas_path"],
+                source_host_id=values["source_host_id"],
+                target_host_id=values["target_host_id"],
                 target_vm_name=values["target_vm_name"],
                 allow_paused=values["allow_paused"],
                 include_iso=values["include_iso"],
                 include_snapshots=values["include_snapshots"],
+                start_after_import=values["start_after_import"],
             )
 
         def on_done(result: dict) -> None:
             package_dir = result.get("package_dir", "")
-            self.log_activity(f"Migration package created: {package_dir}")
+            migration_id = result.get("migration_id", "")
+            command_id = result.get("command_id", "")
+            self.log_activity(
+                f"Remote migration queued: migration_id={migration_id} command_id={command_id} package={package_dir}"
+            )
             QMessageBox.information(
                 self,
-                "Migration Package Created",
-                f"Package created:\n{package_dir}\n\nSource VM remains untouched.",
+                "Migration Queued",
+                (
+                    f"Migration: {migration_id}\n"
+                    f"Target command: {command_id}\n"
+                    f"Package: {package_dir}\n\n"
+                    "The target agent will import the package on its next run. Source VM remains untouched."
+                ),
             )
 
-        self.run_operation(f"Packaging migration for {values['vm_name']}", do_package, on_success=on_done, refresh_after=False)
+        self.run_operation(f"Starting migration for {values['vm_name']}", do_migration, on_success=on_done, refresh_after=False)
 
     def delete_vm(self) -> None:
         if self.selected_vm is None:

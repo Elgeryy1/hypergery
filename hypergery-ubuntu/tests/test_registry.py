@@ -67,6 +67,20 @@ class RegistryStoreTests(unittest.TestCase):
         with self.assertRaises(HyperGeryError):
             self.store.create_command({"target_host_id": "target", "command_type": "shell", "payload": {}})
 
+    def test_migration_status_lifecycle_accepts_remote_progress_states(self):
+        payload = {
+            "source_host_id": "source",
+            "target_host_id": "target",
+            "source_vm_name": "hg-source",
+            "target_vm_name": "hg-target",
+            "strategy": "nas_clone",
+        }
+        for status in ("preflight", "packaging", "uploaded", "waiting_target", "importing", "defining_vm", "done"):
+            migration = self.store.update_migration_status("mig-1", {**payload, "status": status})
+            self.assertEqual(migration["status"], status)
+        failed = self.store.update_migration_status("mig-1", {**payload, "status": "failed", "errors": ["boom"]})
+        self.assertEqual(failed["errors"], ["boom"])
+
 
 class RegistryHttpTests(unittest.TestCase):
     def setUp(self):

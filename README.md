@@ -11,7 +11,7 @@ HyperGery is a real desktop virtual machine manager for Ubuntu, functionally ins
 
 HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
 
-HyperGery v0.6.0 development is focused on NAS Live Migration: a NAS-backed control plane, host agents, host discovery, VM package export/import, migration preflight, and a UI action named **Live Migration**. The implementation is intentionally conservative: when a true live RAM/disk migration is not safe, HyperGery will perform or require a NAS Clone Migration strategy and keep the source VM untouched.
+HyperGery v0.6.0 development is focused on NAS Live Migration: a NAS-backed control plane, host agents, host discovery, VM package export/import, migration preflight, remote import orchestration, and a UI action named **Live Migration**. The implementation is intentionally conservative: when a true live RAM/disk migration is not safe, HyperGery performs a NAS Clone Migration strategy and keeps the source VM untouched.
 
 ## Screenshots
 
@@ -89,14 +89,15 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - **Resources…** button in the toolbar opens a read-only overview of all HyperGery-managed VMs, labs, VM templates, and lab templates.
 - Nothing is deleted automatically — the dialog is a safe audit view.
 
-### NAS Live Migration (v0.6.0 roadmap)
+### NAS Live Migration (v0.6.0)
 
 - NAS Control Plane registry for host discovery, command queueing, and migration status.
 - HyperGery Agent on each participating host with safe command allowlist only.
 - NAS staging directory for migration packages.
 - VM package export/import for domain XML, qcow2 disks, attached ISO when requested, lab/network/template metadata, checksums, and migration logs.
 - Migration preflight checks for source VM state, disk/ISO availability, staging path, local name conflicts, host readiness, and running-VM safety.
-- UI in development: select a VM and choose **Live Migration** to run preflight and create a safe NAS migration package. Remote target selection/import orchestration is still pending.
+- Remote Hosts UI panel reads real hosts from the registry and shows online/offline state, last seen, RAM/disk, KVM/libvirt readiness, and active VMs.
+- **Live Migration** dialog lists real online target hosts, blocks offline/unready targets, runs local preflight, creates the source package in NAS staging, queues `import_vm_package` on the target host, and records migration status for polling.
 - Development CLI: registry, agent, host, and migrate commands.
 
 v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.
@@ -117,6 +118,14 @@ python -m hypergery_ubuntu.cli migrate package <vm_name> /mnt/hypergery-nas --ta
 python -m hypergery_ubuntu.cli migrate validate-package /mnt/hypergery-nas/migrations/<migration_id>
 python -m hypergery_ubuntu.cli migrate import /mnt/hypergery-nas/migrations/<migration_id> --target-vm-name <target_name>
 python -m hypergery_ubuntu.cli migrate list --path /mnt/hypergery-nas
+
+# Remote registry/agent orchestration
+python -m hypergery_ubuntu.cli migrate remote <vm_name> \
+  --nas-path /mnt/hypergery-nas \
+  --source-host-id source-host \
+  --target-host-id target-host \
+  --target-vm-name <target_name>
+python -m hypergery_ubuntu.cli migrate status --migration-id <migration_id>
 ```
 
 See [docs/NAS_LIVE_MIGRATION.md](docs/NAS_LIVE_MIGRATION.md) for the package layout and safety model.

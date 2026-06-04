@@ -35,6 +35,8 @@ Required local smoke:
 - [ ] Confirm local host registration and heartbeat with `python -m hypergery_ubuntu.cli host list`.
 - [ ] List hosts from CLI and UI.
 - [ ] Create a safe `ping` command with `python -m hypergery_ubuntu.cli host test <host_id>` and confirm the agent returns a result.
+- [ ] Start a remote migration with `python -m hypergery_ubuntu.cli migrate remote <vm_name> --nas-path /mnt/hypergery-nas --source-host-id <source> --target-host-id <target> --target-vm-name <target_name>`.
+- [ ] Poll it with `python -m hypergery_ubuntu.cli migrate status --migration-id <migration_id>`.
 - [ ] Run migration preflight with a fake/offline target and confirm a clear blocking error.
 - [ ] Package an existing stopped test VM if available.
 - [ ] Validate the migration package manifest and checksums.
@@ -66,11 +68,14 @@ Recommended real NAS/two-host smoke:
 - [ ] Run registry on the NAS or a machine acting as NAS.
 - [ ] Configure shared staging path on source and target hosts.
 - [ ] Start agent on source host and target host.
-- [ ] Confirm the UI shows the target host online with KVM/libvirt OK.
+- [ ] Confirm CLI `host list` and the Qt Remote Hosts panel show both hosts online with KVM/libvirt OK.
+- [ ] Queue `host test <target_host_id>`, run the target agent, and confirm command status `done`.
 - [ ] Use a stopped test VM with a mounted ISO.
 - [ ] Right-click VM -> **Live Migration**.
 - [ ] Select target host and run preflight.
 - [ ] Start migration using offline or paused NAS Clone strategy.
+- [ ] Poll `migrate status --migration-id <migration_id>` until `done`.
+- [ ] Confirm package exists under `/mnt/hypergery-nas/migrations/<migration_id>`.
 - [ ] Confirm source VM remains on the source host.
 - [ ] Confirm target VM appears on destination with new UUID and MAC.
 - [ ] Confirm disks, ISO, lab metadata, network metadata, templates used, and migration log are present.

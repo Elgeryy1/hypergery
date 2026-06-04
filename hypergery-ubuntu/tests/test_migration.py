@@ -7,11 +7,14 @@ from pathlib import Path
 from hypergery_ubuntu.backend import CommandResult, PreflightItem, VmSummary
 from hypergery_ubuntu.labs import LabStore
 from hypergery_ubuntu.migration import (
+    create_remote_import_command,
     export_vm_package,
     generate_target_vm_identity,
     import_vm_package,
     list_migration_packages,
     migration_preflight,
+    poll_remote_migration_status,
+    start_remote_migration,
     validate_vm_package,
 )
 
@@ -110,6 +113,49 @@ class FakeBackend:
         return None
 
 
+class FakeRegistryClient:
+    def __init__(self):
+        self.migrations = {}
+        self.commands = {}
+        self.created_commands = []
+        self.hosts = {
+            "target": {
+                "host_id": "target",
+                "status": "online",
+                "kvm_ok": True,
+                "libvirt_ok": True,
+            }
+        }
+
+    def get_host(self, host_id):
+        return self.hosts[host_id]
+
+    def create_command(self, target_host_id, command_type, payload):
+        command = {
+            "command_id": f"cmd-{len(self.commands) + 1}",
+            "target_host_id": target_host_id,
+            "command_type": command_type,
+            "payload": payload,
+            "status": "pending",
+            "result": {},
+        }
+        self.commands[command["command_id"]] = command
+        self.created_commands.append(command)
+        return command
+
+    def update_migration_status(self, migration_id, payload):
+        current = self.migrations.get(migration_id, {})
+        updated = {**current, **payload, "migration_id": migration_id}
+        self.migrations[migration_id] = updated
+        return updated
+
+    def migration(self, migration_id):
+        return self.migrations[migration_id]
+
+    def command(self, command_id):
+        return self.commands[command_id]
+
+
 class MigrationTests(unittest.TestCase):
     def test_preflight_blocks_running_vm(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,6 +233,66 @@ class MigrationTests(unittest.TestCase):
             validation = validate_vm_package(package_dir)
             self.assertFalse(validation["ok"])
             self.assertIn("checksum mismatch", "; ".join(validation["errors"]))
+
+    def test_create_remote_import_command_queues_import_and_waiting_status(self):
+        client = FakeRegistryClient()
+        command = create_remote_import_command(
+            client,
+            migration_id="mig-1",
+            source_host_id="source",
+            target_host_id="target",
+            source_vm_name="hg-source",
+            target_vm_name="hg-target",
+            package_dir="/mnt/hypergery-nas/migrations/mig-1",
+            start_after_import=True,
+        )
+        self.assertEqual(command["command_type"], "import_vm_package")
+        self.assertEqual(command["payload"]["target_vm_name"], "hg-target")
+        self.assertTrue(command["payload"]["start_after_import"])
+        self.assertEqual(client.migrations["mig-1"]["status"], "waiting_target")
+
+    def test_start_remote_migration_packages_and_never_deletes_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = FakeBackend(root)
+            client = FakeRegistryClient()
+            result = start_remote_migration(
+                backend,
+                client,
+                "hg-source",
+                root / "nas",
+                source_host_id="source",
+                target_host_id="target",
+                target_vm_name="hg-target",
+            )
+            self.assertFalse(result["source_will_be_deleted"])
+            self.assertTrue(Path(result["package_dir"]).is_dir())
+            self.assertEqual(client.created_commands[0]["command_type"], "import_vm_package")
+            manifest = json.loads((Path(result["package_dir"]) / "manifest.json").read_text(encoding="utf-8"))
+            self.assertFalse(manifest["source_will_be_deleted"])
+            self.assertEqual(manifest["migration_id"], result["migration_id"])
+
+    def test_poll_remote_migration_status_maps_command_status(self):
+        client = FakeRegistryClient()
+        command = client.create_command("target", "import_vm_package", {})
+        client.update_migration_status(
+            "mig-1",
+            {
+                "source_host_id": "source",
+                "target_host_id": "target",
+                "source_vm_name": "hg-source",
+                "target_vm_name": "hg-target",
+                "strategy": "nas_clone",
+                "status": "waiting_target",
+                "result": {"command_id": command["command_id"]},
+            },
+        )
+        client.commands[command["command_id"]]["status"] = "running"
+        running = poll_remote_migration_status(client, "mig-1")
+        self.assertEqual(running["migration"]["status"], "importing")
+        client.commands[command["command_id"]]["status"] = "done"
+        done = poll_remote_migration_status(client, "mig-1")
+        self.assertEqual(done["migration"]["status"], "done")
 
 
 if __name__ == "__main__":

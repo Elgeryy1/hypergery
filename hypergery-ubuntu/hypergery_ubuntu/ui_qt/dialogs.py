@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+import os
+import socket
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -645,6 +647,7 @@ class LiveMigrationDialog(QDialog):
         self.backend = backend
         self.vm = vm
         self.preflight_result: dict | None = None
+        self.hosts: list[dict] = []
         self.setWindowTitle(f"Live Migration: {vm.name}")
         title = QLabel(vm.name)
         title.setObjectName("sectionTitle")
@@ -654,6 +657,14 @@ class LiveMigrationDialog(QDialog):
         notice.setObjectName("mutedLabel")
         notice.setWordWrap(True)
 
+        self.registry_url = QLineEdit(os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+        self.source_host_id = QLineEdit(os.environ.get("HYPERGERY_HOST_ID", socket.gethostname()))
+        self.target_host = QComboBox()
+        refresh_hosts = QPushButton("Refresh Hosts")
+        refresh_hosts.clicked.connect(self.refresh_hosts)
+        host_row = QHBoxLayout()
+        host_row.addWidget(self.target_host, 1)
+        host_row.addWidget(refresh_hosts)
         self.target_name = QLineEdit(f"{vm.name}-migrated")
         self.nas_path = QLineEdit(str(Path.home() / "hypergery-nas"))
         browse = QPushButton("Browse")
@@ -666,6 +677,7 @@ class LiveMigrationDialog(QDialog):
         self.include_snapshots = QCheckBox("Include snapshot file assets when detectable")
         self.include_snapshots.setChecked(True)
         self.allow_paused = QCheckBox("Allow paused VM packaging")
+        self.start_after_import = QCheckBox("Start after import")
         self.result_view = QTextEdit()
         self.result_view.setReadOnly(True)
         self.result_view.setMinimumHeight(190)
@@ -673,24 +685,29 @@ class LiveMigrationDialog(QDialog):
         self.error_label.setObjectName("errorLabel")
 
         form = QFormLayout()
+        form.addRow("Registry URL", self.registry_url)
+        form.addRow("Source host ID", self.source_host_id)
+        form.addRow("Target host", host_row)
         form.addRow("Target VM name", self.target_name)
         form.addRow("NAS staging path", path_row)
         form.addRow("", self.include_iso)
         form.addRow("", self.include_snapshots)
         form.addRow("", self.allow_paused)
+        form.addRow("", self.start_after_import)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self.preflight_button = buttons.addButton("Run Preflight", QDialogButtonBox.ButtonRole.ActionRole)
-        self.package_button = buttons.addButton("Create Package", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.package_button = buttons.addButton("Start Migration", QDialogButtonBox.ButtonRole.AcceptRole)
         self.package_button.setObjectName("primaryButton")
         self.package_button.setEnabled(False)
         buttons.rejected.connect(self.reject)
         self.preflight_button.clicked.connect(self.run_preflight)
         self.package_button.clicked.connect(self.accept)
-        for widget in (self.target_name, self.nas_path):
+        for widget in (self.registry_url, self.source_host_id, self.target_name, self.nas_path):
             widget.textChanged.connect(self.invalidate_preflight)
         for widget in (self.include_iso, self.include_snapshots, self.allow_paused):
             widget.toggled.connect(self.invalidate_preflight)
+        self.target_host.currentIndexChanged.connect(self.invalidate_preflight)
 
         layout = QVBoxLayout(self)
         layout.addWidget(title)
@@ -700,6 +717,35 @@ class LiveMigrationDialog(QDialog):
         layout.addWidget(self.error_label)
         layout.addWidget(buttons)
         self.resize(760, 560)
+        self.refresh_hosts()
+
+    def refresh_hosts(self) -> None:
+        from ..registry import RegistryClient
+
+        self.error_label.clear()
+        self.target_host.clear()
+        self.hosts = []
+        try:
+            hosts = RegistryClient(self.registry_url.text().strip()).list_hosts()
+        except HyperGeryError as exc:
+            self.result_view.setPlainText(f"Registry is not reachable or not configured:\n{exc}")
+            self.invalidate_preflight()
+            return
+        self.hosts = hosts
+        for host in hosts:
+            host_id = str(host.get("host_id") or "")
+            status = str(host.get("status") or "offline")
+            label = f"{host_id} ({status})"
+            if host.get("hostname"):
+                label += f" - {host.get('hostname')}"
+            self.target_host.addItem(label, host_id)
+            index = self.target_host.count() - 1
+            self.target_host.model().item(index).setEnabled(status == "online")
+        if not hosts:
+            self.result_view.setPlainText("Registry returned no hosts. Start agents on source and target hosts first.")
+        else:
+            self.result_view.setPlainText(self._format_hosts(hosts))
+        self.invalidate_preflight()
 
     def pick_nas_path(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select NAS staging directory", self.nas_path.text(), FILE_DIALOG_OPTIONS)
@@ -713,11 +759,15 @@ class LiveMigrationDialog(QDialog):
     def values(self) -> dict:
         return {
             "vm_name": self.vm.name,
+            "registry_url": self.registry_url.text().strip(),
+            "source_host_id": self.source_host_id.text().strip(),
+            "target_host_id": str(self.target_host.currentData() or ""),
             "target_vm_name": self.target_name.text().strip(),
             "nas_path": self.nas_path.text().strip(),
             "include_iso": self.include_iso.isChecked(),
             "include_snapshots": self.include_snapshots.isChecked(),
             "allow_paused": self.allow_paused.isChecked(),
+            "start_after_import": self.start_after_import.isChecked(),
         }
 
     def run_preflight(self) -> None:
@@ -728,13 +778,29 @@ class LiveMigrationDialog(QDialog):
         if not values["target_vm_name"]:
             self.error_label.setText("Target VM name is required.")
             return
+        if not values["source_host_id"]:
+            self.error_label.setText("Source host ID is required.")
+            return
+        if not values["target_host_id"]:
+            self.error_label.setText("Select an online target host from the registry.")
+            return
         if not values["nas_path"]:
             self.error_label.setText("NAS staging path is required.")
+            return
+        target = next((host for host in self.hosts if host.get("host_id") == values["target_host_id"]), None)
+        if not target or target.get("status") != "online":
+            self.error_label.setText("Selected target host is offline.")
+            self.package_button.setEnabled(False)
+            return
+        if not target.get("kvm_ok") or not target.get("libvirt_ok"):
+            self.error_label.setText("Selected target host is not ready: KVM/libvirt check failed.")
+            self.package_button.setEnabled(False)
             return
         try:
             result = migration_preflight(
                 self.backend,
                 self.vm.name,
+                target_host=values["target_host_id"],
                 target_vm_name=values["target_vm_name"],
                 nas_path=values["nas_path"],
                 allow_paused=values["allow_paused"],
@@ -778,9 +844,21 @@ class LiveMigrationDialog(QDialog):
             lines.append("- none")
         return "\n".join(lines)
 
+    def _format_hosts(self, hosts: list[dict]) -> str:
+        lines = ["Remote hosts:"]
+        for host in hosts:
+            active = ", ".join(host.get("active_vms") or []) or "none"
+            lines.append(
+                f"- {host.get('host_id')} status={host.get('status')} last_seen={host.get('last_seen')} "
+                f"ram={host.get('ram_free_mib')}/{host.get('ram_total_mib')} MiB "
+                f"disk_free={host.get('disk_free_mib')} MiB "
+                f"kvm={host.get('kvm_ok')} libvirt={host.get('libvirt_ok')} active_vms={active}"
+            )
+        return "\n".join(lines)
+
     def accept(self) -> None:
         if not self.preflight_result or not self.preflight_result.get("ok"):
-            self.error_label.setText("Run a successful preflight before creating a package.")
+            self.error_label.setText("Run a successful preflight before starting migration.")
             return
         super().accept()
 

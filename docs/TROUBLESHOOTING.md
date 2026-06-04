@@ -149,3 +149,40 @@ If this still fails, launch HyperGery from a normal terminal:
 Installer ISOs and early boot environments may ignore ACPI shutdown. Use Force Off for test VMs when ACPI does not complete within a reasonable timeout.
 
 The acceptance script falls back to force off before testing snapshots on a stopped VM.
+
+## Registry Is Not Reachable
+
+Confirm the registry is running and the URL matches on every host:
+
+```bash
+python -m hypergery_ubuntu.cli registry health --registry-url http://nas-or-registry-host:8765
+python -m hypergery_ubuntu.cli host list --registry-url http://nas-or-registry-host:8765
+```
+
+In the Qt app, the Remote Hosts panel uses `HYPERGERY_REGISTRY_URL` or `http://127.0.0.1:8765`.
+
+## Target Host Is Offline or Blocked
+
+The registry marks a host offline when its heartbeat is stale. Run the agent on the target host:
+
+```bash
+python -m hypergery_ubuntu.cli agent once
+python -m hypergery_ubuntu.cli agent run
+```
+
+If KVM or libvirt shows blocked, rerun preflight on that target host:
+
+```bash
+python -m hypergery_ubuntu.cli preflight
+```
+
+Fix `/dev/kvm`, `libvirt` group membership, or libvirt service issues before starting migration.
+
+## Target Agent Cannot Import Package
+
+`import_vm_package` accepts only package paths inside the agent `nas_staging_path` or its `migrations/` child. Configure the same Linux NAS mount on source and target, for example `/mnt/hypergery-nas`, and do not use Windows paths.
+
+```bash
+python -m hypergery_ubuntu.cli agent config show
+python -m hypergery_ubuntu.cli migrate validate-package /mnt/hypergery-nas/migrations/<migration_id>
+```

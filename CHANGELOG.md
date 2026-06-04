@@ -27,7 +27,10 @@ Implemented in development so far:
 - Migration package module with VM asset collection, offline preflight, package export, package validation, target identity regeneration, import rollback, and package listing.
 - CLI `migrate preflight`, `migrate package`, `migrate validate-package`, `migrate import`, `migrate list`, and `migrate status`.
 - Agent migration command execution for VM preflight, staged package validation, staged package import, and package status with NAS staging path restrictions.
-- Qt **Live Migration** VM action with NAS staging path, target VM name, packaging options, preflight output, and package creation gated by successful preflight.
+- Remote orchestration: source package creation in NAS staging, registry `import_vm_package` command creation for the target host, target agent import, migration status polling helpers, and source VM preservation.
+- Qt **Remote Hosts** panel with registry host list, online/offline state, last seen, RAM/disk info, KVM/libvirt readiness, active VMs, Refresh, and Test command.
+- Qt **Live Migration** VM action with real target host selection, target VM name, include ISO/snapshots, start-after-import, preflight output, and Start Migration gated by successful preflight.
+- CLI `migrate remote` and `migrate status --migration-id` for registry-backed orchestration and polling.
 
 Future topology polish:
 
