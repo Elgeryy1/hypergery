@@ -17,7 +17,8 @@ Cambios implementados en v0.5:
 - CLI `template update vm|lab <id> --set key=value`: actualiza campos de templates.
 - CLI `lab-topology <lab_id>`: imprime topología como JSON.
 - CLI `lab-instantiate <template_id> <lab_name> --iso vm=path [--dry-run]`: instancia un lab template desde CLI.
-- 9 nuevos tests: topología (vacía, con VMs, VMs de otros labs, not created, deduplicación, JSON), CLI update template, CLI lab-topology, CLI lab-instantiate dry-run.
+- Corrección RC: `get_vm()` convierte memoria de libvirt (`KiB`, `MiB`, `GiB`, bytes) a MiB para que Topology/CLI no muestren RAM como `0` cuando `virsh dumpxml` normaliza `<memory>` a KiB.
+- 10 nuevos tests: topología (vacía, con VMs, VMs de otros labs, not created, deduplicación, JSON), CLI update template, CLI lab-topology, CLI lab-instantiate dry-run, parseo de memoria KiB de libvirt.
 
 Pendiente en v0.5 (roadmap):
 

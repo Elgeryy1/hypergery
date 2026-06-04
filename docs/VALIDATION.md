@@ -6,19 +6,19 @@ Run with system Python (PySide6 not required):
 
 ```bash
 cd hypergery-ubuntu && python3 -m unittest discover -s tests
-# Expected: Ran 130 tests — OK (skipped=4)
+# Expected: Ran 131 tests — OK (skipped=4)
 ```
 
 Run inside the venv (all tests including Qt):
 
 ```bash
 cd hypergery-ubuntu && /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
-# Expected: Ran 130 tests — OK
+# Expected: Ran 131 tests — OK
 ```
 
 The 4 skipped tests are Qt widget tests that require PySide6. They pass cleanly in the venv.
 
-New in v0.5.0: 9 additional tests covering `build_lab_topology` (empty, live VMs, not-created VMs, cross-lab exclusion, deduplication, JSON export), CLI `template update`, CLI `lab-topology`, CLI `lab-instantiate --dry-run`.
+New in v0.5.0: 10 additional tests covering `build_lab_topology` (empty, live VMs, not-created VMs, cross-lab exclusion, deduplication, JSON export), CLI `template update`, CLI `lab-topology`, CLI `lab-instantiate --dry-run`, and libvirt KiB memory parsing.
 
 Offscreen Qt smoke (2026-06-03):
 
@@ -40,6 +40,84 @@ print(w.grab().width())  # should print 500
 ```
 
 Result: widget renders at 500×300 px, 2 VM nodes (server=live/running, ghost=not created). OK.
+
+## v0.5.0 RC — Manual/Host Smoke Validated (2026-06-04)
+
+Validated on a real Ubuntu/KVM/libvirt host from `develop`. The UI-specific interactions were exercised with the real PySide6 widgets using Qt's test driver/offscreen rendering because the active desktop session was Wayland and no desktop automation/screenshot tools were available to the agent. Real libvirt resources were created, started, paused, force-powered-off, opened through the console flow, and cleaned up.
+
+### Preparation
+
+- [x] `git switch develop`
+- [x] `git pull origin develop`
+- [x] `./scripts/preflight.sh`
+- [x] System Python tests: `Ran 131 tests — OK`
+- [x] Venv PySide6 tests: `Ran 131 tests — OK`
+- [x] `python3 -m compileall hypergery-ubuntu`
+- [x] `bash -n` for all release scripts
+- [x] `./scripts/dev-run.sh` launched without immediate traceback; stopped by controlled timeout after startup.
+
+### Lab Topology View
+
+- [x] Created lab `hg-v05-topology-lab`.
+- [x] Created real VM `hg-v05-topology-vm` from `/home/gerard/NAS_Gerard/ubuntu-26.04-live-server-amd64.iso`.
+- [x] Started VM and confirmed `running` via libvirt.
+- [x] Suspended/resumed VM and confirmed `paused` topology state.
+- [x] Force-powered VM off and confirmed `shut off`.
+- [x] Rendered `LabTopologyWidget` with network node on the left and VM nodes on the right.
+- [x] Confirmed colors: running green, shutoff gray, paused amber, not-created slate.
+- [x] Clicked VM node via Qt test driver and confirmed the widget emitted selection for `hg-v05-topology-vm`.
+- [x] No traceback.
+
+### Planned VM Editor
+
+- [x] Created lab template `hg-v05-asr-template`.
+- [x] Added planned VMs `hg-v05-ad-server` and `hg-v05-client`.
+- [x] Opened planned VM edit dialog and edited name, RAM, vCPUs, disk, role, `template_id`, and notes.
+- [x] Duplicate planned VM name was blocked.
+- [x] Valid changes were saved and reflected in the table.
+
+### ISO Reuse
+
+- [x] Opened the instantiation wizard for `hg-v05-asr-template`.
+- [x] Confirmed missing ISO status label lists required VMs.
+- [x] Applied `/home/gerard/NAS_Gerard/ubuntu-26.04-live-server-amd64.iso` once via "Apply same ISO to all VMs...".
+- [x] Confirmed all required ISO rows were filled and status label cleared.
+
+### Instantiate Lab Template
+
+- [x] Instantiated `hg-v05-asr-lab` from `hg-v05-asr-template`.
+- [x] Created real VMs `hg-v05-ad-server-renamed` and `hg-v05-client`.
+- [x] Confirmed `templates_used = ["hg-v05-asr-template"]`.
+- [x] Confirmed backend activity log entries in `~/.local/state/hypergery/logs/hypergery.log`.
+- [x] Started `hg-v05-ad-server-renamed`.
+- [x] Opened console with `virt-viewer` flow.
+- [x] ACPI shutdown did not complete within the smoke timeout; force-off succeeded and VM returned to `shut off`.
+
+### Cleanup Preview
+
+- [x] Opened `CleanupPreviewDialog`.
+- [x] Confirmed it lists HyperGery VMs, labs, VM templates, and lab templates.
+- [x] Confirmed the dialog is read-only and does not mutate resource counts.
+
+### CLI
+
+- [x] `lab-topology hg-v05-topology-lab` returned valid JSON.
+- [x] Found and fixed a real issue: `ram_mib` was `0` because libvirt returns memory as KiB in `dumpxml`.
+- [x] `lab-topology hg-v05-topology-lab` then returned `ram_mib: 1024` for the real test VM.
+- [x] `lab-instantiate hg-v05-asr-template hg-v05-cli-dry-run --dry-run` returned JSON and created no lab/VM resources. It correctly reported missing ISO errors because that exact command does not provide ISO mappings.
+- [x] `template update lab hg-v05-asr-template --set notes="v0.5 smoke test"` updated the template.
+
+### Cleanup
+
+- [x] Deleted only VMs/labs/templates with prefix `hg-v05`.
+- [x] Deleted only HyperGery-managed disks through `delete-vm --delete-disks`.
+- [x] Removed test libvirt networks `hg-net-hg-v05-asr-lab` and `hg-net-hg-v05-topology-lab`.
+- [x] Final `virsh --connect qemu:///system list --all` showed only the pre-existing `ubuntu` VM.
+- [x] No `hg-v05-*` labs/templates/disks remained under `~/.local/share/hypergery`.
+
+### Bug Fixed During Validation
+
+- `HyperGeryBackend.get_vm()` now converts libvirt memory units to MiB. This fixes topology/CLI reporting for hosts where `virsh dumpxml` normalizes `<memory>` to `unit="KiB"`.
 
 ## v0.5.0 RC — Manual Smoke Checklist
 

@@ -677,7 +677,7 @@ class HyperGeryBackend:
             name=name,
             state=state,
             lab_id=lab.text if lab is not None and lab.text else "",
-            ram_mib=self.optional_int(memory.text) if memory is not None and memory.attrib.get("unit") == "MiB" else None,
+            ram_mib=self.memory_to_mib(memory.text, memory.attrib.get("unit", "")) if memory is not None else None,
             vcpus=self.optional_int(vcpu.text) if vcpu is not None else None,
             disk_path=disk_path,
             disk_virtual=virtual,
@@ -710,6 +710,22 @@ class HyperGeryBackend:
             return int(value.strip())
         except (AttributeError, ValueError):
             return None
+
+    @classmethod
+    def memory_to_mib(cls, value: str | None, unit: str | None) -> int | None:
+        parsed = cls.optional_int(value)
+        if parsed is None:
+            return None
+        normalized = (unit or "KiB").strip().lower()
+        if normalized in {"mib", "mb"}:
+            return parsed
+        if normalized in {"kib", "kb"}:
+            return parsed // 1024
+        if normalized in {"gib", "gb"}:
+            return parsed * 1024
+        if normalized in {"b", "bytes"}:
+            return parsed // (1024 * 1024)
+        return parsed
 
     @staticmethod
     def human_bytes(value: int) -> str:
