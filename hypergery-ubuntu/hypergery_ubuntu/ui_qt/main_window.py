@@ -56,7 +56,7 @@ from .dialogs import (
     SnapshotDialog,
     VMWizard,
 )
-from .console import IntegratedConsoleWidget
+from .console import VmConsoleWindow
 from .lab_helpers import build_lab_topology, filter_vms_for_lab, vm_count_for_lab
 from .topology import LabTopologyWidget
 from .styles import (
@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self.selected_vm_template: dict | None = None
         self.selected_lab_template: dict | None = None
         self.remote_hosts: list[dict[str, Any]] = []
+        self.console_windows: dict[str, VmConsoleWindow] = {}
         self.jobs: list[BackendJob] = []
         self.completed_jobs: list[BackendJob] = []
         self.setWindowTitle(f"HyperGery v{APP_DISPLAY_VERSION}")
@@ -560,8 +561,6 @@ class MainWindow(QMainWindow):
             text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
             self.tabs.addTab(text, name)
             self.detail_views[name] = text
-        self.console_widget = IntegratedConsoleWidget(self.backend)
-        self.tabs.addTab(self.console_widget, "Console")
         return self.tabs
 
     def _build_logs_panel(self) -> QWidget:
@@ -1243,7 +1242,6 @@ class MainWindow(QMainWindow):
             empty = "No VM selected."
             for view in self.detail_views.values():
                 view.setPlainText(empty)
-            self.console_widget.set_vm(None)
             return
         self.detail_stack.setCurrentIndex(1)
         self.selection_label.setText(f"{vm.name}  -  {vm.state}  -  {vm.lab_id or 'unknown lab'}")
@@ -1259,9 +1257,10 @@ class MainWindow(QMainWindow):
         self.detail_views["Display"].setPlainText(
             details_block(
                 ("Graphics", vm.graphics or "unknown"),
-                ("Integrated console", "VNC local display" if vm.graphics == "vnc" else "switch display to VNC or use external viewer"),
+                ("HyperGery Console", "separate VNC console window" if vm.graphics == "vnc" else "use External Console or switch display to VNC"),
                 ("External console", "virt-viewer or remote-viewer"),
                 ("Host Key", "Right Ctrl"),
+                ("Close behavior", "closing the console window does not stop the VM"),
             )
         )
         self.detail_views["Storage"].setPlainText(
@@ -1280,7 +1279,6 @@ class MainWindow(QMainWindow):
             body = f"Snapshot status unavailable:\n{exc}"
         self.detail_views["Snapshots"].setPlainText(body)
         self.detail_views["Logs"].setPlainText(self.backend.recent_logs(80))
-        self.console_widget.set_vm(vm)
 
     def selected_name(self) -> str:
         if self.selected_vm is None:
@@ -1431,13 +1429,20 @@ class MainWindow(QMainWindow):
         self.run_operation(f"Forcing off {name}", lambda: self.backend.force_off_vm(name))
 
     def open_console(self) -> None:
-        try:
-            name = self.selected_name()
-        except HyperGeryError as exc:
-            self.show_error(str(exc))
+        if self.selected_vm is None:
+            self.show_error("Select a VM first.")
             return
-        self.tabs.setCurrentWidget(self.console_widget)
-        self.console_widget.connect_console()
+        vm = self.selected_vm
+        window = self.console_windows.get(vm.name)
+        if window is None:
+            window = VmConsoleWindow(self.backend, vm, self)
+            window.destroyed.connect(lambda _=None, name=vm.name: self.console_windows.pop(name, None))
+            self.console_windows[vm.name] = window
+        else:
+            window.set_vm(vm)
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def open_external_console(self) -> None:
         try:

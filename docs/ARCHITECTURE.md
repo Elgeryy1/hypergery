@@ -27,15 +27,18 @@ It provides:
   - **Resource Overview**: `CleanupPreviewDialog` shows all VMs, labs, and templates — read-only.
 - Qt backend workers so long-running host operations do not block the UI thread.
 
-### Integrated Console
+### HyperGery Console Window
 
-The integrated console lives in `hypergery_ubuntu/ui_qt/console.py`.
+The separate VM console window lives in `hypergery_ubuntu/ui_qt/console.py`.
 
 - It uses Qt networking (`QTcpSocket`) and a small RFB/VNC client rather than a browser or bundled noVNC.
 - It supports local no-auth VNC with Raw framebuffer encoding.
 - It is intended for libvirt/QEMU displays configured as `type="vnc" autoport="yes" listen="127.0.0.1"`.
-- Input capture is explicit: click inside the console to capture input, press Right Ctrl to release.
+- The main **Console** button opens `VmConsoleWindow`; the VM detail tabs no longer embed a console tab.
+- Input capture is explicit: click inside the console window to capture input, press Right Ctrl to release.
+- Closing the console window only disconnects the display session; it never shuts down or force-stops the VM.
 - `virt-viewer` / `remote-viewer` remain the external fallback path and continue to support SPICE.
+- SPICE VMs show a clear message in the HyperGery Console window and direct the user to **External Console** instead of showing a blank display area.
 
 Backend console discovery is handled by `HyperGeryBackend.get_console_display(vm_name)`, which uses `virsh domdisplay` plus domain XML fallback and returns normalized local URIs such as `vnc://127.0.0.1:5901`.
 

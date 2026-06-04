@@ -43,10 +43,12 @@ Required local smoke:
 - [ ] Import package locally in dry-run or isolated test mode if no second host is available.
 - [ ] Confirm source VM still exists and source disks remain untouched.
 - [ ] Create or edit a VM with display mode `vnc`.
-- [ ] Start the VM and open the **Console** tab.
-- [ ] Connect integrated console, click inside to capture input, and press Right Ctrl to release.
+- [ ] Start the VM and press **Console**.
+- [ ] Confirm a separate **HyperGery Console - <vm_name>** window opens.
+- [ ] Click **Connect**, click inside to capture input, and press Right Ctrl to release.
 - [ ] Confirm **External Console** still opens `virt-viewer` or `remote-viewer`.
-- [ ] Disconnect/close the console and confirm the VM keeps running.
+- [ ] Disconnect/close the console window and confirm the VM keeps running.
+- [ ] Start or select a SPICE VM and confirm the console window shows the SPICE external-viewer message instead of a blank screen.
 
 Registry/agent local smoke on prepared host (2026-06-04):
 

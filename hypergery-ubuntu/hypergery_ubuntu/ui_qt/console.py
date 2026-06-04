@@ -1,21 +1,29 @@
 from __future__ import annotations
 
 import struct
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap
+from PySide6.QtGui import QAction, QCloseEvent, QImage, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
-    QHBoxLayout,
     QLabel,
-    QPushButton,
+    QMainWindow,
     QSizePolicy,
+    QStatusBar,
+    QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 from ..backend import HyperGeryError
-from .console_helpers import HOST_KEY_NAME, is_host_key
+from .console_helpers import (
+    HOST_KEY_NAME,
+    SPICE_INTEGRATED_MESSAGE,
+    console_message_for_graphics,
+    console_mode_for_graphics,
+    is_host_key,
+)
 
 
 def _keysym(event: QKeyEvent) -> int:
@@ -99,6 +107,8 @@ class IntegratedConsoleWidget(QWidget):
         super().__init__(parent)
         self.backend = backend
         self.vm_name = ""
+        self.vm_state = ""
+        self.graphics = ""
         self.display: dict[str, object] | None = None
         self.socket: QTcpSocket | None = None
         self.buffer = bytearray()
@@ -109,6 +119,9 @@ class IntegratedConsoleWidget(QWidget):
         self.pending_rects = 0
         self.input_captured = False
         self.pointer_mask = 0
+        self.scale_to_fit = True
+        self.status_callback: Callable[[str], None] | None = None
+        self.controls_callback: Callable[[bool, bool], None] | None = None
 
         self.status = QLabel("No VM selected.")
         self.status.setObjectName("mutedLabel")
@@ -120,75 +133,76 @@ class IntegratedConsoleWidget(QWidget):
         self.hint.setToolTip(f"Host Key: {HOST_KEY_NAME}")
         self.screen = VncScreen(self)
 
-        self.connect_button = QPushButton("Connect")
-        self.disconnect_button = QPushButton("Disconnect")
-        self.reconnect_button = QPushButton("Reconnect")
-        self.cad_button = QPushButton("Send Ctrl+Alt+Del")
-        self.external_button = QPushButton("Open External Viewer")
-        self.connect_button.clicked.connect(self.connect_console)
-        self.disconnect_button.clicked.connect(self.disconnect_console)
-        self.reconnect_button.clicked.connect(self.reconnect_console)
-        self.cad_button.clicked.connect(self.send_ctrl_alt_del)
-        self.external_button.clicked.connect(self.open_external)
-
-        actions = QHBoxLayout()
-        for button in (
-            self.connect_button,
-            self.disconnect_button,
-            self.reconnect_button,
-            self.cad_button,
-            self.external_button,
-        ):
-            actions.addWidget(button)
-        actions.addStretch()
-
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(10)
         layout.addWidget(self.status)
         layout.addWidget(self.hint)
-        layout.addLayout(actions)
         layout.addWidget(self.screen, 1)
+        self.setStyleSheet(
+            """
+            QWidget { background: #141820; color: #e8edf5; }
+            QLabel#mutedLabel { color: #aab4c3; }
+            """
+        )
         self.update_controls(False)
 
     def set_vm(self, vm) -> None:
         name = getattr(vm, "name", "") if vm else ""
         state = str(getattr(vm, "state", "") if vm else "").lower()
+        graphics = str(getattr(vm, "graphics", "") if vm else "").lower()
         if name != self.vm_name:
             self.disconnect_console()
         self.vm_name = name
+        self.vm_state = state
+        self.graphics = graphics
         if not name:
-            self.status.setText("No VM selected.")
+            self.set_status("No VM selected.")
             self.screen.setText("Select a running VM to open the integrated console.")
             self.update_controls(False)
             return
         if "running" not in state and "paused" not in state:
-            self.status.setText("VM is not running. Start the VM to open console.")
+            self.set_status("VM is not running. Start the VM to open console.")
             self.screen.setText("VM is not running. Start the VM to open console.")
             self.update_controls(False)
             return
-        self.status.setText(f"Ready to connect to {name}. Host Key: {HOST_KEY_NAME}")
-        self.screen.setText("Click Connect to open the VM console.")
-        self.update_controls(True)
+        message = console_message_for_graphics(graphics)
+        self.set_status(f"Ready for {name}. Host Key: {HOST_KEY_NAME}")
+        self.screen.setText(message)
+        self.update_controls(console_mode_for_graphics(graphics) == "integrated-vnc")
+
+    def set_status(self, text: str) -> None:
+        self.status.setText(text)
+        if self.status_callback:
+            self.status_callback(text)
 
     def update_controls(self, vm_can_connect: bool) -> None:
         connected = bool(self.socket and self.socket.state() == QAbstractSocket.SocketState.ConnectedState)
-        self.connect_button.setEnabled(vm_can_connect and not connected)
-        self.disconnect_button.setEnabled(connected)
-        self.reconnect_button.setEnabled(vm_can_connect)
-        self.cad_button.setEnabled(connected)
-        self.external_button.setEnabled(bool(self.vm_name))
+        if self.controls_callback:
+            self.controls_callback(vm_can_connect, connected)
 
     def connect_console(self) -> None:
         if not self.vm_name:
             return
+        if "running" not in self.vm_state and "paused" not in self.vm_state:
+            self.set_status("VM is not running. Start the VM to open console.")
+            self.screen.setText("VM is not running. Start the VM to open console.")
+            self.update_controls(False)
+            return
+        if console_mode_for_graphics(self.graphics) == "external-spice":
+            self.set_status(SPICE_INTEGRATED_MESSAGE)
+            self.screen.setText(f"{SPICE_INTEGRATED_MESSAGE}\n\nClosing this console does not stop the VM.")
+            self.update_controls(False)
+            return
         try:
             display = self.backend.get_console_display(self.vm_name)
         except HyperGeryError as exc:
-            self.status.setText(f"Integrated console unavailable: {exc}")
+            self.set_status(f"Integrated console unavailable: {exc}")
             self.screen.setText("Integrated console unavailable.\nUse Open External Viewer.")
             return
         if display.get("type") != "vnc":
-            self.status.setText("Integrated console requires VNC. Use Settings to switch display to VNC or open external viewer.")
-            self.screen.setText("SPICE remains supported through the external viewer fallback.")
+            self.set_status(SPICE_INTEGRATED_MESSAGE if display.get("type") == "spice" else "Integrated console requires VNC.")
+            self.screen.setText(f"{SPICE_INTEGRATED_MESSAGE}\n\nUse Open External Viewer.")
             return
         self.disconnect_console()
         self.display = display
@@ -199,7 +213,7 @@ class IntegratedConsoleWidget(QWidget):
         self.socket.errorOccurred.connect(self.on_socket_error)
         self.socket.disconnected.connect(lambda: self.update_controls(True))
         self.socket.connectToHost(str(display["host"]), int(display["port"]))
-        self.status.setText(f"Connecting to {display['uri']}...")
+        self.set_status(f"Connecting to {display['uri']}...")
         self.update_controls(True)
 
     def disconnect_console(self) -> None:
@@ -210,7 +224,7 @@ class IntegratedConsoleWidget(QWidget):
             self.socket = None
         self.buffer.clear()
         self.state = "idle"
-        self.update_controls(bool(self.vm_name))
+        self.update_controls(bool(self.vm_name) and console_mode_for_graphics(self.graphics) == "integrated-vnc")
 
     def reconnect_console(self) -> None:
         self.disconnect_console()
@@ -223,17 +237,19 @@ class IntegratedConsoleWidget(QWidget):
     def capture_input(self) -> None:
         if not self.input_captured:
             self.input_captured = True
-            self.status.setText(f"Input captured. Press {HOST_KEY_NAME} to release.")
+            self.set_status(f"Input captured - press {HOST_KEY_NAME} to release")
+            self.update_controls(console_mode_for_graphics(self.graphics) == "integrated-vnc")
 
     def release_input(self) -> None:
         if self.input_captured:
             self.input_captured = False
             self.pointer_mask = 0
-            self.status.setText(f"Input released. Host Key: {HOST_KEY_NAME}")
+            self.set_status("Input released")
+            self.update_controls(console_mode_for_graphics(self.graphics) == "integrated-vnc")
 
     def on_socket_error(self, _error) -> None:
         detail = self.socket.errorString() if self.socket else "unknown socket error"
-        self.status.setText(f"Integrated console failed: {detail}. Use Open External Viewer.")
+        self.set_status(f"Integrated console failed: {detail}. Use Open External Viewer.")
         self.update_controls(True)
 
     def on_ready_read(self) -> None:
@@ -243,7 +259,7 @@ class IntegratedConsoleWidget(QWidget):
         try:
             self.process_buffer()
         except HyperGeryError as exc:
-            self.status.setText(f"Integrated console failed: {exc}. Use Open External Viewer.")
+            self.set_status(f"Integrated console failed: {exc}. Use Open External Viewer.")
             self.disconnect_console()
 
     def _take(self, size: int) -> bytes | None:
@@ -300,7 +316,7 @@ class IntegratedConsoleWidget(QWidget):
                 self.send_set_encodings()
                 self.request_update(False)
                 self.state = "message"
-                self.status.setText(f"Connected to {self.vm_name}. Input released. Host Key: {HOST_KEY_NAME}")
+                self.set_status(f"Connected to {self.vm_name}. Input released. Host Key: {HOST_KEY_NAME}")
                 self.update_controls(True)
             elif self.state == "message":
                 msg_type = self._take(1)
@@ -354,11 +370,18 @@ class IntegratedConsoleWidget(QWidget):
 
     def render_framebuffer(self) -> None:
         if self.framebuffer:
-            self.screen.setPixmap(QPixmap.fromImage(self.framebuffer).scaled(
-                self.screen.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            ))
+            pixmap = QPixmap.fromImage(self.framebuffer)
+            if self.scale_to_fit:
+                pixmap = pixmap.scaled(
+                    self.screen.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            self.screen.setPixmap(pixmap)
+
+    def set_scale_to_fit(self, enabled: bool) -> None:
+        self.scale_to_fit = enabled
+        self.render_framebuffer()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -395,9 +418,107 @@ class IntegratedConsoleWidget(QWidget):
             elif event.button() == Qt.MouseButton.RightButton:
                 self.pointer_mask &= ~4
         pos = event.position()
-        scale = min(self.screen.width() / self.fb_width, self.screen.height() / self.fb_height)
+        scale = min(self.screen.width() / self.fb_width, self.screen.height() / self.fb_height) if self.scale_to_fit else 1.0
         x_offset = (self.screen.width() - self.fb_width * scale) / 2
         y_offset = (self.screen.height() - self.fb_height * scale) / 2
         x = max(0, min(self.fb_width - 1, int((pos.x() - x_offset) / scale)))
         y = max(0, min(self.fb_height - 1, int((pos.y() - y_offset) / scale)))
         self.socket.write(struct.pack(">BBHH", 5, self.pointer_mask, x, y))
+
+
+class VmConsoleWindow(QMainWindow):
+    def __init__(self, backend, vm, parent=None) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.vm = vm
+        self.setWindowTitle(f"HyperGery Console - {getattr(vm, 'name', '')}")
+        self.resize(1024, 720)
+        self.setMinimumSize(760, 520)
+        self.console = IntegratedConsoleWidget(backend, self)
+        self.console.status_callback = self.set_console_status
+        self.console.controls_callback = self.update_action_state
+        self.setCentralWidget(self.console)
+        self._build_toolbar()
+        self._build_status_bar()
+        self.set_vm(vm)
+
+    def _build_toolbar(self) -> None:
+        toolbar = QToolBar("Console")
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.addToolBar(toolbar)
+
+        self.connect_action = QAction("Connect", self)
+        self.disconnect_action = QAction("Disconnect", self)
+        self.reconnect_action = QAction("Reconnect", self)
+        self.cad_action = QAction("Send Ctrl+Alt+Del", self)
+        self.release_action = QAction("Release Input", self)
+        self.fullscreen_action = QAction("Fullscreen", self)
+        self.fullscreen_action.setCheckable(True)
+        self.scale_action = QAction("Scale to Fit", self)
+        self.scale_action.setCheckable(True)
+        self.scale_action.setChecked(True)
+        self.external_action = QAction("Open External Viewer", self)
+        self.close_action = QAction("Close", self)
+
+        self.connect_action.triggered.connect(self.console.connect_console)
+        self.disconnect_action.triggered.connect(self.console.disconnect_console)
+        self.reconnect_action.triggered.connect(self.console.reconnect_console)
+        self.cad_action.triggered.connect(self.console.send_ctrl_alt_del)
+        self.release_action.triggered.connect(self.console.release_input)
+        self.fullscreen_action.triggered.connect(self.toggle_fullscreen)
+        self.scale_action.toggled.connect(self.console.set_scale_to_fit)
+        self.external_action.triggered.connect(self.console.open_external)
+        self.close_action.triggered.connect(self.close)
+
+        for action in (
+            self.connect_action,
+            self.disconnect_action,
+            self.reconnect_action,
+            self.cad_action,
+            self.release_action,
+        ):
+            toolbar.addAction(action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.fullscreen_action)
+        toolbar.addAction(self.scale_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.external_action)
+        toolbar.addAction(self.close_action)
+
+    def _build_status_bar(self) -> None:
+        status = QStatusBar(self)
+        self.state_label = QLabel("Input released")
+        self.host_key_label = QLabel(f"Host Key: {HOST_KEY_NAME}")
+        self.close_note_label = QLabel("Closing this console does not stop the VM.")
+        status.addWidget(self.state_label, 1)
+        status.addPermanentWidget(self.close_note_label)
+        status.addPermanentWidget(self.host_key_label)
+        self.setStatusBar(status)
+
+    def set_vm(self, vm) -> None:
+        self.vm = vm
+        self.setWindowTitle(f"HyperGery Console - {getattr(vm, 'name', '')}")
+        self.console.set_vm(vm)
+        self.external_action.setEnabled(bool(getattr(vm, "name", "")))
+
+    def set_console_status(self, text: str) -> None:
+        self.state_label.setText(text)
+
+    def update_action_state(self, vm_can_connect: bool, connected: bool) -> None:
+        self.connect_action.setEnabled(vm_can_connect and not connected)
+        self.disconnect_action.setEnabled(connected)
+        self.reconnect_action.setEnabled(vm_can_connect)
+        self.cad_action.setEnabled(connected)
+        self.release_action.setEnabled(self.console.input_captured)
+        self.external_action.setEnabled(bool(self.console.vm_name))
+
+    def toggle_fullscreen(self, enabled: bool) -> None:
+        if enabled:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.console.disconnect_console()
+        event.accept()
