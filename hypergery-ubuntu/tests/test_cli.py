@@ -1,4 +1,5 @@
 import unittest
+import json
 import os
 import tempfile
 from contextlib import redirect_stdout
@@ -173,6 +174,35 @@ class CliTests(unittest.TestCase):
             data = json.loads(buf.getvalue())
             self.assertTrue(data["dry_run"])
             self.assertIsNone(data["lab"])
+
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_migrate_preflight_cli_returns_json(self, backend_cls):
+        from hypergery_ubuntu.backend import CommandResult, PreflightItem
+
+        backend = backend_cls.return_value
+        backend.get_vm.return_value = VmSummary(
+            name="hg-source",
+            state="shut off",
+            lab_id="default-lab",
+            ram_mib=2048,
+            vcpus=2,
+            disk_path="",
+            iso_path="",
+            network="hg-net-default-lab",
+            graphics="spice",
+            xml="<domain><name>hg-source</name><devices/></domain>",
+        )
+        backend.list_snapshots.return_value = []
+        backend.preflight.return_value = [PreflightItem("libvirt connection", "OK", "Connected.")]
+        backend.virsh.return_value = CommandResult(["virsh"], 1, "", "not found")
+        buf = StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["migrate", "preflight", "hg-source", "--target-vm-name", "hg-target"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["target_vm_name"], "hg-target")
+        self.assertFalse(data["source_will_be_deleted"])
 
 
 if __name__ == "__main__":

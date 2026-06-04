@@ -18,6 +18,15 @@ Roadmap:
 
 Planned strategy: v0.6.0 may present the UI action as "Live Migration", but the safe implementation target is NAS Clone Migration. Source VMs, disks, and metadata must remain untouched. Running VM migration must be blocked unless a real safe libvirt/QEMU strategy is available.
 
+Implemented in development so far:
+
+- NAS registry server with host registration, heartbeat/offline tracking, safe command queue, and migration status records.
+- HyperGery Agent with config file support, capability heartbeat, safe command allowlist, and CLI `agent` commands.
+- Host discovery CLI: `host list`, `host show`, and `host test`.
+- First-run Ubuntu bootstrap in `scripts/dev-run.sh` and `scripts/bootstrap-ubuntu.sh`.
+- Migration package module with VM asset collection, offline preflight, package export, package validation, target identity regeneration, import rollback, and package listing.
+- CLI `migrate preflight`, `migrate package`, `migrate validate-package`, `migrate import`, `migrate list`, and `migrate status`.
+
 Future topology polish:
 
 - v0.7.0 or v0.6.x: export topology to PNG/SVG.

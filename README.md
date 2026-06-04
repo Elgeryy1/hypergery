@@ -94,10 +94,10 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - NAS Control Plane registry for host discovery, command queueing, and migration status.
 - HyperGery Agent on each participating host with safe command allowlist only.
 - NAS staging directory for migration packages.
-- VM package export/import for domain XML, qcow2 disks, attached ISO when requested, lab/network/template metadata, and migration logs.
-- Migration preflight checks for source VM state, disk/ISO availability, staging path, target host health, target disk/RAM capacity, name conflicts, and running-VM safety.
+- VM package export/import for domain XML, qcow2 disks, attached ISO when requested, lab/network/template metadata, checksums, and migration logs.
+- Migration preflight checks for source VM state, disk/ISO availability, staging path, local name conflicts, host readiness, and running-VM safety.
 - UI target: right-click a VM and choose **Live Migration**, then select target host, options, preflight, and progress.
-- CLI target: registry, agent, host, and migrate commands.
+- Development CLI: registry, agent, host, and migrate commands.
 
 v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.
 
@@ -110,7 +110,16 @@ python -m hypergery_ubuntu.cli agent config show
 python -m hypergery_ubuntu.cli agent once
 python -m hypergery_ubuntu.cli host list
 python -m hypergery_ubuntu.cli host test <host_id>
+
+# Safe offline package workflow
+python -m hypergery_ubuntu.cli migrate preflight <vm_name> --target-vm-name <target_name> --nas-path /mnt/hypergery-nas
+python -m hypergery_ubuntu.cli migrate package <vm_name> /mnt/hypergery-nas --target-vm-name <target_name>
+python -m hypergery_ubuntu.cli migrate validate-package /mnt/hypergery-nas/migrations/<migration_id>
+python -m hypergery_ubuntu.cli migrate import /mnt/hypergery-nas/migrations/<migration_id> --target-vm-name <target_name>
+python -m hypergery_ubuntu.cli migrate list --path /mnt/hypergery-nas
 ```
+
+See [docs/NAS_LIVE_MIGRATION.md](docs/NAS_LIVE_MIGRATION.md) for the package layout and safety model.
 
 ### Not yet implemented
 

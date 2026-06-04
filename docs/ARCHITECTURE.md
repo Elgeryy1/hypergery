@@ -60,6 +60,16 @@ Running VM copy is not treated as safe by default. If HyperGery cannot use a rea
 
 The registry command queue is not a shell execution mechanism. Supported command types are explicit and limited to safe operations such as `ping`, `preflight`, `list_vms`, `receive_vm_package`, `import_vm_package`, and `migration_status`.
 
+The first migration implementation lives in `hypergery_ubuntu.migration` and is intentionally offline-first:
+
+- `collect_vm_assets()` parses libvirt domain XML and records disk, ISO, and snapshot-related file assets.
+- `migration_preflight()` blocks running VMs, checks missing media, staging path writability/free space, host preflight state, and target-name conflicts.
+- `export_vm_package()` writes `migrations/<migration_id>/` with `manifest.json`, `domain.xml`, `disks/`, `isos/`, `snapshots/`, `labs/lab.json`, `templates/`, and `logs/migration.log`.
+- `validate_vm_package()` verifies manifest schema, required package files, sizes, and SHA-256 checksums.
+- `import_vm_package()` validates the package, generates a new VM UUID and MAC addresses, copies disks to `~/.local/share/hypergery/vms/<target-vm>/`, copies packaged ISOs to `~/.local/share/hypergery/isos/`, defines the libvirt domain, and updates lab metadata.
+
+Import rollback removes only files/directories created during the failed import and undefines only the partially created target domain when present. It never removes source VM resources.
+
 ## Libvirt
 
 HyperGery targets:

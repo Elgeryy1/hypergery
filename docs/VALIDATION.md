@@ -49,6 +49,14 @@ Registry/agent local smoke on prepared host (2026-06-04):
 - [x] Queued a safe `ping` command through `host test local-smoke`.
 - [x] Ran `agent once` again and confirmed command status `done` with `pong=true`.
 
+Migration package unit/CLI smoke on prepared host (2026-06-04):
+
+- [x] `migration_preflight()` blocks a running VM with `source_will_be_deleted=false`.
+- [x] `export_vm_package()` creates `manifest.json`, `domain.xml`, copied disk/ISO assets, checksums, lab metadata, and migration log in `migrations/<migration_id>/`.
+- [x] `validate_vm_package()` accepts a clean package and reports checksum mismatch after asset tampering.
+- [x] `import_vm_package()` rewrites target VM name, UUID, MAC address, disk paths, ISO paths, network metadata, and lab association using a simulated backend.
+- [x] CLI `migrate preflight` returns JSON and preserves `source_will_be_deleted=false`.
+
 Recommended real NAS/two-host smoke:
 
 - [ ] Run registry on the NAS or a machine acting as NAS.

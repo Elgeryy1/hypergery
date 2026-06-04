@@ -1,6 +1,8 @@
 import importlib.util
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 HAS_PYSIDE6 = importlib.util.find_spec("PySide6") is not None
@@ -52,10 +54,12 @@ class QtUiTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.main_window import MainWindow
 
-        window = MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
 
-        backend_cls.return_value.list_vms.assert_not_called()
-        window.close()
+            backend_cls.return_value.list_vms.assert_not_called()
+            window.close()
         self.assertIsNotNone(app)
 
 

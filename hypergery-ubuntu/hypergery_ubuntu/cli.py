@@ -260,6 +260,70 @@ def host_action(args: argparse.Namespace) -> int:
     return 2
 
 
+def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
+    from .migration import (
+        export_vm_package,
+        import_vm_package,
+        list_migration_packages,
+        migration_preflight,
+        validate_vm_package,
+    )
+
+    if args.migrate_command == "preflight":
+        return print_json(
+            migration_preflight(
+                backend,
+                args.vm_name,
+                target_host=args.target_host or "",
+                target_vm_name=args.target_vm_name or "",
+                nas_path=args.nas_path or "",
+                allow_paused=args.allow_paused,
+                include_iso=not args.no_iso,
+                include_snapshots=not args.no_snapshots,
+            )
+        )
+    if args.migrate_command == "package":
+        return print_json(
+            export_vm_package(
+                backend,
+                args.vm_name,
+                args.output_dir,
+                target_vm_name=args.target_vm_name or "",
+                allow_paused=args.allow_paused,
+                include_iso=not args.no_iso,
+                include_snapshots=not args.no_snapshots,
+            )
+        )
+    if args.migrate_command == "validate-package":
+        return print_json(validate_vm_package(args.package_dir))
+    if args.migrate_command == "import":
+        return print_json(
+            import_vm_package(
+                backend,
+                args.package_dir,
+                target_vm_name=args.target_vm_name or "",
+                target_lab_id=args.target_lab_id or "",
+            )
+        )
+    if args.migrate_command == "list":
+        return print_json({"packages": list_migration_packages(args.path)})
+    if args.migrate_command == "status":
+        validation = validate_vm_package(args.package_dir)
+        manifest = validation.get("manifest") or {}
+        return print_json(
+            {
+                "ok": validation["ok"],
+                "migration_id": manifest.get("migration_id", ""),
+                "source_vm_name": manifest.get("source_vm_name", ""),
+                "target_vm_name": manifest.get("target_vm_name", ""),
+                "created_at": manifest.get("created_at", ""),
+                "errors": validation["errors"],
+                "warnings": validation["warnings"],
+            }
+        )
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hypergery-cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -382,6 +446,33 @@ def main(argv: list[str] | None = None) -> int:
     host_test = host_sub.add_parser("test")
     host_test.add_argument("host_id")
     host_test.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    migrate_parser = sub.add_parser("migrate", help="Create, validate, import, and inspect safe VM migration packages.")
+    migrate_sub = migrate_parser.add_subparsers(dest="migrate_command", required=True)
+    migrate_preflight = migrate_sub.add_parser("preflight", help="Check whether a VM can be packaged safely.")
+    migrate_preflight.add_argument("vm_name")
+    migrate_preflight.add_argument("--target-host", default="")
+    migrate_preflight.add_argument("--target-vm-name", default="")
+    migrate_preflight.add_argument("--nas-path", default="")
+    migrate_preflight.add_argument("--allow-paused", action="store_true")
+    migrate_preflight.add_argument("--no-iso", action="store_true")
+    migrate_preflight.add_argument("--no-snapshots", action="store_true")
+    migrate_package = migrate_sub.add_parser("package", help="Export a shutoff VM into a NAS migration package.")
+    migrate_package.add_argument("vm_name")
+    migrate_package.add_argument("output_dir")
+    migrate_package.add_argument("--target-vm-name", default="")
+    migrate_package.add_argument("--allow-paused", action="store_true")
+    migrate_package.add_argument("--no-iso", action="store_true")
+    migrate_package.add_argument("--no-snapshots", action="store_true")
+    migrate_validate = migrate_sub.add_parser("validate-package", help="Verify a migration package manifest and checksums.")
+    migrate_validate.add_argument("package_dir")
+    migrate_import = migrate_sub.add_parser("import", help="Import a validated migration package on this host.")
+    migrate_import.add_argument("package_dir")
+    migrate_import.add_argument("--target-vm-name", default="")
+    migrate_import.add_argument("--target-lab-id", default="")
+    migrate_list = migrate_sub.add_parser("list", help="List migration packages under a path.")
+    migrate_list.add_argument("--path", default=".")
+    migrate_status = migrate_sub.add_parser("status", help="Show package status and validation summary.")
+    migrate_status.add_argument("package_dir")
     args = parser.parse_args(argv)
 
     try:
@@ -418,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
             return lab_topology_action(backend, args)
         if args.command == "lab-instantiate":
             return lab_instantiate_action(backend, args)
+        if args.command == "migrate":
+            return migrate_action(backend, args)
     except HyperGeryError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
