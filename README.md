@@ -96,7 +96,7 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - NAS staging directory for migration packages.
 - VM package export/import for domain XML, qcow2 disks, attached ISO when requested, lab/network/template metadata, checksums, and migration logs.
 - Migration preflight checks for source VM state, disk/ISO availability, staging path, local name conflicts, host readiness, and running-VM safety.
-- UI target: right-click a VM and choose **Live Migration**, then select target host, options, preflight, and progress.
+- UI in development: select a VM and choose **Live Migration** to run preflight and create a safe NAS migration package. Remote target selection/import orchestration is still pending.
 - Development CLI: registry, agent, host, and migrate commands.
 
 v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.

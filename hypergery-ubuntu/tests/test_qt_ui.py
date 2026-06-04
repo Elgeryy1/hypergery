@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from tests.test_migration import FakeBackend as MigrationFakeBackend
 
 HAS_PYSIDE6 = importlib.util.find_spec("PySide6") is not None
 
@@ -60,6 +61,21 @@ class QtUiTests(unittest.TestCase):
 
             backend_cls.return_value.list_vms.assert_not_called()
             window.close()
+        self.assertIsNotNone(app)
+
+    def test_live_migration_dialog_blocks_running_vm(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp), state="running")
+            dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+            dialog.nas_path.setText(str(Path(tmp) / "nas"))
+            dialog.run_preflight()
+
+            self.assertFalse(dialog.package_button.isEnabled())
+            self.assertIn("Running VM migration is blocked", dialog.result_view.toPlainText())
+            dialog.close()
         self.assertIsNotNone(app)
 
 

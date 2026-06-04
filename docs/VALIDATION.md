@@ -59,6 +59,7 @@ Migration package unit/CLI smoke on prepared host (2026-06-04):
 - [x] Agent `preflight` command runs VM migration preflight and fails safely for running VMs.
 - [x] Agent `receive_vm_package` validates only packages inside configured NAS staging.
 - [x] Agent `import_vm_package` calls the package import flow and blocks paths outside staging.
+- [x] Qt **Live Migration** dialog runs VM preflight and keeps package creation disabled for running VMs.
 
 Recommended real NAS/two-host smoke:
 

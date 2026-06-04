@@ -86,6 +86,18 @@ The registry can queue only allowlisted commands. For migration packages, the ag
 
 `receive_vm_package`, `import_vm_package`, and package-based `migration_status` reject paths outside the configured `nas_staging_path` or its `migrations/` child.
 
+## Qt UI
+
+The first v0.6 UI entry point is the **Live Migration** VM action in the main toolbar. It opens a dialog that:
+
+- sets target VM name and NAS staging path
+- chooses whether to include ISO and snapshot file assets
+- optionally allows paused VM packaging
+- runs migration preflight
+- enables package creation only after a successful preflight
+
+This UI currently creates the source-side NAS package only. Remote target selection, registry orchestration, and target import progress remain pending.
+
 ## Not Implemented Yet
 
 - Remote orchestration from the Qt UI.

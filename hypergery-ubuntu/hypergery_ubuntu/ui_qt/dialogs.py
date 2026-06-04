@@ -639,6 +639,152 @@ class DeleteConfirmationDialog(QDialog):
         return self.delete_disk.isChecked()
 
 
+class LiveMigrationDialog(QDialog):
+    def __init__(self, backend: HyperGeryBackend, vm: VmSummary, parent=None) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.vm = vm
+        self.preflight_result: dict | None = None
+        self.setWindowTitle(f"Live Migration: {vm.name}")
+        title = QLabel(vm.name)
+        title.setObjectName("sectionTitle")
+        notice = QLabel(
+            "v0.6.0 uses a safe NAS Clone Migration package. The source VM and source disks are not deleted."
+        )
+        notice.setObjectName("mutedLabel")
+        notice.setWordWrap(True)
+
+        self.target_name = QLineEdit(f"{vm.name}-migrated")
+        self.nas_path = QLineEdit(str(Path.home() / "hypergery-nas"))
+        browse = QPushButton("Browse")
+        browse.clicked.connect(self.pick_nas_path)
+        path_row = QHBoxLayout()
+        path_row.addWidget(self.nas_path, 1)
+        path_row.addWidget(browse)
+        self.include_iso = QCheckBox("Include attached ISO")
+        self.include_iso.setChecked(True)
+        self.include_snapshots = QCheckBox("Include snapshot file assets when detectable")
+        self.include_snapshots.setChecked(True)
+        self.allow_paused = QCheckBox("Allow paused VM packaging")
+        self.result_view = QTextEdit()
+        self.result_view.setReadOnly(True)
+        self.result_view.setMinimumHeight(190)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+
+        form = QFormLayout()
+        form.addRow("Target VM name", self.target_name)
+        form.addRow("NAS staging path", path_row)
+        form.addRow("", self.include_iso)
+        form.addRow("", self.include_snapshots)
+        form.addRow("", self.allow_paused)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.preflight_button = buttons.addButton("Run Preflight", QDialogButtonBox.ButtonRole.ActionRole)
+        self.package_button = buttons.addButton("Create Package", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.package_button.setObjectName("primaryButton")
+        self.package_button.setEnabled(False)
+        buttons.rejected.connect(self.reject)
+        self.preflight_button.clicked.connect(self.run_preflight)
+        self.package_button.clicked.connect(self.accept)
+        for widget in (self.target_name, self.nas_path):
+            widget.textChanged.connect(self.invalidate_preflight)
+        for widget in (self.include_iso, self.include_snapshots, self.allow_paused):
+            widget.toggled.connect(self.invalidate_preflight)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addWidget(notice)
+        layout.addLayout(form)
+        layout.addWidget(self.result_view)
+        layout.addWidget(self.error_label)
+        layout.addWidget(buttons)
+        self.resize(760, 560)
+
+    def pick_nas_path(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select NAS staging directory", self.nas_path.text(), FILE_DIALOG_OPTIONS)
+        if path:
+            self.nas_path.setText(path)
+
+    def invalidate_preflight(self) -> None:
+        self.preflight_result = None
+        self.package_button.setEnabled(False)
+
+    def values(self) -> dict:
+        return {
+            "vm_name": self.vm.name,
+            "target_vm_name": self.target_name.text().strip(),
+            "nas_path": self.nas_path.text().strip(),
+            "include_iso": self.include_iso.isChecked(),
+            "include_snapshots": self.include_snapshots.isChecked(),
+            "allow_paused": self.allow_paused.isChecked(),
+        }
+
+    def run_preflight(self) -> None:
+        from ..migration import migration_preflight
+
+        self.error_label.clear()
+        values = self.values()
+        if not values["target_vm_name"]:
+            self.error_label.setText("Target VM name is required.")
+            return
+        if not values["nas_path"]:
+            self.error_label.setText("NAS staging path is required.")
+            return
+        try:
+            result = migration_preflight(
+                self.backend,
+                self.vm.name,
+                target_vm_name=values["target_vm_name"],
+                nas_path=values["nas_path"],
+                allow_paused=values["allow_paused"],
+                include_iso=values["include_iso"],
+                include_snapshots=values["include_snapshots"],
+            )
+        except HyperGeryError as exc:
+            self.error_label.setText(str(exc))
+            self.package_button.setEnabled(False)
+            return
+        self.preflight_result = result
+        self.result_view.setPlainText(self._format_preflight(result))
+        self.package_button.setEnabled(bool(result.get("ok")))
+
+    def _format_preflight(self, result: dict) -> str:
+        errors = result.get("errors", [])
+        warnings = result.get("warnings", [])
+        assets = result.get("assets", [])
+        lines = [
+            f"Status: {'OK' if result.get('ok') else 'Blocked'}",
+            f"Strategy: {result.get('strategy', 'offline-copy')}",
+            f"Source will be deleted: {result.get('source_will_be_deleted')}",
+            f"Estimated package size: {result.get('estimated_size_bytes', 0)} bytes",
+            "",
+            "Errors:",
+            *(f"- {item}" for item in errors),
+            "" if errors else "- none",
+            "",
+            "Warnings:",
+            *(f"- {item}" for item in warnings),
+            "" if warnings else "- none",
+            "",
+            "Assets:",
+        ]
+        if assets:
+            lines.extend(
+                f"- {asset.get('type')} {asset.get('path')} ({asset.get('size_bytes', 0)} bytes)"
+                for asset in assets
+            )
+        else:
+            lines.append("- none")
+        return "\n".join(lines)
+
+    def accept(self) -> None:
+        if not self.preflight_result or not self.preflight_result.get("ok"):
+            self.error_label.setText("Run a successful preflight before creating a package.")
+            return
+        super().accept()
+
+
 class SnapshotDialog(QDialog):
     def __init__(self, backend: HyperGeryBackend, vm_name: str, parent: "MainWindow") -> None:
         super().__init__(parent)

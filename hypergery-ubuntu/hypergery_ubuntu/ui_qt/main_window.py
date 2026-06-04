@@ -46,6 +46,7 @@ from .dialogs import (
     EditVmTemplateDialog,
     FILE_DIALOG_OPTIONS,
     InstantiateLabTemplateWizard,
+    LiveMigrationDialog,
     NewLabDialog,
     NewLabTemplateDialog,
     NewVmTemplateDialog,
@@ -133,6 +134,7 @@ class MainWindow(QMainWindow):
         self.console_button = self._button("Console", self.open_console)
         self.snapshots_button = self._button("Snapshots", self.snapshots_vm)
         self.clone_button = self._button("Clone", self.clone_vm)
+        self.migrate_button = self._button("Live Migration", self.live_migration_vm)
         self.refresh_button = self._button("Refresh", self.refresh_all)
         self.force_button = self._button("Force Off", self.force_off_vm, danger=True)
         self.delete_button = self._button("Delete", self.delete_vm, danger=True)
@@ -145,6 +147,7 @@ class MainWindow(QMainWindow):
             self.console_button,
             self.snapshots_button,
             self.clone_button,
+            self.migrate_button,
             self.refresh_button,
         ):
             layout.addWidget(button)
@@ -568,6 +571,7 @@ class MainWindow(QMainWindow):
             self.console_button,
             self.snapshots_button,
             self.clone_button,
+            self.migrate_button,
             self.refresh_button,
             self.force_button,
             self.delete_button,
@@ -612,6 +616,7 @@ class MainWindow(QMainWindow):
         self.console_button.setEnabled(has_vm and running)
         self.snapshots_button.setEnabled(has_vm)
         self.clone_button.setEnabled(has_vm and shut_off)
+        self.migrate_button.setEnabled(has_vm)
         self.force_button.setEnabled(has_vm and running)
         self.delete_button.setEnabled(has_vm and shut_off)
         has_lab = self.selected_lab is not None
@@ -1310,6 +1315,53 @@ class MainWindow(QMainWindow):
             return
         source = self.selected_vm.name
         self.run_operation(f"Cloning {source}", lambda: self.backend.clone_vm(source, clone_name))
+
+    def live_migration_vm(self) -> None:
+        if self.selected_vm is None:
+            self.show_error("Select a VM first.")
+            return
+        dialog = LiveMigrationDialog(self.backend, self.selected_vm, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        if (
+            QMessageBox.question(
+                self,
+                "Create Migration Package",
+                (
+                    f"Create NAS migration package for {values['vm_name']}?\n\n"
+                    f"Target VM: {values['target_vm_name']}\n"
+                    f"NAS staging path: {values['nas_path']}\n\n"
+                    "The source VM and source disks will not be deleted."
+                ),
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+
+        def do_package() -> dict:
+            from ..migration import export_vm_package
+
+            return export_vm_package(
+                self.backend,
+                values["vm_name"],
+                values["nas_path"],
+                target_vm_name=values["target_vm_name"],
+                allow_paused=values["allow_paused"],
+                include_iso=values["include_iso"],
+                include_snapshots=values["include_snapshots"],
+            )
+
+        def on_done(result: dict) -> None:
+            package_dir = result.get("package_dir", "")
+            self.log_activity(f"Migration package created: {package_dir}")
+            QMessageBox.information(
+                self,
+                "Migration Package Created",
+                f"Package created:\n{package_dir}\n\nSource VM remains untouched.",
+            )
+
+        self.run_operation(f"Packaging migration for {values['vm_name']}", do_package, on_success=on_done, refresh_after=False)
 
     def delete_vm(self) -> None:
         if self.selected_vm is None:

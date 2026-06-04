@@ -27,6 +27,7 @@ Implemented in development so far:
 - Migration package module with VM asset collection, offline preflight, package export, package validation, target identity regeneration, import rollback, and package listing.
 - CLI `migrate preflight`, `migrate package`, `migrate validate-package`, `migrate import`, `migrate list`, and `migrate status`.
 - Agent migration command execution for VM preflight, staged package validation, staged package import, and package status with NAS staging path restrictions.
+- Qt **Live Migration** VM action with NAS staging path, target VM name, packaging options, preflight output, and package creation gated by successful preflight.
 
 Future topology polish:
 
