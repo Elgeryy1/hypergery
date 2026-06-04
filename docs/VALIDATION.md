@@ -12,7 +12,7 @@ cd hypergery-ubuntu && python3 -m unittest discover -s tests
 Run inside the venv (all tests including Qt):
 
 ```bash
-cd hypergery-ubuntu && /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
+cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
 # Expected: Ran 131 tests — OK
 ```
 
@@ -59,7 +59,7 @@ Validated on a real Ubuntu/KVM/libvirt host from `develop`. The UI-specific inte
 ### Lab Topology View
 
 - [x] Created lab `hg-v05-topology-lab`.
-- [x] Created real VM `hg-v05-topology-vm` from `/home/gerard/NAS_Gerard/ubuntu-26.04-live-server-amd64.iso`.
+- [x] Created real VM `hg-v05-topology-vm` from a local Ubuntu server ISO.
 - [x] Started VM and confirmed `running` via libvirt.
 - [x] Suspended/resumed VM and confirmed `paused` topology state.
 - [x] Force-powered VM off and confirmed `shut off`.
@@ -80,7 +80,7 @@ Validated on a real Ubuntu/KVM/libvirt host from `develop`. The UI-specific inte
 
 - [x] Opened the instantiation wizard for `hg-v05-asr-template`.
 - [x] Confirmed missing ISO status label lists required VMs.
-- [x] Applied `/home/gerard/NAS_Gerard/ubuntu-26.04-live-server-amd64.iso` once via "Apply same ISO to all VMs...".
+- [x] Applied the same local Ubuntu server ISO once via "Apply same ISO to all VMs...".
 - [x] Confirmed all required ISO rows were filled and status label cleared.
 
 ### Instantiate Lab Template
@@ -206,7 +206,7 @@ cd hypergery-ubuntu && python3 -m unittest discover -s tests
 Run inside the venv (all tests including Qt):
 
 ```bash
-cd hypergery-ubuntu && /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
+cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
 # Expected: Ran 121 tests — OK
 ```
 
@@ -430,7 +430,7 @@ Expected: all non-Qt tests pass; `test_qt_ui` and `test_qt_lab_helpers` classes 
 ### Venv with PySide6
 
 ```bash
-/home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
+~/.venvs/hypergery/bin/python -m unittest discover -s tests
 ```
 
 Expected: all tests pass including Qt UI tests.

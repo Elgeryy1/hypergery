@@ -187,13 +187,13 @@ Run the acceptance script with a real ISO:
 System Python (no PySide6 — Qt tests are skipped cleanly):
 
 ```bash
-python3 -m unittest discover -s hypergery-ubuntu/tests
+cd hypergery-ubuntu && python3 -m unittest discover -s tests
 ```
 
-Full suite inside the venv (all 130 tests pass including Qt tests):
+Full suite inside the venv (all 131 tests pass including Qt tests):
 
 ```bash
-cd hypergery-ubuntu && /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests
+cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
 ```
 
 ## Safety
