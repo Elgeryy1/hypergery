@@ -4,6 +4,15 @@ HyperGery v0.6.0 development uses the product label **Live Migration**, but the 
 
 The source VM, source disks, source lab manifest, and source templates are not deleted or modified by migration packaging.
 
+HyperGery Hub coordinates the remote flow: the app reads hosts and inventory from the Hub, the source creates a package under `/mnt/hypergery-nas/hypergery/migrations`, the Hub queues `import_vm_package`, and the target agent imports and reports progress.
+
+For the real NAS:
+
+```bash
+export HYPERGERY_HUB_URL=http://192.168.1.150:8765
+export HYPERGERY_NAS_STAGING_PATH=/mnt/hypergery-nas/hypergery
+```
+
 ## Safety Model
 
 - Running VMs are blocked by preflight.

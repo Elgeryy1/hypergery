@@ -236,6 +236,22 @@ class CliTests(unittest.TestCase):
         data = json.loads(buf.getvalue())
         self.assertEqual(data["migration"]["status"], "importing")
 
+    def test_hub_init_db_cli_creates_store_without_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "hub.sqlite")
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = cli.main(["hub", "init-db", "--db-path", db_path])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["db_path"], db_path)
+
+    def test_hub_url_env_takes_precedence_for_host_commands(self):
+        with patch.dict(os.environ, {"HYPERGERY_HUB_URL": "http://hub.local:8765", "HYPERGERY_REGISTRY_URL": "http://old.local:8765"}):
+            parser_default = cli.default_hub_url()
+        self.assertEqual(parser_default, "http://hub.local:8765")
+
 
 if __name__ == "__main__":
     unittest.main()

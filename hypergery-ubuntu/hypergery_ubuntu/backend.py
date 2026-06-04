@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
-import grp
 import hashlib
 import json
 import logging
 import os
-import pwd
 import re
 import shutil
 import subprocess
@@ -17,6 +15,16 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
+
+try:
+    import grp
+except ImportError:  # pragma: no cover - Windows editing environment only.
+    grp = None  # type: ignore[assignment]
+
+try:
+    import pwd
+except ImportError:  # pragma: no cover - Windows editing environment only.
+    pwd = None  # type: ignore[assignment]
 
 
 APP_NAME = "HyperGery"
@@ -350,6 +358,8 @@ class HyperGeryBackend:
     @staticmethod
     def current_group_names() -> set[str]:
         names: set[str] = set()
+        if grp is None:
+            return names
         for gid in os.getgroups():
             try:
                 names.add(grp.getgrgid(gid).gr_name)
@@ -596,6 +606,9 @@ class HyperGeryBackend:
     def grant_libvirt_qemu_access(self, *paths: Path) -> None:
         if not shutil.which("setfacl"):
             logging.warning("setfacl is unavailable; cannot grant libvirt-qemu ACLs for VM media")
+            return
+        if pwd is None:
+            logging.info("pwd module is unavailable; skipping libvirt-qemu ACL grant")
             return
         try:
             pwd.getpwnam("libvirt-qemu")

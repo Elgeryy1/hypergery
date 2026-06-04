@@ -2,6 +2,19 @@
 
 HyperGery is a real Ubuntu desktop VM manager built around a Python backend and a modern PySide6/Qt desktop UI. v0.3.0 adds a Lab Manager and a Templates Manager.
 
+## HyperGery Hub
+
+v0.6.0 introduces HyperGery Hub as the NAS control plane. The Hub runs as a Docker service on the NAS, exposes HTTP JSON on port `8765`, and coordinates host registration, heartbeats, VM inventory, command queue, migration status, and events.
+
+The existing `registry` package remains the implementation and compatibility surface. `hub` CLI commands are the preferred user-facing names.
+
+Data separation:
+
+- Hub DB: metadata and state in a container-local persistent volume.
+- NAS folder: VM migration packages, disks, and ISO assets.
+- Agents: execute allowlisted commands only.
+- App: reads Remote Hosts, target selection, and migration progress from the Hub.
+
 ## UI
 
 The primary desktop UI is implemented with PySide6/Qt in:

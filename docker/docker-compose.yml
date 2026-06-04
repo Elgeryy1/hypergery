@@ -1,0 +1,17 @@
+services:
+  hypergery-hub:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: hypergery-hub
+    ports:
+      - "${HYPERGERY_HUB_PORT:-8765}:8765"
+    volumes:
+      - ./data:/data
+      - ${HYPERGERY_NAS_ROOT:-/share/CACHEDEV2_DATA/Gerard/hypergery}:/hypergery
+    environment:
+      - HYPERGERY_HUB_DB=/data/hypergery-hub.sqlite
+      - HYPERGERY_NAS_ROOT=/hypergery
+      - HYPERGERY_HUB_HOST=0.0.0.0
+      - HYPERGERY_HUB_PORT=8765
+    restart: unless-stopped

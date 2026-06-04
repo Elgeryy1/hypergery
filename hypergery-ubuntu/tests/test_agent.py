@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -48,6 +49,10 @@ class FakeClient:
     def heartbeat(self, payload):
         return dict(payload, status="online")
 
+    def report_vms(self, host_id, vms):
+        self.reported_vms = {"host_id": host_id, "vms": vms}
+        return {"host_id": host_id, "count": len(vms), "vms": vms}
+
     def pending_commands(self, host_id):
         return list(self.commands)
 
@@ -89,6 +94,31 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("off-vm", payload["active_vms"])
         self.assertIn("kvm_ok", payload)
         self.assertIn("libvirt_ok", payload)
+
+    def test_heartbeat_reports_vm_inventory_to_hub(self):
+        client = FakeClient()
+        agent = HyperGeryAgent(AgentConfig(host_id="local", name="Local", nas_staging_path="/tmp"), backend=FakeBackend(), client=client)
+        agent.heartbeat()
+        self.assertEqual(client.reported_vms["host_id"], "local")
+        self.assertEqual(client.reported_vms["vms"][0]["vm_name"], "running-vm")
+        self.assertEqual(client.reported_vms["vms"][0]["display"], "unknown")
+
+    def test_config_reads_hub_environment_before_registry_fallback(self):
+        with patch.dict(
+            os.environ,
+            {
+                "HYPERGERY_HUB_URL": "http://hub.local:8765",
+                "HYPERGERY_REGISTRY_URL": "http://registry.local:8765",
+                "HYPERGERY_HOST_ID": "ubuntu-hyperv",
+                "HYPERGERY_HOST_NAME": "Ubuntu Hyper-V",
+                "HYPERGERY_NAS_STAGING_PATH": "/mnt/hypergery-nas/hypergery",
+            },
+        ):
+            config = AgentConfig()
+        self.assertEqual(config.registry_url, "http://hub.local:8765")
+        self.assertEqual(config.host_id, "ubuntu-hyperv")
+        self.assertEqual(config.name, "Ubuntu Hyper-V")
+        self.assertEqual(config.nas_staging_path, "/mnt/hypergery-nas/hypergery")
 
     def test_agent_allowlist_blocks_arbitrary_command(self):
         agent = HyperGeryAgent(AgentConfig(host_id="local"), backend=FakeBackend(), client=FakeClient())

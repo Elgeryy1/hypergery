@@ -21,11 +21,21 @@ CONFIG_PATH = Path(os.environ.get("HYPERGERY_AGENT_CONFIG", Path.home() / ".conf
 
 @dataclass
 class AgentConfig:
-    registry_url: str = "http://127.0.0.1:8765"
-    host_id: str = socket.gethostname()
-    name: str = socket.gethostname()
-    nas_staging_path: str = str(Path.home() / "hypergery-nas" / "migrations")
+    registry_url: str = ""
+    host_id: str = ""
+    name: str = ""
+    nas_staging_path: str = ""
     heartbeat_interval_seconds: int = 15
+
+    def __post_init__(self) -> None:
+        if not self.registry_url:
+            self.registry_url = os.environ.get("HYPERGERY_HUB_URL") or os.environ.get("HYPERGERY_REGISTRY_URL") or "http://127.0.0.1:8765"
+        if not self.host_id:
+            self.host_id = os.environ.get("HYPERGERY_HOST_ID") or socket.gethostname()
+        if not self.name:
+            self.name = os.environ.get("HYPERGERY_HOST_NAME") or socket.gethostname()
+        if not self.nas_staging_path:
+            self.nas_staging_path = os.environ.get("HYPERGERY_NAS_STAGING_PATH") or str(Path.home() / "hypergery-nas" / "migrations")
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AgentConfig":
@@ -142,11 +152,43 @@ class HyperGeryAgent:
             "notes": "",
         }
 
+    def vm_inventory_payload(self) -> dict[str, Any]:
+        vms = []
+        try:
+            summaries = self.backend.list_vms()
+        except Exception:
+            summaries = []
+        for vm in summaries:
+            disk_paths = []
+            if getattr(vm, "disk_path", ""):
+                disk_paths.append(vm.disk_path)
+            iso_paths = []
+            if getattr(vm, "iso_path", ""):
+                iso_paths.append(vm.iso_path)
+            vms.append(
+                {
+                    "vm_name": vm.name,
+                    "state": vm.state,
+                    "lab_id": vm.lab_id,
+                    "display": getattr(vm, "graphics", "") or "unknown",
+                    "ram_mib": vm.ram_mib,
+                    "vcpus": vm.vcpus,
+                    "disk_paths": disk_paths,
+                    "iso_paths": iso_paths,
+                }
+            )
+        return {"host_id": self.config.host_id, "vms": vms}
+
     def register(self) -> dict[str, Any]:
         return self.client.register_host(self.host_payload())
 
     def heartbeat(self) -> dict[str, Any]:
-        return self.client.heartbeat(self.host_payload())
+        host = self.client.heartbeat(self.host_payload())
+        try:
+            self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
+        except Exception:
+            pass
+        return host
 
     def execute_command(self, command: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         command_type = str(command.get("command_type") or "")
@@ -214,6 +256,7 @@ class HyperGeryAgent:
                         "target_vm_name": str(payload.get("target_vm_name") or ""),
                         "strategy": "nas_clone",
                         "status": "importing",
+                        "package_path": str(package),
                         "result": {"package_dir": str(package), "agent_host_id": self.config.host_id},
                     },
                 )
@@ -233,6 +276,7 @@ class HyperGeryAgent:
                         "target_vm_name": result["target_vm_name"],
                         "strategy": "nas_clone",
                         "status": "defining_vm",
+                        "package_path": str(package),
                         "result": result,
                     },
                 )
@@ -249,6 +293,7 @@ class HyperGeryAgent:
                         "target_vm_name": result["target_vm_name"],
                         "strategy": "nas_clone",
                         "status": "done",
+                        "package_path": str(package),
                         "result": result,
                     },
                 )
@@ -297,6 +342,7 @@ class HyperGeryAgent:
                                 "target_vm_name": str((command.get("payload") or {}).get("target_vm_name") or ""),
                                 "strategy": "nas_clone",
                                 "status": "failed",
+                                "package_path": str((command.get("payload") or {}).get("package_dir") or ""),
                                 "result": result,
                                 "errors": [str(exc)],
                             },

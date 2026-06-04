@@ -688,7 +688,7 @@ class MainWindow(QMainWindow):
         self.test_remote_button.setEnabled(bool(self.remote_host_table.selectionModel().selectedRows()))
 
     def registry_url(self) -> str:
-        return os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765")
+        return os.environ.get("HYPERGERY_HUB_URL") or os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765")
 
     def refresh_remote_hosts(self) -> None:
         self.run_operation(
@@ -725,10 +725,10 @@ class MainWindow(QMainWindow):
                 self._set_table_item(self.remote_host_table, row, col, value)
         self.remote_status_label.setText(f"{len(hosts)} host(s)")
         if hosts:
-            self.remote_detail.setPlainText(details_block(("Registry", self.registry_url()), ("Status", "reachable")))
+            self.remote_detail.setPlainText(details_block(("Hub", self.registry_url()), ("Status", "reachable")))
         else:
             self.remote_detail.setPlainText(
-                "Registry is reachable but has no hosts. Start a HyperGery agent on each participating host."
+                "Hub is reachable but has no hosts. Start a HyperGery agent on each participating host."
             )
         self.update_actions()
 
@@ -752,7 +752,7 @@ class MainWindow(QMainWindow):
         def on_done(result: dict) -> None:
             self.remote_detail.setPlainText(
                 details_block(
-                    ("Registry", self.registry_url()),
+                    ("Hub", self.registry_url()),
                     ("Host", host_id),
                     ("Queued command", str(result.get("command_id", ""))),
                     ("Status", str(result.get("status", ""))),
@@ -818,8 +818,12 @@ class MainWindow(QMainWindow):
         elif "remote_hosts" in errors:
             self.remote_hosts = []
             self.remote_host_table.setRowCount(0)
-            self.remote_status_label.setText("Registry unavailable")
-            self.remote_detail.setPlainText(f"Registry is not configured or not reachable at {self.registry_url()}:\n{errors['remote_hosts']}")
+            self.remote_status_label.setText("Hub unavailable")
+            self.remote_detail.setPlainText(
+                "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
+                f"Current Hub URL: {self.registry_url()}\n"
+                f"Example: export HYPERGERY_HUB_URL=http://192.168.1.150:8765\n\n{errors['remote_hosts']}"
+            )
         self.render_selected()
         if not errors:
             self.status.showMessage("Ready")

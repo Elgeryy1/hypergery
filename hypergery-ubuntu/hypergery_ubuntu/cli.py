@@ -12,6 +12,10 @@ from .labs import LabStore
 from .templates import TemplateStore
 
 
+def default_hub_url() -> str:
+    return os.environ.get("HYPERGERY_HUB_URL") or os.environ.get("HYPERGERY_REGISTRY_URL") or "http://127.0.0.1:8765"
+
+
 def print_preflight(backend: HyperGeryBackend) -> int:
     worst = 0
     for item in backend.preflight():
@@ -231,6 +235,28 @@ def registry_action(args: argparse.Namespace) -> int:
     return 2
 
 
+def hub_action(args: argparse.Namespace) -> int:
+    from .registry import RegistryClient, RegistryStore, serve_registry
+
+    if args.hub_command == "serve":
+        serve_registry(
+            args.host,
+            args.port,
+            db_path=args.db_path,
+            offline_timeout_seconds=args.offline_timeout,
+        )
+        return 0
+    if args.hub_command == "init-db":
+        store = RegistryStore(args.db_path)
+        return print_json({"ok": True, "db_path": str(store.db_path)})
+    client = RegistryClient(args.hub_url)
+    if args.hub_command == "health":
+        return print_json(client.health())
+    if args.hub_command == "vms":
+        return print_json({"vms": client.list_vms(args.host_id or None)})
+    return 2
+
+
 def agent_action(args: argparse.Namespace) -> int:
     from .agent import AgentConfig, HyperGeryAgent, main as agent_main
 
@@ -249,7 +275,7 @@ def agent_action(args: argparse.Namespace) -> int:
 def host_action(args: argparse.Namespace) -> int:
     from .registry import RegistryClient
 
-    client = RegistryClient(args.registry_url)
+    client = RegistryClient(args.hub_url)
     if args.host_command == "list":
         return print_json({"hosts": client.list_hosts()})
     if args.host_command == "show":
@@ -454,7 +480,21 @@ def main(argv: list[str] | None = None) -> int:
     registry_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_REGISTRY_DB", ""))
     registry_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90")))
     registry_health = registry_sub.add_parser("health")
-    registry_health.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    registry_health.add_argument("--registry-url", default=default_hub_url())
+    hub_parser = sub.add_parser("hub", help="Run or query the HyperGery Hub control plane.")
+    hub_sub = hub_parser.add_subparsers(dest="hub_command", required=True)
+    hub_serve = hub_sub.add_parser("serve")
+    hub_serve.add_argument("--host", default=os.environ.get("HYPERGERY_HUB_HOST", "127.0.0.1"))
+    hub_serve.add_argument("--port", type=int, default=int(os.environ.get("HYPERGERY_HUB_PORT", "8765")))
+    hub_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
+    hub_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_HUB_OFFLINE_TIMEOUT", os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90"))))
+    hub_health = hub_sub.add_parser("health")
+    hub_health.add_argument("--hub-url", default=default_hub_url())
+    hub_init = hub_sub.add_parser("init-db")
+    hub_init.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
+    hub_vms = hub_sub.add_parser("vms")
+    hub_vms.add_argument("host_id", nargs="?")
+    hub_vms.add_argument("--hub-url", default=default_hub_url())
     agent_parser = sub.add_parser("agent", help="Run the HyperGery host agent.")
     agent_sub = agent_parser.add_subparsers(dest="agent_command", required=True)
     agent_run = agent_sub.add_parser("run")
@@ -468,13 +508,13 @@ def main(argv: list[str] | None = None) -> int:
     host_parser = sub.add_parser("host", help="Query registry hosts and queue safe host commands.")
     host_sub = host_parser.add_subparsers(dest="host_command", required=True)
     host_list = host_sub.add_parser("list")
-    host_list.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    host_list.add_argument("--hub-url", "--registry-url", dest="hub_url", default=default_hub_url())
     host_show = host_sub.add_parser("show")
     host_show.add_argument("host_id")
-    host_show.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    host_show.add_argument("--hub-url", "--registry-url", dest="hub_url", default=default_hub_url())
     host_test = host_sub.add_parser("test")
     host_test.add_argument("host_id")
-    host_test.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    host_test.add_argument("--hub-url", "--registry-url", dest="hub_url", default=default_hub_url())
     migrate_parser = sub.add_parser("migrate", help="Create, validate, import, and inspect safe VM migration packages.")
     migrate_sub = migrate_parser.add_subparsers(dest="migrate_command", required=True)
     migrate_preflight = migrate_sub.add_parser("preflight", help="Check whether a VM can be packaged safely.")
@@ -503,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
     migrate_status = migrate_sub.add_parser("status", help="Show package status and validation summary.")
     migrate_status.add_argument("package_dir", nargs="?")
     migrate_status.add_argument("--migration-id", default="")
-    migrate_status.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    migrate_status.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
     migrate_remote = migrate_sub.add_parser("remote", help="Package a VM and queue target import through the registry.")
     migrate_remote.add_argument("vm_name")
     migrate_remote.add_argument("--nas-path", required=True)
@@ -515,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     migrate_remote.add_argument("--no-iso", action="store_true")
     migrate_remote.add_argument("--no-snapshots", action="store_true")
     migrate_remote.add_argument("--start-after-import", action="store_true")
-    migrate_remote.add_argument("--registry-url", default=os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+    migrate_remote.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
     args = parser.parse_args(argv)
 
     try:
@@ -523,6 +563,10 @@ def main(argv: list[str] | None = None) -> int:
             if getattr(args, "db_path", "") == "":
                 args.db_path = None
             return registry_action(args)
+        if args.command == "hub":
+            if getattr(args, "db_path", "") == "":
+                args.db_path = None
+            return hub_action(args)
         if args.command == "agent":
             return agent_action(args)
         if args.command == "host":

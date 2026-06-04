@@ -1,5 +1,34 @@
 # HyperGery Validation
 
+## HyperGery Hub Docker
+
+Validate the Docker deployment files without starting the service:
+
+```bash
+cd docker
+docker compose config
+docker compose build
+```
+
+When running on the NAS:
+
+```bash
+curl http://192.168.1.150:8765/health
+curl http://192.168.1.150:8765/hosts
+```
+
+Agent smoke on Ubuntu:
+
+```bash
+export HYPERGERY_HUB_URL=http://192.168.1.150:8765
+export HYPERGERY_HOST_ID=ubuntu-hyperv
+export HYPERGERY_HOST_NAME="Ubuntu Hyper-V"
+export HYPERGERY_NAS_STAGING_PATH=/mnt/hypergery-nas/hypergery
+python -m hypergery_ubuntu.cli agent once
+python -m hypergery_ubuntu.cli host list --hub-url http://192.168.1.150:8765
+python -m hypergery_ubuntu.cli hub vms --hub-url http://192.168.1.150:8765
+```
+
 ## v0.6.0 — NAS Live Migration Validation Plan
 
 v0.6.0 is not a release yet. Validation must prove NAS Clone Migration behavior without deleting the source VM or original disks.

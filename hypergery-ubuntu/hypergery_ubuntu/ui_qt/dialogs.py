@@ -663,7 +663,7 @@ class LiveMigrationDialog(QDialog):
         notice.setObjectName("mutedLabel")
         notice.setWordWrap(True)
 
-        self.registry_url = QLineEdit(os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
+        self.registry_url = QLineEdit(os.environ.get("HYPERGERY_HUB_URL") or os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
         self.source_host_id = QLineEdit(os.environ.get("HYPERGERY_HOST_ID", socket.gethostname()))
         self.target_host = QComboBox()
         refresh_hosts = QPushButton("Refresh Hosts")
@@ -691,7 +691,7 @@ class LiveMigrationDialog(QDialog):
         self.error_label.setObjectName("errorLabel")
 
         form = QFormLayout()
-        form.addRow("Registry URL", self.registry_url)
+        form.addRow("Hub URL", self.registry_url)
         form.addRow("Source host ID", self.source_host_id)
         form.addRow("Target host", host_row)
         form.addRow("Target VM name", self.target_name)
@@ -734,7 +734,10 @@ class LiveMigrationDialog(QDialog):
         try:
             hosts = RegistryClient(self.registry_url.text().strip()).list_hosts()
         except HyperGeryError as exc:
-            self.result_view.setPlainText(f"Registry is not reachable or not configured:\n{exc}")
+            self.result_view.setPlainText(
+                "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
+                f"{exc}"
+            )
             self.invalidate_preflight()
             return
         self.hosts = hosts
@@ -748,7 +751,7 @@ class LiveMigrationDialog(QDialog):
             index = self.target_host.count() - 1
             self.target_host.model().item(index).setEnabled(status == "online")
         if not hosts:
-            self.result_view.setPlainText("Registry returned no hosts. Start agents on source and target hosts first.")
+            self.result_view.setPlainText("Hub returned no hosts. Start agents on source and target hosts first.")
         else:
             self.result_view.setPlainText(self._format_hosts(hosts))
         self.invalidate_preflight()

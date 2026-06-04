@@ -59,6 +59,15 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
             if len(path) == 2 and path[0] == "hosts":
                 self._send_json(200, self.server.store.get_host(path[1]))
                 return
+            if path == ["vms"]:
+                self._send_json(200, {"vms": self.server.store.list_vms()})
+                return
+            if len(path) == 2 and path[0] == "vms":
+                self._send_json(200, {"host_id": path[1], "vms": self.server.store.list_vms(path[1])})
+                return
+            if len(path) == 3 and path[0] == "commands" and path[1] == "id":
+                self._send_json(200, self.server.store.get_command(path[2]))
+                return
             if len(path) == 2 and path[0] == "commands":
                 try:
                     self._send_json(200, self.server.store.get_command(path[1]))
@@ -70,6 +79,16 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
                 return
             if len(path) == 2 and path[0] == "migrations":
                 self._send_json(200, self.server.store.get_migration(path[1]))
+                return
+            if path == ["events"]:
+                query = urlparse(self.path).query
+                limit = 100
+                if query.startswith("limit="):
+                    try:
+                        limit = int(query.partition("=")[2])
+                    except ValueError:
+                        limit = 100
+                self._send_json(200, {"events": self.server.store.list_events(limit)})
                 return
             self._send_error(404, "not found")
         except HyperGeryError as exc:
@@ -87,14 +106,23 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
             if path == ["hosts", "heartbeat"]:
                 self._send_json(200, self.server.store.heartbeat(body))
                 return
+            if path == ["vms", "report"]:
+                self._send_json(200, self.server.store.report_vms(body))
+                return
             if path == ["commands"]:
                 self._send_json(201, self.server.store.create_command(body))
+                return
+            if path == ["migrations"]:
+                self._send_json(201, self.server.store.create_migration(body))
                 return
             if len(path) == 3 and path[0] == "commands" and path[2] == "result":
                 self._send_json(200, self.server.store.set_command_result(path[1], body))
                 return
             if len(path) == 3 and path[0] == "migrations" and path[2] == "status":
                 self._send_json(200, self.server.store.update_migration_status(path[1], body))
+                return
+            if path == ["events"]:
+                self._send_json(201, self.server.store.create_event(body))
                 return
             self._send_error(404, "not found")
         except HyperGeryError as exc:

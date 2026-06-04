@@ -1,5 +1,24 @@
 # Troubleshooting
 
+## Hub Not Reachable
+
+If Remote Hosts or Live Migration shows `Hub not reachable`, start the Docker service or point the app/agent at the NAS Hub:
+
+```bash
+export HYPERGERY_HUB_URL=http://192.168.1.150:8765
+curl http://192.168.1.150:8765/health
+```
+
+On the NAS:
+
+```bash
+cd /share/CACHEDEV2_DATA/Gerard/proyectos_hacen_bulto_en_CV/miversiondevirtualbox/docker
+docker compose up -d
+docker compose logs -f
+```
+
+Do not put passwords, SSH keys, or SMB credentials in `.env`.
+
 ## First Run on a Fresh Ubuntu Laptop
 
 Use the first-run launcher:

@@ -100,16 +100,25 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - SPICE remains supported for external viewing. The HyperGery Console window shows a clear SPICE card with **Open External Viewer** instead of a blank screen.
 - To view the console inside HyperGery, create the VM with Display `vnc` or switch an existing SPICE VM to VNC while it is shut off.
 
+### HyperGery Hub Docker (v0.6.0)
+
+- HyperGery Hub is the NAS control plane for Remote Hosts, agent heartbeats, VM inventory, command queues, migration state, and events.
+- Docker deployment lives in `docker/` and starts with `cd docker && docker compose up -d`.
+- On the NAS/QNAP, use `HYPERGERY_NAS_ROOT=/share/CACHEDEV2_DATA/Gerard/hypergery`.
+- On the Ubuntu VM/app, use `HYPERGERY_HUB_URL=http://192.168.1.150:8765`.
+- The Hub DB is stored in `docker/data`; migration packages stay under the NAS data folder.
+- See [docs/HYPERGERY_HUB.md](docs/HYPERGERY_HUB.md) and [docs/NAS_DEPLOYMENT.md](docs/NAS_DEPLOYMENT.md).
+
 ### NAS Live Migration (v0.6.0)
 
-- NAS Control Plane registry for host discovery, command queueing, and migration status.
+- HyperGery Hub / NAS Control Plane registry for host discovery, VM inventory, command queueing, events, and migration status.
 - HyperGery Agent on each participating host with safe command allowlist only.
 - NAS staging directory for migration packages.
 - VM package export/import for domain XML, qcow2 disks, attached ISO when requested, lab/network/template metadata, checksums, and migration logs.
 - Migration preflight checks for source VM state, disk/ISO availability, staging path, local name conflicts, host readiness, and running-VM safety.
 - Remote Hosts UI panel reads real hosts from the registry and shows online/offline state, last seen, RAM/disk, KVM/libvirt readiness, and active VMs.
 - **Live Migration** dialog lists real online target hosts, blocks offline/unready targets, runs local preflight, creates the source package in NAS staging, queues `import_vm_package` on the target host, and records migration status for polling.
-- Development CLI: registry, agent, host, and migrate commands.
+- Development CLI: hub, registry compatibility alias, agent, host, and migrate commands.
 
 v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.
 

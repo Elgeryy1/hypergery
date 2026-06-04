@@ -37,6 +37,7 @@ Implemented in development so far:
 - Switching a shut off VM from SPICE to VNC now removes SPICE-only audio/channel XML so libvirt can redefine the domain.
 - HyperGery Console now auto-connects running VNC VMs and uses Scale to Fit rendering with a centered framebuffer and real-size scrollbars.
 - Toolbar split between integrated **Console** and **External Console** so `virt-viewer` / `remote-viewer` remain available for SPICE and fallback.
+- HyperGery Hub Docker backend added for NAS deployment, with Hub CLI aliases, VM inventory, command queue, migrations, events, and Docker Compose setup.
 
 Future topology polish:
 
