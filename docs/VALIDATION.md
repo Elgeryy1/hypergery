@@ -45,7 +45,11 @@ Required local smoke:
 - [ ] Create or edit a VM with display mode `vnc`.
 - [ ] Start the VM and press **Console**.
 - [ ] Confirm a separate **HyperGery Console - <vm_name>** window opens.
-- [ ] Click **Connect**, click inside to capture input, and press Right Ctrl to release.
+- [ ] Confirm it connects automatically for a running VNC VM.
+- [ ] Confirm the full guest framebuffer is visible, centered, and scaled with **Scale to Fit** enabled.
+- [ ] Resize the console window and confirm the image remains complete and centered.
+- [ ] Toggle **Scale to Fit** off/on and confirm real-size scrolling and fitted view work.
+- [ ] Click inside to capture input, and press Right Ctrl to release.
 - [ ] Confirm **External Console** still opens `virt-viewer` or `remote-viewer`.
 - [ ] Disconnect/close the console window and confirm the VM keeps running.
 - [ ] Start or select a running SPICE VM and confirm the console window shows the VNC-required card, does not capture input, and offers **Open External Viewer**.

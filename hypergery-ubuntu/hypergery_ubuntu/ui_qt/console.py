@@ -4,7 +4,7 @@ import struct
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QCloseEvent, QImage, QKeyEvent, QMouseEvent, QPixmap
+from PySide6.QtGui import QAction, QCloseEvent, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
     QFrame,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStatusBar,
     QStackedWidget,
@@ -27,9 +28,13 @@ from .console_helpers import (
     SPICE_STATUS_MESSAGE,
     can_capture_input,
     can_switch_display_to_vnc,
+    centered_offset,
     console_message_for_graphics,
     console_mode_for_graphics,
     is_host_key,
+    scale_to_fit_size,
+    should_autoconnect_console,
+    widget_to_framebuffer,
 )
 
 
@@ -72,17 +77,46 @@ def _keysym(event: QKeyEvent) -> int:
     return mapping.get(event.key(), 0)
 
 
-class VncScreen(QLabel):
+class VncScreen(QWidget):
     def __init__(self, console: "IntegratedConsoleWidget") -> None:
         super().__init__()
         self.console = console
+        self.message = "Click Connect to open the VM console.\nHost Key: Right Ctrl"
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(480, 320)
         self.setStyleSheet("background: #111; color: #ddd;")
-        self.setText("Click Connect to open the VM console.\nHost Key: Right Ctrl")
+
+    def setText(self, text: str) -> None:
+        self.message = text
+        self.update()
+
+    def setPixmap(self, _pixmap) -> None:
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
+        if self.console.framebuffer:
+            image = self.console.framebuffer
+            if self.console.scale_to_fit:
+                scaled_width, scaled_height, _scale = scale_to_fit_size(
+                    self.width(), self.height(), self.console.fb_width, self.console.fb_height
+                )
+                x_offset, y_offset = centered_offset(self.width(), self.height(), scaled_width, scaled_height)
+                painter.drawImage(x_offset, y_offset, image.scaled(
+                    scaled_width,
+                    scaled_height,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+            else:
+                painter.drawImage(0, 0, image)
+        elif self.message:
+            painter.setPen(Qt.GlobalColor.white)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.message)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -141,8 +175,12 @@ class IntegratedConsoleWidget(QWidget):
         self.hint.setWordWrap(True)
         self.hint.setToolTip(f"Host Key: {HOST_KEY_NAME}")
         self.screen = VncScreen(self)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setWidget(self.screen)
+        self.scroll_area.setWidgetResizable(True)
         self.mode_stack = QStackedWidget()
-        self.mode_stack.addWidget(self.screen)
+        self.mode_stack.addWidget(self.scroll_area)
         self.spice_card = self._build_spice_card()
         self.mode_stack.addWidget(self.spice_card)
 
@@ -229,7 +267,7 @@ class IntegratedConsoleWidget(QWidget):
         self.vm = vm
         if not name:
             self.set_status("No VM selected.")
-            self.mode_stack.setCurrentWidget(self.screen)
+            self.mode_stack.setCurrentWidget(self.scroll_area)
             self.screen.setText("Select a running VM to open the integrated console.")
             self.update_controls(False)
             return
@@ -241,7 +279,7 @@ class IntegratedConsoleWidget(QWidget):
             self.spice_power_hint.setText("" if switch_enabled else "Shut down the VM before switching display mode.")
             self.update_controls(False)
             return
-        self.mode_stack.setCurrentWidget(self.screen)
+        self.mode_stack.setCurrentWidget(self.scroll_area)
         if "running" not in state and "paused" not in state:
             self.set_status("VM is not running. Start the VM to open console.")
             self.screen.setText("VM is not running. Start the VM to open console.")
@@ -344,7 +382,7 @@ class IntegratedConsoleWidget(QWidget):
             return
         self.graphics = "vnc"
         self.set_status("Display switched to VNC. Start the VM, then connect the integrated console.")
-        self.mode_stack.setCurrentWidget(self.screen)
+        self.mode_stack.setCurrentWidget(self.scroll_area)
         self.screen.setText("Display switched to VNC.\nStart the VM, then click Connect.")
         self.update_controls(False)
         if self.vm_updated_callback:
@@ -432,11 +470,12 @@ class IntegratedConsoleWidget(QWidget):
                     return
                 self.framebuffer = QImage(self.fb_width, self.fb_height, QImage.Format.Format_RGB32)
                 self.framebuffer.fill(Qt.GlobalColor.black)
+                self.update_screen_geometry()
                 self.send_pixel_format()
                 self.send_set_encodings()
                 self.request_update(False)
                 self.state = "message"
-                self.set_status(f"Connected to {self.vm_name}. Input released. Host Key: {HOST_KEY_NAME}")
+                self.set_status(f"Connected - {self.fb_width}x{self.fb_height} - Host Key: {HOST_KEY_NAME}")
                 self.update_controls(True)
             elif self.state == "message":
                 msg_type = self._take(1)
@@ -489,15 +528,16 @@ class IntegratedConsoleWidget(QWidget):
             target[x * 4:(x + w) * 4] = pixels[row * w * 4:(row + 1) * w * 4]
 
     def render_framebuffer(self) -> None:
-        if self.framebuffer:
-            pixmap = QPixmap.fromImage(self.framebuffer)
-            if self.scale_to_fit:
-                pixmap = pixmap.scaled(
-                    self.screen.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            self.screen.setPixmap(pixmap)
+        self.update_screen_geometry()
+        self.screen.update()
+
+    def update_screen_geometry(self) -> None:
+        self.scroll_area.setWidgetResizable(self.scale_to_fit)
+        if self.framebuffer and not self.scale_to_fit:
+            self.screen.setMinimumSize(self.fb_width, self.fb_height)
+            self.screen.resize(self.fb_width, self.fb_height)
+        else:
+            self.screen.setMinimumSize(480, 320)
 
     def set_scale_to_fit(self, enabled: bool) -> None:
         self.scale_to_fit = enabled
@@ -538,11 +578,15 @@ class IntegratedConsoleWidget(QWidget):
             elif event.button() == Qt.MouseButton.RightButton:
                 self.pointer_mask &= ~4
         pos = event.position()
-        scale = min(self.screen.width() / self.fb_width, self.screen.height() / self.fb_height) if self.scale_to_fit else 1.0
-        x_offset = (self.screen.width() - self.fb_width * scale) / 2
-        y_offset = (self.screen.height() - self.fb_height * scale) / 2
-        x = max(0, min(self.fb_width - 1, int((pos.x() - x_offset) / scale)))
-        y = max(0, min(self.fb_height - 1, int((pos.y() - y_offset) / scale)))
+        x, y = widget_to_framebuffer(
+            pos.x(),
+            pos.y(),
+            self.screen.width(),
+            self.screen.height(),
+            self.fb_width,
+            self.fb_height,
+            scale_to_fit=self.scale_to_fit,
+        )
         self.socket.write(struct.pack(">BBHH", 5, self.pointer_mask, x, y))
 
 
@@ -553,8 +597,8 @@ class VmConsoleWindow(QMainWindow):
         self.vm = vm
         self.on_vm_changed = on_vm_changed
         self.setWindowTitle(f"HyperGery Console - {getattr(vm, 'name', '')}")
-        self.resize(1024, 720)
-        self.setMinimumSize(760, 520)
+        self.resize(1024, 768)
+        self.setMinimumSize(1024, 768)
         self.console = IntegratedConsoleWidget(backend, self)
         self.console.status_callback = self.set_console_status
         self.console.controls_callback = self.update_action_state
@@ -645,6 +689,14 @@ class VmConsoleWindow(QMainWindow):
             self.showFullScreen()
         else:
             self.showNormal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.fullscreen_action.setChecked(False)
+            self.showNormal()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.console.disconnect_console()

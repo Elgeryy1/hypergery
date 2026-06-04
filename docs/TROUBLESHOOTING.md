@@ -202,6 +202,8 @@ Expected for the integrated console:
 <graphics type="vnc" autoport="yes" listen="127.0.0.1"/>
 ```
 
+For a running VNC VM, **Console** opens the HyperGery Console window and connects automatically. **Scale to Fit** is enabled by default, keeps aspect ratio, and centers the framebuffer. Disable **Scale to Fit** to inspect the guest framebuffer at real size with scrollbars.
+
 If the VM uses SPICE, the HyperGery Console window shows a card instead of a black screen. Use **Open External Viewer** for SPICE, or use **Switch to VNC** while the VM is shut off. HyperGery will configure the display as local VNC with `listen="127.0.0.1"` and `autoport="yes"`.
 
 If libvirt reports `spice audio is not supported without spice graphics` or a localized variant such as `Sonido de especia no esta admitido sin graficos de especia`, the VM XML still has SPICE audio while using VNC graphics. HyperGery removes `audio type="spice"` and SPICE-only channels when switching a shut off VM to VNC.

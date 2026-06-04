@@ -57,6 +57,7 @@ from .dialogs import (
     VMWizard,
 )
 from .console import VmConsoleWindow
+from .console_helpers import should_autoconnect_console
 from .lab_helpers import build_lab_topology, filter_vms_for_lab, vm_count_for_lab
 from .topology import LabTopologyWidget
 from .styles import (
@@ -1443,7 +1444,7 @@ class MainWindow(QMainWindow):
         window.show()
         window.raise_()
         window.activateWindow()
-        if vm.graphics == "vnc" and not window.console.is_connected():
+        if should_autoconnect_console(vm.graphics, vm.state) and not window.console.is_connected():
             window.console.connect_console()
 
     def open_external_console(self) -> None:

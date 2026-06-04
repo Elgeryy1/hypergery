@@ -36,3 +36,46 @@ def can_capture_input(graphics: str | None, connected: bool) -> bool:
 
 def can_switch_display_to_vnc(graphics: str | None, state: str | None) -> bool:
     return console_mode_for_graphics(graphics) == "external-spice" and (state or "").strip().lower() == "shut off"
+
+
+def should_autoconnect_console(graphics: str | None, state: str | None) -> bool:
+    normalized_state = (state or "").strip().lower()
+    return console_mode_for_graphics(graphics) == "integrated-vnc" and (
+        "running" in normalized_state or "paused" in normalized_state
+    )
+
+
+def scale_to_fit_size(widget_width: int, widget_height: int, fb_width: int, fb_height: int) -> tuple[int, int, float]:
+    if widget_width <= 0 or widget_height <= 0 or fb_width <= 0 or fb_height <= 0:
+        return 0, 0, 1.0
+    scale = min(widget_width / fb_width, widget_height / fb_height)
+    scaled_width = max(1, int(fb_width * scale))
+    scaled_height = max(1, int(fb_height * scale))
+    return scaled_width, scaled_height, scale
+
+
+def centered_offset(widget_width: int, widget_height: int, content_width: int, content_height: int) -> tuple[int, int]:
+    return max(0, (widget_width - content_width) // 2), max(0, (widget_height - content_height) // 2)
+
+
+def widget_to_framebuffer(
+    x: float,
+    y: float,
+    widget_width: int,
+    widget_height: int,
+    fb_width: int,
+    fb_height: int,
+    *,
+    scale_to_fit: bool = True,
+) -> tuple[int, int]:
+    if fb_width <= 0 or fb_height <= 0:
+        return 0, 0
+    if scale_to_fit:
+        scaled_width, scaled_height, scale = scale_to_fit_size(widget_width, widget_height, fb_width, fb_height)
+        x_offset, y_offset = centered_offset(widget_width, widget_height, scaled_width, scaled_height)
+    else:
+        scale = 1.0
+        x_offset, y_offset = 0, 0
+    fb_x = int((x - x_offset) / scale)
+    fb_y = int((y - y_offset) / scale)
+    return max(0, min(fb_width - 1, fb_x)), max(0, min(fb_height - 1, fb_y))
