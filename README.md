@@ -2,7 +2,7 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v0.5.0--dev-blue)
+![Version](https://img.shields.io/badge/version-v0.6.0--dev-blue)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -10,6 +10,8 @@
 HyperGery is a real desktop virtual machine manager for Ubuntu, functionally inspired by VirtualBox workflows but using KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
 
 HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
+
+HyperGery v0.6.0 development is focused on NAS Live Migration: a NAS-backed control plane, host agents, host discovery, VM package export/import, migration preflight, and a UI action named **Live Migration**. The implementation is intentionally conservative: when a true live RAM/disk migration is not safe, HyperGery will perform or require a NAS Clone Migration strategy and keep the source VM untouched.
 
 ## Screenshots
 
@@ -87,12 +89,25 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - **Resources…** button in the toolbar opens a read-only overview of all HyperGery-managed VMs, labs, VM templates, and lab templates.
 - Nothing is deleted automatically — the dialog is a safe audit view.
 
+### NAS Live Migration (v0.6.0 roadmap)
+
+- NAS Control Plane registry for host discovery, command queueing, and migration status.
+- HyperGery Agent on each participating host with safe command allowlist only.
+- NAS staging directory for migration packages.
+- VM package export/import for domain XML, qcow2 disks, attached ISO when requested, lab/network/template metadata, and migration logs.
+- Migration preflight checks for source VM state, disk/ISO availability, staging path, target host health, target disk/RAM capacity, name conflicts, and running-VM safety.
+- UI target: right-click a VM and choose **Live Migration**, then select target host, options, preflight, and progress.
+- CLI target: registry, agent, host, and migrate commands.
+
+v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.
+
 ### Not yet implemented
 
+- True live RAM migration with custom dirty-page transfer.
 - Lab topology zoom/pan and PNG/SVG export.
 - VM role badges on topology nodes.
 - Per-VM progress during lab instantiation.
-- Android Hub, NAS, IsardVDI, P2P, live migration, GPU shadowing.
+- Android Hub, IsardVDI, P2P, GPU shadowing.
 
 ## Requirements
 
@@ -212,8 +227,9 @@ The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime fo
 
 - v0.3.0 — Lab Manager + Templates Manager ✓
 - v0.4.0 — Lab Automation (instantiation wizard, rollback, template editing, VM clone in duplicate) ✓
-- v0.5.0 — Lab Topology view, planned VM editor, ISO reuse, resource overview, CLI update/instantiate (current develop branch, RC)
-- v0.6.0 — topology zoom/pan, VM role badges, per-VM progress during instantiation
+- v0.5.0 — Lab Topology view, planned VM editor, ISO reuse, resource overview, CLI update/instantiate ✓
+- v0.6.0 — NAS Live Migration: registry, agents, host discovery, NAS staging, migration package export/import, UI action, CLI helpers
+- v0.7.0 — topology export/polish, zoom/pan, role badges, additional UX refinement
 - v1.0.0 — stable classroom-ready release
 
 ## License

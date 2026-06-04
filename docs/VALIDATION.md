@@ -1,5 +1,55 @@
 # HyperGery Validation
 
+## v0.6.0 — NAS Live Migration Validation Plan
+
+v0.6.0 is not a release yet. Validation must prove NAS Clone Migration behavior without deleting the source VM or original disks.
+
+Required automated checks:
+
+```bash
+cd hypergery-ubuntu && python3 -m unittest discover -s tests
+cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
+python3 -m compileall hypergery-ubuntu
+bash -n scripts/dev-run.sh scripts/preflight.sh scripts/acceptance-ubuntu.sh scripts/acceptance-real-host.sh scripts/install-ubuntu-deps.sh scripts/install-desktop-launcher.sh
+```
+
+Required local smoke:
+
+- [ ] Start local registry on port `8765`.
+- [ ] Start local HyperGery agent.
+- [ ] Confirm local host registration and heartbeat.
+- [ ] List hosts from CLI and UI.
+- [ ] Create a safe `ping` command and confirm the agent returns a result.
+- [ ] Run migration preflight with a fake/offline target and confirm a clear blocking error.
+- [ ] Package an existing stopped test VM if available.
+- [ ] Validate the migration package manifest and checksums.
+- [ ] Import package locally in dry-run or isolated test mode if no second host is available.
+- [ ] Confirm source VM still exists and source disks remain untouched.
+
+Recommended real NAS/two-host smoke:
+
+- [ ] Run registry on the NAS or a machine acting as NAS.
+- [ ] Configure shared staging path on source and target hosts.
+- [ ] Start agent on source host and target host.
+- [ ] Confirm the UI shows the target host online with KVM/libvirt OK.
+- [ ] Use a stopped test VM with a mounted ISO.
+- [ ] Right-click VM -> **Live Migration**.
+- [ ] Select target host and run preflight.
+- [ ] Start migration using offline or paused NAS Clone strategy.
+- [ ] Confirm source VM remains on the source host.
+- [ ] Confirm target VM appears on destination with new UUID and MAC.
+- [ ] Confirm disks, ISO, lab metadata, network metadata, templates used, and migration log are present.
+- [ ] Start target VM.
+- [ ] Clean up only the test target VM/package after confirmation.
+
+Blocking conditions:
+
+- Running VM copy must be blocked unless a real safe libvirt/QEMU strategy is implemented.
+- Missing disks are critical errors.
+- Missing ISO is an error when `include_iso=True`.
+- Target host offline, missing staging path, insufficient space, and target name conflicts must block Start Migration.
+- No v0.6.0 release may be created until this checklist is completed.
+
 ## v0.5.0 RC — Automated Tests Status
 
 Run with system Python (PySide6 not required):

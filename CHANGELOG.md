@@ -1,15 +1,31 @@
 # Changelog
 
-## v0.6.0 - Topology Export & Polish
+## v0.6.0 - NAS Live Migration
 
 Roadmap:
 
-- Export topology to PNG/SVG.
-- Zoom and pan for large labs.
-- Role badges in topology nodes.
-- Progress per VM during lab instantiation.
-- Improved cleanup actions.
-- Optional removal of Tkinter legacy fallback.
+- NAS Control Plane.
+- HyperGery Agent.
+- Host Discovery.
+- NAS Migration Staging.
+- VM Package Export.
+- VM Package Import.
+- Live Migration UI action.
+- Right-click VM context menu.
+- Migration preflight.
+- Migration progress/logs.
+- CLI migration commands.
+
+Planned strategy: v0.6.0 may present the UI action as "Live Migration", but the safe implementation target is NAS Clone Migration. Source VMs, disks, and metadata must remain untouched. Running VM migration must be blocked unless a real safe libvirt/QEMU strategy is available.
+
+Future topology polish:
+
+- v0.7.0 or v0.6.x: export topology to PNG/SVG.
+- v0.7.0 or v0.6.x: zoom and pan for large labs.
+- v0.7.0 or v0.6.x: role badges in topology nodes.
+- v0.7.0 or v0.6.x: progress per VM during lab instantiation.
+- v0.7.0 or v0.6.x: improved cleanup actions.
+- v0.7.0 or v0.6.x: optional removal of Tkinter legacy fallback.
 
 ## v0.5.0 - Lab Topology & UX
 

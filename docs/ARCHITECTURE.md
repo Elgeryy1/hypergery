@@ -45,6 +45,21 @@ The backend is Python and wraps real host tools:
 
 Commands are executed with argument lists, not shell-concatenated strings. External command output is forced to locale `C` where possible so VM states remain stable even on localized desktops.
 
+## NAS Live Migration (v0.6.0 target)
+
+v0.6.0 development is focused on NAS-backed migration between HyperGery hosts. The user-facing action is named **Live Migration**, but the safe baseline strategy is NAS Clone Migration: package the VM on the source host, stage the package on shared NAS storage, and import it on the target host while leaving the source VM untouched.
+
+The migration architecture has four parts:
+
+- **NAS Control Plane / Registry**: an HTTP API backed by SQLite local to the registry process. It stores host registrations, heartbeats, command queue state, and migration status. SQLite must not be used directly over SMB/NFS with multiple writers.
+- **HyperGery Agent**: a local process on each host that registers with the registry, sends heartbeats, reports host capability, and executes only allowlisted migration commands.
+- **NAS Migration Staging**: a shared path such as `/mnt/hypergery-nas/migrations` where VM migration packages are written. Packages are immutable once created; existing package directories are not overwritten.
+- **VM Package Export/Import**: source-side packaging collects libvirt domain XML, qcow2 disks, optional attached ISO, lab/network/template metadata, checksums, and logs. Target-side import validates the package, regenerates UUID/MAC identity, copies disks into local HyperGery storage, defines the domain in libvirt, and updates lab metadata.
+
+Running VM copy is not treated as safe by default. If HyperGery cannot use a real libvirt/QEMU-safe strategy, preflight blocks the migration with a clear error and asks for paused/offline packaging. The source VM, source disks, and source lab metadata are never deleted by v0.6.0 migration flows.
+
+The registry command queue is not a shell execution mechanism. Supported command types are explicit and limited to safe operations such as `ping`, `preflight`, `list_vms`, `receive_vm_package`, `import_vm_package`, and `migration_status`.
+
 ## Libvirt
 
 HyperGery targets:
@@ -110,6 +125,8 @@ Default VM disks are stored under:
 ```
 
 Disks use qcow2. ISO files are referenced, not copied by default.
+
+Migration imports may copy ISO media into local HyperGery ISO storage or register an internal package path, depending on import options. Source ISO files are never modified.
 
 ## Logs
 
