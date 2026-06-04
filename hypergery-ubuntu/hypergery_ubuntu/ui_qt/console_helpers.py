@@ -3,6 +3,7 @@ from __future__ import annotations
 
 HOST_KEY_NAME = "Right Ctrl"
 SPICE_INTEGRATED_MESSAGE = "This VM uses SPICE. Use External Viewer or switch display to VNC for integrated console."
+SPICE_STATUS_MESSAGE = "SPICE display detected. Use External Viewer or switch this VM to VNC."
 NO_DISPLAY_MESSAGE = "Integrated console is unavailable. Use External Viewer or configure a local VNC display."
 
 
@@ -27,3 +28,11 @@ def console_message_for_graphics(graphics: str | None) -> str:
     if mode == "external-spice":
         return SPICE_INTEGRATED_MESSAGE
     return NO_DISPLAY_MESSAGE
+
+
+def can_capture_input(graphics: str | None, connected: bool) -> bool:
+    return console_mode_for_graphics(graphics) == "integrated-vnc" and connected
+
+
+def can_switch_display_to_vnc(graphics: str | None, state: str | None) -> bool:
+    return console_mode_for_graphics(graphics) == "external-spice" and (state or "").strip().lower() == "shut off"

@@ -1435,7 +1435,7 @@ class MainWindow(QMainWindow):
         vm = self.selected_vm
         window = self.console_windows.get(vm.name)
         if window is None:
-            window = VmConsoleWindow(self.backend, vm, self)
+            window = VmConsoleWindow(self.backend, vm, self, on_vm_changed=lambda _name: self.refresh_all())
             window.destroyed.connect(lambda _=None, name=vm.name: self.console_windows.pop(name, None))
             self.console_windows[vm.name] = window
         else:
@@ -1443,6 +1443,8 @@ class MainWindow(QMainWindow):
         window.show()
         window.raise_()
         window.activateWindow()
+        if vm.graphics == "vnc" and not window.console.is_connected():
+            window.console.connect_console()
 
     def open_external_console(self) -> None:
         try:

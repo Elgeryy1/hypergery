@@ -48,7 +48,9 @@ Required local smoke:
 - [ ] Click **Connect**, click inside to capture input, and press Right Ctrl to release.
 - [ ] Confirm **External Console** still opens `virt-viewer` or `remote-viewer`.
 - [ ] Disconnect/close the console window and confirm the VM keeps running.
-- [ ] Start or select a SPICE VM and confirm the console window shows the SPICE external-viewer message instead of a blank screen.
+- [ ] Start or select a running SPICE VM and confirm the console window shows the VNC-required card, does not capture input, and offers **Open External Viewer**.
+- [ ] Select a shut off SPICE VM and confirm **Switch to VNC** is enabled.
+- [ ] Switch to VNC, start the VM, press **Console**, and confirm the integrated VNC console connects.
 
 Registry/agent local smoke on prepared host (2026-06-04):
 
