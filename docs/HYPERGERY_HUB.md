@@ -49,6 +49,24 @@ Package staging (v0.7, Hub Transfer):
 - `GET /packages/{migration_id}/{relative_path}` — download one file (streamed)
 - `DELETE /packages/{migration_id}` — remove a staged package (whole package only)
 
+Staging maintenance (v0.8):
+
+- `GET /packages` — list all staged packages with `size_bytes`, `file_count`,
+  `created_at`/`modified_at`, `age_hours`, linked `migration_status`, and
+  `orphan` (no migration record on the Hub).
+- `POST /packages/cleanup` — preview or delete leftover staging packages.
+  Body parameters: `older_than_hours` (default `24`, floor `1`), `dry_run`
+  (default **true**), `include_failed` (default false), `include_orphans`
+  (default true). Returns `candidates` (each with a `reason`),
+  `total_size_bytes`, `deleted_count`, `deleted_size_bytes`, `skipped`, and
+  `errors`.
+
+Cleanup safety rules: only directories inside `HYPERGERY_HUB_STAGING` are ever
+removed — never VMs, never imported disks, never anything outside staging.
+Packages of active migrations (`created` … `defining_vm`) and packages newer
+than the threshold are always skipped, symlinks are never followed, and every
+deletion is reported in the response.
+
 All endpoints return JSON except package file downloads (`application/octet-stream`). Unsupported commands and invalid payloads return JSON errors. Package paths are validated against directory traversal.
 
 ### Command allowlist
@@ -102,7 +120,34 @@ staging directory:
 - Staged packages are **temporary by design**: after a successful target
   import the target agent deletes the staged copy (`hub_package_deleted: true`
   in the migration result). Failed migrations keep their staged package for
-  inspection; clean up manually with `DELETE /packages/{migration_id}`.
+  inspection; clean up manually with `DELETE /packages/{migration_id}` or with
+  the v0.8 staging maintenance below.
+
+### Staging maintenance (v0.8)
+
+Orphan packages can pile up when a migration fails, is interrupted, or the
+target host stays offline. v0.8 adds safe maintenance:
+
+```bash
+# List staged packages with size, age, migration status, orphan flag.
+python -m hypergery_ubuntu.cli hub packages
+
+# Preview cleanup candidates (default behavior — nothing is deleted).
+python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --dry-run
+
+# Actually delete; requires the explicit --confirm flag.
+python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --confirm
+
+# Optional flags: --include-failed (also clean failed/rolled back migrations),
+# --no-orphans (keep packages without a Hub migration record).
+```
+
+Without `--confirm` the CLI never deletes anything, even if other flags are
+set. The command exits non-zero if a real cleanup reports errors. The Qt app
+exposes the same maintenance in **Migrations → Hub Staging Maintenance** with
+Refresh / Dry Run Cleanup / Cleanup Confirmed (with confirmation dialog).
+Only temporary Hub staging packages are deleted; VMs and imported disks are
+never touched.
 
 ### Running the Hub on the NAS (Container Station)
 

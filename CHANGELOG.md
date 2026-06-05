@@ -10,12 +10,18 @@
 - Remote Hosts → View VMs now shows power controls: Start / ACPI Shutdown / Force Off (danger style, always asks for confirmation) / Refresh. Buttons enable/disable based on the selected VM's state; the dialog shows the queued `command_id`, polls its status, and refreshes the inventory when the command finishes.
 - Security: remote delete, undefine, delete-disks, XML edits, and shell commands are intentionally NOT remote-controllable (rejected by both the Hub and Agent allowlists). `vm_reboot`/`vm_reset` is not included because the backend has no safe reboot method yet.
 
+### Added — Hub staging cleanup / maintenance (Fase 2, implemented)
+
+- New Hub endpoints: `GET /packages` (staged packages with size, file count, age, linked migration status, orphan flag) and `POST /packages/cleanup` (dry-run by default; `older_than_hours` with a 1h safety floor, `include_failed`, `include_orphans`).
+- Cleanup safety: only directories inside `HYPERGERY_HUB_STAGING` are removed — never VMs or imported disks; packages of active migrations and recent packages are always skipped; symlinks are never followed; every deletion and error is reported.
+- CLI: `hub packages` and `hub cleanup-staging --older-than-hours N [--dry-run] [--confirm] [--include-failed] [--no-orphans]`. Without `--confirm` nothing is ever deleted; real cleanup errors exit non-zero.
+- UI: Migrations → Hub Staging Maintenance panel with staging stats (path, packages, total size, orphans, oldest), Dry Run Cleanup, and Cleanup Confirmed (confirmation dialog). Hub-offline errors render inline without crashing.
+
 ### Planned (subject to change, not implemented yet)
 
 - Lab-specific visual workspace.
 - Advanced Settings sections: Host Agent options, Console preferences, Appearance accent/density.
 - Topology view improvements.
-- Hub staging retention/cleanup policy for failed or orphaned packages.
 - Optional real-time migration updates beyond the current auto-poll.
 - Research only, still not committed: true live RAM migration / HG-MEMDIFF.
 
