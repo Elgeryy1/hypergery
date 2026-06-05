@@ -209,5 +209,75 @@ class RegistryHttpTests(unittest.TestCase):
         self.assertEqual(event["kind"], "test")
 
 
+class PackageStagingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.staging = Path(self.tmp.name) / "staging"
+        store = RegistryStore(Path(self.tmp.name) / "registry.sqlite3")
+        self.server = RegistryServer(("127.0.0.1", 0), store, staging_dir=self.staging)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
+        self.base_url = f"http://{host}:{port}"
+        from hypergery_ubuntu.registry import RegistryClient
+
+        self.client = RegistryClient(self.base_url)
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.tmp.cleanup()
+
+    def make_package(self) -> Path:
+        package = Path(self.tmp.name) / "out" / "mig-test"
+        (package / "disks").mkdir(parents=True)
+        (package / "manifest.json").write_text('{"migration_id": "mig-test"}', encoding="utf-8")
+        (package / "disks" / "vm.qcow2").write_bytes(b"\x00" * 4096)
+        return package
+
+    def test_upload_list_download_delete_roundtrip(self):
+        package = self.make_package()
+        uploaded = self.client.upload_package("mig-test", package)
+        self.assertEqual(len(uploaded["files"]), 2)
+        self.assertTrue((self.staging / "mig-test" / "disks" / "vm.qcow2").is_file())
+
+        files = self.client.list_package_files("mig-test")
+        self.assertEqual({f["path"] for f in files}, {"manifest.json", "disks/vm.qcow2"})
+
+        dest = Path(self.tmp.name) / "downloaded"
+        self.client.download_package("mig-test", dest)
+        self.assertEqual((dest / "manifest.json").read_text(encoding="utf-8"), '{"migration_id": "mig-test"}')
+        self.assertEqual((dest / "disks" / "vm.qcow2").stat().st_size, 4096)
+
+        deleted = self.client.delete_package("mig-test")
+        self.assertTrue(deleted["deleted"])
+        self.assertFalse((self.staging / "mig-test").exists())
+        with self.assertRaises(HyperGeryError):
+            self.client.list_package_files("mig-test")
+
+    def test_download_missing_package_fails(self):
+        with self.assertRaises(HyperGeryError):
+            self.client.download_package("nope", Path(self.tmp.name) / "x")
+
+    def test_delete_missing_package_is_safe(self):
+        deleted = self.client.delete_package("nope")
+        self.assertFalse(deleted["deleted"])
+
+    def test_path_traversal_is_rejected(self):
+        secret = Path(self.tmp.name) / "secret.txt"
+        secret.write_text("nope", encoding="utf-8")
+        with self.assertRaises(HyperGeryError):
+            self.client.upload_package_file("mig-test", "../escape.txt", secret)
+        req = Request(self.base_url + "/packages/..%2F..%2Fetc/passwd", method="GET")
+        try:
+            with urlopen(req, timeout=5) as response:
+                status = response.status
+        except Exception:
+            status = 400
+        self.assertNotEqual(status, 200)
+        self.assertFalse((self.staging.parent / "escape.txt").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
