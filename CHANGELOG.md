@@ -49,7 +49,7 @@ Validation status before RC:
 - Docker Hub smoke passed: `docker compose config`, `build`, `up`, `/health`, `/hosts`, and `/vms`.
 - Hub/Agent smoke passed: agent registration, host list, VM inventory, and queued host test with `pong=true`.
 - Local NAS Clone Migration E2E passed with two logical agents on one libvirt host: package created on NAS staging, source VM/disk preserved, target imported, UUID/MAC regenerated, target started, and target cleanup completed.
-- Real two-physical-host NAS Clone Migration validation is still pending before final release.
+- Real two-physical-host NAS Clone Migration smoke passed with `hg-source` and `hg-target`: both hosts online with KVM/libvirt OK, NAS staging writable at `/mnt/hypergery-nas/hypergery`, command ping completed with `pong=true`, migration `hg-v06-2host-source-f67154f7803b` reached `done`, source VM/disk remained intact, target UUID/MAC were regenerated, target booted to `running`, target cleanup completed, and the NAS package was retained.
 
 Not included in v0.6.0:
 

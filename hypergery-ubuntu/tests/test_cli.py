@@ -252,6 +252,53 @@ class CliTests(unittest.TestCase):
             parser_default = cli.default_hub_url()
         self.assertEqual(parser_default, "http://hub.local:8765")
 
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_host_test_waits_for_ping_result(self, backend_cls):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+                self.reads = [
+                    {"command_id": "cmd-1", "status": "pending", "result": {}},
+                    {"command_id": "cmd-1", "status": "done", "result": {"pong": True}},
+                ]
+
+            def create_command(self, host_id, command_type, payload):
+                return {"command_id": "cmd-1", "target_host_id": host_id, "command_type": command_type, "status": "pending", "result": {}}
+
+            def command(self, command_id):
+                return self.reads.pop(0)
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient), patch("hypergery_ubuntu.cli.time.sleep"):
+            with redirect_stdout(buf):
+                code = cli.main(["host", "test", "hg-target", "--hub-url", "http://hub:8765", "--interval", "0.01"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["status"], "done")
+        self.assertTrue(data["result"]["pong"])
+        backend_cls.assert_not_called()
+
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_host_test_timeout_zero_only_queues_command(self, backend_cls):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def create_command(self, host_id, command_type, payload):
+                return {"command_id": "cmd-1", "target_host_id": host_id, "command_type": command_type, "status": "pending", "result": {}}
+
+            def command(self, command_id):
+                raise AssertionError("command status should not be polled")
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient):
+            with redirect_stdout(buf):
+                code = cli.main(["host", "test", "hg-target", "--hub-url", "http://hub:8765", "--timeout", "0"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["status"], "pending")
+        backend_cls.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

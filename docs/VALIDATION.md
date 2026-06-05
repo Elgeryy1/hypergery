@@ -70,13 +70,46 @@ NAS Clone Migration local E2E smoke on prepared host (2026-06-05):
 - [x] Target VM was force-powered off after the start smoke and then cleaned up with `delete-vm hg-v06-e2e-target --delete-disks`.
 - [x] Qt Remote Hosts offscreen smoke showed source and target logical hosts.
 - [x] Qt Live Migration dialog offscreen smoke listed `ubuntu-hyperv-target`; offline target state blocked migration, and a refreshed online target allowed preflight and enabled Start Migration.
-- [ ] A real two-physical-host NAS Clone Migration remains required before declaring v0.6.0 RC.
+- [x] A real two-physical-host NAS Clone Migration smoke passed before final release.
+
+NAS Clone Migration two-physical-host smoke on prepared hosts (2026-06-05):
+
+- [x] Hub URL: `http://192.168.1.44:8765`.
+- [x] Source host: `hg-source` (`Gerard Source` on `gerard-MS-7E26`).
+- [x] Target host: `hg-target` (`Lenovo Target` on `gery-Lenovo-ideapad-330S-14IKB`).
+- [x] Old offline hosts from previous smoke runs were ignored.
+- [x] `hg-target` initially reported `libvirt_ok=false` because an old agent process was running with stale state; restarting the agent after libvirt/group setup fixed it.
+- [x] `host test` commands initially printed `pending` because the CLI only queued commands; the agents did process them. `host test` now waits for terminal status by default.
+- [x] `hg-source` and `hg-target` both reported `online`, `kvm_ok=true`, and `libvirt_ok=true`.
+- [x] `host test hg-source` completed with `status=done` and `pong=true`.
+- [x] `host test hg-target` completed with `status=done` and `pong=true`.
+- [x] Hub VM inventory refreshed for `hg-source` and `hg-target`.
+- [x] NAS staging path `/mnt/hypergery-nas/hypergery` was writable from both hosts.
+- [x] Created only the allowed smoke source VM: `hg-v06-2host-source`.
+- [x] Source VM before migration: UUID `9ede2302-fabf-4b3a-a6c0-67bd20e217fb`, MAC `52:54:00:cb:ed:8f`, disk `/home/gerard/.local/share/hypergery/vms/hg-v06-2host-source/hg-v06-2host-source.qcow2`.
+- [x] Target VM name `hg-v06-2host-target` was absent before import.
+- [x] Migration ID: `hg-v06-2host-source-f67154f7803b`.
+- [x] Package path: `/mnt/hypergery-nas/hypergery/migrations/hg-v06-2host-source-f67154f7803b`.
+- [x] Migration status reached `done`, strategy `nas_clone`, no warnings, no errors.
+- [x] Package contains `manifest.json`, `domain.xml`, disk asset, ISO asset, lab metadata, and migration log.
+- [x] Source VM remained defined and shut off after migration.
+- [x] Source UUID and MAC remained unchanged.
+- [x] Target VM was imported as `hg-v06-2host-target`.
+- [x] Target UUID differed from source UUID: `113d0d29-1726-4a7e-a703-de84f81e2602`.
+- [x] Target MAC differed from source MAC: `52:54:a5:a1:4e:be`.
+- [x] Target disk existed at `/home/gery/.local/share/hypergery/vms/hg-v06-2host-target/hg-v06-2host-source.qcow2`.
+- [x] Target VM started and reached `running`.
+- [x] Target VM cleanup completed with `force-off` after ACPI timeout, then `delete-vm hg-v06-2host-target --delete-disks`.
+- [x] Target disk was removed by cleanup.
+- [x] Source VM and source disk were not deleted.
+- [x] NAS package was retained for audit.
+- [x] True live RAM migration remains intentionally not included in v0.6.0.
 
 v0.6.0 close-out check on prepared host (2026-06-05):
 
 - [x] `develop` was synchronized with `origin/develop`.
-- [x] `QT_QPA_PLATFORM=offscreen /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests` ran 201 tests OK.
-- [x] `python3 -m unittest discover -s tests` ran 201 tests OK, skipped 8 Qt tests without PySide6.
+- [x] `QT_QPA_PLATFORM=offscreen /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests` ran 214 tests OK.
+- [x] `python3 -m unittest discover -s tests` ran 214 tests OK, skipped 15 Qt tests without PySide6.
 - [x] `python3 -m compileall hypergery-ubuntu` passed.
 - [x] `bash -n` passed for all deployment/acceptance scripts.
 - [x] `docker compose config`, `docker compose build`, and `docker compose up -d` passed.
@@ -88,7 +121,8 @@ v0.6.0 close-out check on prepared host (2026-06-05):
 - [x] Remote Hosts Hub status summary added.
 - [x] `docs/QUICK_START_V06.md` added.
 - [x] No release, tag, or `main` merge was created.
-- [ ] v0.6.0 final release remains blocked on a real two-physical-host NAS Clone Migration smoke.
+- [x] Real two-physical-host NAS Clone Migration smoke passed.
+- [x] No release, tag, or `main` merge was created.
 
 ## v0.6.0 — NAS Live Migration Validation Plan
 
