@@ -122,6 +122,74 @@ class QtUiTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_app_shell_sidebar_navigation(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
+            self.assertEqual(
+                sections,
+                [
+                    "Dashboard",
+                    "Virtual Machines",
+                    "Labs",
+                    "Templates",
+                    "Remote Hosts",
+                    "Migrations",
+                    "Diagnostics",
+                    "Settings",
+                ],
+            )
+            self.assertEqual(window.sidebar_nav.currentItem().text(), "Virtual Machines")
+            self.assertEqual(window.main_tabs.currentIndex(), 0)
+            self.assertFalse(window.main_tabs.tabBar().isVisible())
+
+            window.sidebar_nav.setCurrentRow(sections.index("Remote Hosts"))
+            self.assertEqual(window.main_tabs.currentIndex(), 2)
+            window.sidebar_nav.setCurrentRow(sections.index("Dashboard"))
+            self.assertEqual(window.main_tabs.currentIndex(), window.dashboard_page_index)
+            window.sidebar_nav.setCurrentRow(sections.index("Diagnostics"))
+            self.assertEqual(window.main_tabs.currentIndex(), window.diagnostics_page_index)
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_app_shell_settings_entry_opens_dialog_and_restores_selection(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
+            with patch.object(window, "app_settings") as app_settings:
+                window.sidebar_nav.setCurrentRow(sections.index("Settings"))
+                app_settings.assert_called_once()
+            self.assertEqual(window.sidebar_nav.currentItem().text(), "Virtual Machines")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_top_bar_status_chips_follow_hub_status(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            self.assertEqual(window.hub_chip.text(), "Hub: not checked")
+            window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=2)
+            self.assertEqual(window.hub_chip.text(), "Hub: online")
+            self.assertTrue(window.nas_chip.text().startswith("NAS: "))
+            window.render_hub_status([], reachable=False)
+            self.assertEqual(window.hub_chip.text(), "Hub: offline")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_remote_hosts_panel_uses_hub_labels(self, backend_cls):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.main_window import MainWindow

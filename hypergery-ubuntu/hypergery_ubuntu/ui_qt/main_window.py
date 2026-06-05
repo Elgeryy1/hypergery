@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -112,30 +113,106 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._build_right_panel())
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
-        root_layout.addWidget(splitter, 1)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._build_sidebar())
+        body.addWidget(splitter, 1)
+        root_layout.addLayout(body, 1)
         self.setCentralWidget(root)
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self.status.showMessage("Ready")
 
+    SIDEBAR_SECTIONS = (
+        "Dashboard",
+        "Virtual Machines",
+        "Labs",
+        "Templates",
+        "Remote Hosts",
+        "Migrations",
+        "Diagnostics",
+        "Settings",
+    )
+
+    def _build_sidebar(self) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("sidebar")
+        frame.setFixedWidth(196)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 10, 0, 10)
+        layout.setSpacing(0)
+        self.sidebar_nav = QListWidget()
+        self.sidebar_nav.setObjectName("sidebarNav")
+        self.sidebar_nav.addItems(list(self.SIDEBAR_SECTIONS))
+        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Virtual Machines"))
+        self.sidebar_nav.currentRowChanged.connect(self._on_sidebar_changed)
+        layout.addWidget(self.sidebar_nav, 1)
+        return frame
+
+    def _on_sidebar_changed(self, row: int) -> None:
+        if row < 0:
+            return
+        section = self.SIDEBAR_SECTIONS[row]
+        if section == "Settings":
+            previous = getattr(self, "_sidebar_previous_row", self.SIDEBAR_SECTIONS.index("Virtual Machines"))
+            self.sidebar_nav.blockSignals(True)
+            self.sidebar_nav.setCurrentRow(previous)
+            self.sidebar_nav.blockSignals(False)
+            self.app_settings()
+            return
+        self._sidebar_previous_row = row
+        page_map = {
+            "Dashboard": self.dashboard_page_index,
+            "Virtual Machines": 0,
+            "Labs": 0,
+            "Templates": 1,
+            "Remote Hosts": 2,
+            "Migrations": self.migrations_page_index,
+            "Diagnostics": self.diagnostics_page_index,
+        }
+        self.main_tabs.setCurrentIndex(page_map[section])
+
     def _build_top_bar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("topBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 14, 20, 14)
-        layout.setSpacing(8)
+        layout.setContentsMargins(20, 12, 20, 12)
+        layout.setSpacing(10)
         brand = QVBoxLayout()
+        brand.setSpacing(0)
         title = QLabel("HyperGery")
         title.setObjectName("brandTitle")
-        subtitle = QLabel(f"v{APP_DISPLAY_VERSION}  KVM / QEMU / libvirt")
+        subtitle = QLabel(f"v{APP_DISPLAY_VERSION} · develop · KVM / QEMU / libvirt")
         subtitle.setObjectName("brandSubtle")
         brand.addWidget(title)
         brand.addWidget(subtitle)
         layout.addLayout(brand)
-        layout.addSpacing(18)
+        layout.addSpacing(14)
+
+        config = effective_config()
+        self.hub_chip = QLabel("Hub: not checked")
+        self.host_chip = QLabel(f"Host: {config['host_id'].value}")
+        self.nas_chip = QLabel("NAS: not checked")
+        for chip in (self.hub_chip, self.host_chip, self.nas_chip):
+            chip.setObjectName("statusChip")
+            layout.addWidget(chip)
+        layout.addStretch()
 
         self.new_button = self._button("New VM", self.new_vm, primary=True)
-        self.app_settings_button = self._button("App Settings", self.app_settings)
+        self.refresh_button = self._button("Refresh", self.refresh_all)
+        self.app_settings_button = self._button("Settings", self.app_settings)
+        layout.addWidget(self.new_button)
+        layout.addWidget(self.refresh_button)
+        layout.addWidget(self.app_settings_button)
+        return bar
+
+    def _build_vm_actions_bar(self) -> QWidget:
+        bar = QWidget()
+        layout = QVBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         self.settings_button = self._button("Settings", self.settings_vm)
         self.start_button = self._button("Start", self.start_vm)
         self.shutdown_button = self._button("ACPI Shutdown", self.shutdown_vm)
@@ -144,28 +221,34 @@ class MainWindow(QMainWindow):
         self.snapshots_button = self._button("Snapshots", self.snapshots_vm)
         self.clone_button = self._button("Clone", self.clone_vm)
         self.migrate_button = self._button("Live Migration", self.live_migration_vm)
-        self.refresh_button = self._button("Refresh", self.refresh_all)
         self.force_button = self._button("Force Off", self.force_off_vm, danger=True)
         self.delete_button = self._button("Delete", self.delete_vm, danger=True)
         self.overview_button = self._button("Resources…", self.show_cleanup_preview)
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
         for button in (
-            self.new_button,
-            self.app_settings_button,
-            self.settings_button,
             self.start_button,
             self.shutdown_button,
+            self.force_button,
             self.console_button,
             self.external_console_button,
+        ):
+            top_row.addWidget(button)
+        top_row.addStretch()
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(8)
+        for button in (
             self.snapshots_button,
             self.clone_button,
             self.migrate_button,
-            self.refresh_button,
+            self.settings_button,
+            self.overview_button,
         ):
-            layout.addWidget(button)
-        layout.addStretch()
-        layout.addWidget(self.overview_button)
-        layout.addWidget(self.force_button)
-        layout.addWidget(self.delete_button)
+            bottom_row.addWidget(button)
+        bottom_row.addStretch()
+        bottom_row.addWidget(self.delete_button)
+        layout.addLayout(top_row)
+        layout.addLayout(bottom_row)
         return bar
 
     def _button(self, text: str, callback: Callable[[], None], *, primary: bool = False, danger: bool = False) -> QPushButton:
@@ -203,6 +286,7 @@ class MainWindow(QMainWindow):
         header.addWidget(self.vm_filter)
         header.addWidget(self.vm_count_label)
         layout.addLayout(header)
+        layout.addWidget(self._build_vm_actions_bar())
 
         self.vm_table = QTableWidget(0, 5)
         self.vm_table.setHorizontalHeaderLabels(["Name", "State", "Lab", "CPU", "RAM"])
@@ -439,8 +523,37 @@ class MainWindow(QMainWindow):
         self.remote_detail.setPlaceholderText("Select Refresh to load hosts from the HyperGery Hub.")
         remote_layout.addWidget(self.remote_detail)
         self.main_tabs.addTab(remote_tab, "Remote Hosts")
-        
+
+        self.dashboard_page_index = self.main_tabs.addTab(
+            self._placeholder_page("Dashboard", "Health cards for VMs, Hub, NAS, hosts, and migrations arrive in the next v0.7 phase."),
+            "Dashboard",
+        )
+        self.migrations_page_index = self.main_tabs.addTab(
+            self._placeholder_page("Migrations", "NAS Clone Migration history and status view arrives in a later v0.7 phase. Use the Live Migration action on a VM meanwhile."),
+            "Migrations",
+        )
+        self.diagnostics_page_index = self.main_tabs.addTab(
+            self._placeholder_page("Diagnostics", "The doctor diagnostics panel arrives in a later v0.7 phase. Run `python -m hypergery_ubuntu.cli doctor` meanwhile."),
+            "Diagnostics",
+        )
+        self.main_tabs.tabBar().hide()
+
         return panel
+
+    def _placeholder_page(self, title: str, subtitle: str) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(10)
+        title_label = QLabel(title)
+        title_label.setObjectName("placeholderTitle")
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("mutedLabel")
+        subtitle_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addStretch()
+        return page
 
     def _build_vm_empty_state(self) -> QWidget:
         panel = QFrame()
@@ -792,6 +905,15 @@ class MainWindow(QMainWindow):
         self.hub_hosts_online_label.setText(str(sum(1 for host in hosts if host.get("status") == "online")))
         self.hub_vm_count_label.setText(vm_count_label)
         self.hub_nas_label.setText(nas_label)
+        nas_writable = os.path.isdir(nas_path) and os.access(nas_path, os.W_OK)
+        self.hub_chip.setText(f"Hub: {'online' if reachable else 'offline'}")
+        self.hub_chip.setObjectName("statusChipOk" if reachable else "statusChipBad")
+        self.nas_chip.setText(f"NAS: {'writable' if nas_writable else 'not writable'}")
+        self.nas_chip.setObjectName("statusChipOk" if nas_writable else "statusChipBad")
+        self.host_chip.setText(f"Host: {config['host_id'].value}")
+        for chip in (self.hub_chip, self.nas_chip):
+            chip.style().unpolish(chip)
+            chip.style().polish(chip)
 
     def test_selected_remote_host(self) -> None:
         indexes = self.remote_host_table.selectionModel().selectedRows()

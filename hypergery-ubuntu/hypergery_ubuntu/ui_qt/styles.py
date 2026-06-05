@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-APP_DISPLAY_VERSION = "0.6.0"
+APP_DISPLAY_VERSION = "0.7.0-dev"
 
 STATE_COLORS = {
     "running": "#36d399",
@@ -193,5 +193,60 @@ QLabel#okLabel {
 QStatusBar {
     background: #0f141b;
     color: #aab4c3;
+}
+QFrame#sidebar {
+    background: #0c1117;
+    border-right: 1px solid #1f2a38;
+}
+QListWidget#sidebarNav {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    padding: 6px;
+    outline: 0;
+}
+QListWidget#sidebarNav::item {
+    color: #aab4c3;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin: 2px 4px;
+}
+QListWidget#sidebarNav::item:hover {
+    background: #16202d;
+    color: #e8edf3;
+}
+QListWidget#sidebarNav::item:selected {
+    background: #14323d;
+    color: #7dd3fc;
+    font-weight: 700;
+}
+QLabel#statusChip {
+    background: #16202d;
+    border: 1px solid #2b3a4f;
+    border-radius: 10px;
+    color: #aab4c3;
+    padding: 4px 10px;
+    font-size: 9.5pt;
+}
+QLabel#statusChipOk {
+    background: #11332b;
+    border: 1px solid #1f6f53;
+    border-radius: 10px;
+    color: #86efac;
+    padding: 4px 10px;
+    font-size: 9.5pt;
+}
+QLabel#statusChipBad {
+    background: #3a2025;
+    border: 1px solid #7f1d1d;
+    border-radius: 10px;
+    color: #fca5a5;
+    padding: 4px 10px;
+    font-size: 9.5pt;
+}
+QLabel#placeholderTitle {
+    font-size: 16pt;
+    font-weight: 700;
+    color: #dbeafe;
 }
 """
