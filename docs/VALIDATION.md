@@ -47,6 +47,30 @@ Docker/Hub/Agent smoke on prepared host (2026-06-05):
 - [x] Qt Live Migration dialog offscreen smoke listed `ubuntu-hyperv` from the real local Hub and kept Start Migration disabled until preflight.
 - [x] `timeout 8s ./scripts/dev-run.sh --no-install` reached preflight OK without traceback; timeout was controlled because the GUI remains open.
 
+NAS Clone Migration local E2E smoke on prepared host (2026-06-05):
+
+- [x] No second physical host was available in this environment; the E2E used two logical agent IDs on the same libvirt host: `ubuntu-hyperv-source` and `ubuntu-hyperv-target`.
+- [x] Hub Docker was running at `http://127.0.0.1:8765`.
+- [x] NAS staging was writable at `/home/gerard/NAS_Gerard/hypergery` in this environment.
+- [x] Created a shut off test source VM only: `hg-v06-e2e-source`, VNC display, 1 GiB RAM, 1 vCPU, 2 GiB qcow2.
+- [x] Registered source and target logical agents with KVM/libvirt OK.
+- [x] Ran CLI remote migration with `--source-host-id ubuntu-hyperv-source`, `--target-host-id ubuntu-hyperv-target`, `--target-vm-name hg-v06-e2e-target`, `--nas-path /home/gerard/NAS_Gerard/hypergery`, and `--no-snapshots`.
+- [x] Migration ID: `hg-v06-e2e-source-61900e7cec58`.
+- [x] Package path: `/home/gerard/NAS_Gerard/hypergery/migrations/hg-v06-e2e-source-61900e7cec58`.
+- [x] Package contains `manifest.json`, `domain.xml`, `logs/migration.log`, disk asset, ISO asset, and lab metadata.
+- [x] Hub migration status reached `done`, strategy `nas_clone`, `source_will_be_deleted=false`, no warnings, no errors.
+- [x] Target agent processed `import_vm_package` command with status `done`.
+- [x] Source VM remained defined and shut off after migration.
+- [x] Source disk remained present: `/home/gerard/.local/share/hypergery/vms/hg-v06-e2e-source/hg-v06-e2e-source.qcow2`.
+- [x] Target VM was imported as `hg-v06-e2e-target`.
+- [x] Target UUID differed from source UUID (`a847645b-261d-4ef1-9ab3-22d4947a34dd` -> `73b093dd-955e-4c62-8921-c9ea6cb4f783`).
+- [x] Target MAC differed from source MAC (`52:54:00:dc:03:8e` -> `52:54:1c:eb:af:72`).
+- [x] Target VM started successfully and reached `running`.
+- [x] Target VM was force-powered off after the start smoke and then cleaned up with `delete-vm hg-v06-e2e-target --delete-disks`.
+- [x] Qt Remote Hosts offscreen smoke showed source and target logical hosts.
+- [x] Qt Live Migration dialog offscreen smoke listed `ubuntu-hyperv-target`; offline target state blocked migration, and a refreshed online target allowed preflight and enabled Start Migration.
+- [ ] A real two-physical-host NAS Clone Migration remains required before declaring v0.6.0 RC.
+
 ## v0.6.0 — NAS Live Migration Validation Plan
 
 v0.6.0 is not a release yet. Validation must prove NAS Clone Migration behavior without deleting the source VM or original disks.
