@@ -26,16 +26,18 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
     QWizard,
     QWizardPage,
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
-from ..config import CONFIG_FIELDS, HyperGeryConfig, default_config_values, effective_config
+from ..config import CONFIG_FIELDS, HyperGeryConfig, config_path, default_config_values, effective_config
 from ..registry import RegistryClient
 from ..templates import normalize_template_id
 from .lab_helpers import build_lab_preview
@@ -49,6 +51,8 @@ FILE_DIALOG_OPTIONS = QFileDialog.Option.DontUseNativeDialog
 
 
 class AppSettingsDialog(QDialog):
+    SECTIONS = ("General", "Hub", "Host Agent", "NAS", "VM Defaults", "Console", "Appearance", "Advanced")
+
     def __init__(self, backend: HyperGeryBackend, parent=None) -> None:
         super().__init__(parent)
         self.backend = backend
@@ -71,49 +75,161 @@ class AppSettingsDialog(QDialog):
         self.default_vm_storage_path = QLineEdit(saved.default_vm_storage_path or effective["default_vm_storage_path"].value)
         self.status = QLabel("")
         self.status.setObjectName("mutedLabel")
+        self.status.setWordWrap(True)
 
-        form = QFormLayout()
-        for label, field, key in (
-            ("Hub URL", self.hub_url, "hub_url"),
-            ("Host ID", self.host_id, "host_id"),
-            ("Host name", self.host_name, "host_name"),
-            ("NAS staging path", self.nas_staging_path, "nas_staging_path"),
-            ("Default display", self.default_display, "default_display"),
-            ("Default ISO folder", self.default_iso_folder, "default_iso_folder"),
-            ("Default VM storage path", self.default_vm_storage_path, "default_vm_storage_path"),
-        ):
-            row = QHBoxLayout()
-            row.addWidget(field, 1)
-            source = QLabel(effective[key].source)
-            source.setObjectName("mutedLabel")
-            row.addWidget(source)
-            form.addRow(label, row)
+        title = QLabel("Settings")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel(
+            "Hub, agent, NAS, and VM defaults. Each field shows whether its value comes from environment, config, or default."
+        )
+        subtitle.setObjectName("mutedLabel")
+        subtitle.setWordWrap(True)
 
+        self.section_nav = QListWidget()
+        self.section_nav.setObjectName("sidebarNav")
+        self.section_nav.addItems(list(self.SECTIONS))
+        self.section_nav.setFixedWidth(168)
+        self.pages = QStackedWidget()
+        self.section_nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+
+        self.pages.addWidget(self._section_page((
+            self._field("Host ID", self.host_id, "host_id", "Stable, unique identifier for this host in the Hub."),
+            self._field("Host name", self.host_name, "host_name", "Readable name shown in Remote Hosts."),
+        )))
         test_hub = QPushButton("Test Hub")
         test_hub.clicked.connect(self.test_hub)
+        self.pages.addWidget(self._section_page((
+            self._field("Hub URL", self.hub_url, "hub_url", "HYPERGERY_HUB_URL overrides this saved value."),
+            self._button_row(test_hub),
+        )))
+        self.pages.addWidget(self._section_page((
+            self._callout("The agent only runs allowlisted commands and rejects package paths outside the NAS staging root.", "calloutInfo"),
+            self._callout("The agent reuses the Hub, Host identity, and NAS settings from the other sections. Extra agent options are planned for v0.7.x.", "calloutInfo"),
+        )))
         test_nas = QPushButton("Test NAS Write")
         test_nas.clicked.connect(self.test_nas)
+        self.pages.addWidget(self._section_page((
+            self._field("NAS staging path", self.nas_staging_path, "nas_staging_path", "Shared Linux mount for migration packages, e.g. /mnt/hypergery-nas/hypergery."),
+            self._button_row(test_nas),
+            self._callout("The Hub SQLite DB must never live on NAS/SMB — keep it in the Docker volume.", "calloutDanger"),
+        )))
+        self.pages.addWidget(self._section_page((
+            self._field("Default display", self.default_display, "default_display", "vnc enables the integrated console; spice uses the external viewer."),
+            self._field("Default ISO folder", self.default_iso_folder, "default_iso_folder", "Starting folder for ISO selection in the New VM wizard."),
+            self._field("Default VM storage path", self.default_vm_storage_path, "default_vm_storage_path", "Optional default disk directory for new VMs."),
+        )))
+        self.pages.addWidget(self._section_page((
+            self._callout("Host Key to release console input: Right Ctrl. SPICE VMs always use the external viewer.", "calloutInfo"),
+            self._callout("Console preferences (Scale to Fit default, viewer command) are planned for v0.7.x.", "calloutInfo"),
+        )))
+        self.pages.addWidget(self._section_page((
+            self._callout("Dark is the v0.7 theme. Accent and density options are planned for v0.7.x.", "calloutInfo"),
+        )))
+        config_file = QLineEdit(str(config_path()))
+        config_file.setReadOnly(True)
         test_libvirt = QPushButton("Test libvirt")
         test_libvirt.clicked.connect(self.test_libvirt)
+        self.pages.addWidget(self._section_page((
+            self._field("Config file", config_file, None, "Settings are stored as JSON. Environment variables always take priority."),
+            self._button_row(test_libvirt),
+            self._callout("Reset Defaults only fills the form; nothing changes until you Save. Environment variables keep priority.", "calloutWarn"),
+        )))
+        self.section_nav.setCurrentRow(0)
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        body.addWidget(self.section_nav)
+        pages_frame = QFrame()
+        pages_frame.setObjectName("panel")
+        pages_frame_layout = QVBoxLayout(pages_frame)
+        pages_frame_layout.setContentsMargins(18, 16, 18, 16)
+        pages_frame_layout.addWidget(self.pages)
+        body.addWidget(pages_frame, 1)
+
         reset = QPushButton("Reset Defaults")
         reset.clicked.connect(self.reset_defaults)
-        action_row = QHBoxLayout()
-        action_row.addWidget(test_hub)
-        action_row.addWidget(test_nas)
-        action_row.addWidget(test_libvirt)
-        action_row.addWidget(reset)
-        action_row.addStretch()
-
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
+        bottom = QHBoxLayout()
+        bottom.addWidget(reset)
+        bottom.addStretch()
+        bottom.addWidget(buttons)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addLayout(action_row)
+        layout.setSpacing(10)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addLayout(body, 1)
         layout.addWidget(self.status)
-        layout.addWidget(buttons)
-        self.resize(760, 380)
+        layout.addLayout(bottom)
+        self.resize(860, 500)
+
+    def _source_chip(self, key: str) -> QLabel:
+        source = self._effective[key].source
+        if source.startswith("env:"):
+            text, name = "ENV", "srcChipEnv"
+        elif source == "config":
+            text, name = "CONFIG", "srcChipConfig"
+        else:
+            text, name = "DEFAULT", "srcChipDefault"
+        chip = QLabel(text)
+        chip.setObjectName(name)
+        chip.setToolTip(source)
+        return chip
+
+    def _field(self, label: str, widget: QWidget, key: str | None, hint: str) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        label_widget = QLabel(label)
+        label_widget.setObjectName("statLabel")
+        head.addWidget(label_widget)
+        if key is not None:
+            head.addWidget(self._source_chip(key))
+        head.addStretch()
+        layout.addLayout(head)
+        layout.addWidget(widget)
+        hint_label = QLabel(hint)
+        hint_label.setObjectName("mutedLabel")
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+        return container
+
+    def _callout(self, text: str, tone: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName(tone)
+        label.setWordWrap(True)
+        return label
+
+    def _button_row(self, *buttons: QPushButton) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        for button in buttons:
+            layout.addWidget(button)
+        layout.addStretch()
+        return container
+
+    def _section_page(self, rows: tuple[QWidget, ...]) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(14)
+        for row in rows:
+            layout.addWidget(row)
+        layout.addStretch()
+        return page
+
+    def _set_status(self, text: str, tone: str) -> None:
+        self.status.setText(text)
+        self.status.setObjectName({"ok": "calloutOk", "fail": "calloutDanger"}.get(tone, "mutedLabel"))
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
 
     def values(self) -> dict[str, str]:
         current = {
@@ -134,38 +250,42 @@ class AppSettingsDialog(QDialog):
     def validate_and_accept(self) -> None:
         hub_url = self.hub_url.text().strip()
         if hub_url and not (hub_url.startswith("http://") or hub_url.startswith("https://")):
-            self.status.setText("Hub URL must start with http:// or https://")
+            self._set_status("Hub URL must start with http:// or https://", "fail")
+            self.section_nav.setCurrentRow(self.SECTIONS.index("Hub"))
             return
         self.accept()
 
     def test_hub(self) -> None:
         try:
             result = RegistryClient(self.hub_url.text().strip(), timeout=3).health()
-            self.status.setText(f"Hub OK: {result}")
+            self._set_status(f"Hub OK: {result}", "ok")
         except HyperGeryError as exc:
-            self.status.setText(f"Hub FAIL: {exc}")
+            self._set_status(f"Hub FAIL: {exc}", "fail")
 
     def test_nas(self) -> None:
         path = Path(self.nas_staging_path.text().strip()).expanduser()
         if not path.is_dir():
-            self.status.setText(f"NAS FAIL: path does not exist: {path}")
+            self._set_status(f"NAS FAIL: path does not exist: {path}", "fail")
             return
         try:
             with tempfile.NamedTemporaryFile(prefix=".hypergery-write-", dir=path, delete=True) as fh:
                 fh.write(b"ok")
                 fh.flush()
-            self.status.setText(f"NAS OK: writable {path}")
+            self._set_status(f"NAS OK: writable {path}", "ok")
         except OSError as exc:
-            self.status.setText(f"NAS FAIL: {exc}")
+            self._set_status(f"NAS FAIL: {exc}", "fail")
 
     def test_libvirt(self) -> None:
         try:
             items = self.backend.preflight()
         except Exception as exc:
-            self.status.setText(f"libvirt FAIL: {exc}")
+            self._set_status(f"libvirt FAIL: {exc}", "fail")
             return
         failures = [item for item in items if item.status == "Error" and item.name in {"libvirt connection", "virsh"}]
-        self.status.setText("libvirt OK" if not failures else "libvirt FAIL: " + "; ".join(item.detail for item in failures))
+        if not failures:
+            self._set_status("libvirt OK", "ok")
+        else:
+            self._set_status("libvirt FAIL: " + "; ".join(item.detail for item in failures), "fail")
 
     def reset_defaults(self) -> None:
         defaults = default_config_values()
@@ -176,7 +296,7 @@ class AppSettingsDialog(QDialog):
         self.default_display.setCurrentIndex(self.default_display.findText(defaults["default_display"]))
         self.default_iso_folder.setText(defaults["default_iso_folder"])
         self.default_vm_storage_path.setText(defaults["default_vm_storage_path"])
-        self.status.setText("Defaults loaded. Select Save to persist them.")
+        self._set_status("Defaults loaded into the form (non-destructive). Select Save to persist them.", "neutral")
 
 
 class IdentityPage(QWizardPage):

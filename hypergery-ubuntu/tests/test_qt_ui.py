@@ -388,6 +388,34 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    def test_app_settings_dialog_has_sections_and_source_chips(self):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.dialogs import AppSettingsDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "HYPERGERY_CONFIG": str(Path(tmp) / "config.json"),
+                "HYPERGERY_HUB_URL": "http://env-hub.local:8765",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                dialog = AppSettingsDialog(object())
+
+            sections = [dialog.section_nav.item(i).text() for i in range(dialog.section_nav.count())]
+            self.assertEqual(
+                sections,
+                ["General", "Hub", "Host Agent", "NAS", "VM Defaults", "Console", "Appearance", "Advanced"],
+            )
+            self.assertEqual(dialog.pages.count(), 8)
+            dialog.section_nav.setCurrentRow(sections.index("Hub"))
+            self.assertEqual(dialog.pages.currentIndex(), sections.index("Hub"))
+
+            chip_names = {label.objectName() for label in dialog.findChildren(QLabel)}
+            self.assertIn("srcChipEnv", chip_names)
+            self.assertIn("srcChipDefault", chip_names)
+            dialog.close()
+        self.assertIsNotNone(app)
+
     def test_app_settings_omits_unchanged_env_derived_hub_url(self):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.dialogs import AppSettingsDialog

@@ -366,4 +366,28 @@ QLabel#metricValue {
     font-weight: 600;
     color: #E5E7EB;
 }
+QLabel#srcChipEnv {
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 4px;
+    color: #7dd3fc;
+    padding: 1px 6px;
+    font-size: 7.5pt;
+    font-weight: 700;
+}
+QLabel#srcChipConfig {
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    border-radius: 4px;
+    color: #c4b5fd;
+    padding: 1px 6px;
+    font-size: 7.5pt;
+    font-weight: 700;
+}
+QLabel#srcChipDefault {
+    border: 1px solid #263244;
+    border-radius: 4px;
+    color: #5C6B82;
+    padding: 1px 6px;
+    font-size: 7.5pt;
+    font-weight: 700;
+}
 """
