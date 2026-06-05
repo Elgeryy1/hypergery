@@ -1,5 +1,231 @@
 # HyperGery Validation
 
+## HyperGery Hub Docker
+
+Validate the Docker deployment files without starting the service:
+
+```bash
+cd docker
+docker compose config
+docker compose build
+```
+
+When running on the NAS:
+
+```bash
+curl http://192.168.1.150:8765/health
+curl http://192.168.1.150:8765/hosts
+```
+
+Agent smoke on Ubuntu:
+
+```bash
+export HYPERGERY_HUB_URL=http://192.168.1.150:8765
+export HYPERGERY_HOST_ID=ubuntu-hyperv
+export HYPERGERY_HOST_NAME="Ubuntu Hyper-V"
+export HYPERGERY_NAS_STAGING_PATH=/mnt/hypergery-nas/hypergery
+python -m hypergery_ubuntu.cli agent once
+python -m hypergery_ubuntu.cli host list --hub-url http://192.168.1.150:8765
+python -m hypergery_ubuntu.cli hub vms --hub-url http://192.168.1.150:8765
+```
+
+Docker/Hub/Agent smoke on prepared host (2026-06-05):
+
+- [x] `docker compose config` passed.
+- [x] Initial Docker smoke exposed a real deployment issue: SQLite DB on `./data` can lock when the repo is on a NAS/shared mount.
+- [x] Docker Compose now persists `/data` in the Docker volume `hypergery-hub-data`; `/hypergery` remains the NAS data bind mount.
+- [x] Docker image includes a `/health` healthcheck.
+- [x] `docker compose build` completed.
+- [x] `docker compose up -d --force-recreate` started `hypergery-hub`.
+- [x] `curl http://127.0.0.1:8765/health` returned `{"ok": true}`.
+- [x] `curl http://127.0.0.1:8765/hosts` returned an empty host list before agent registration.
+- [x] `curl http://127.0.0.1:8765/vms` returned an empty VM list before agent inventory.
+- [x] `agent once` registered `ubuntu-hyperv` with KVM/libvirt OK.
+- [x] `host list` showed `ubuntu-hyperv` online.
+- [x] `hub vms` returned the current VM inventory from the agent.
+- [x] `host test ubuntu-hyperv` queued a ping command, and a second `agent once` completed it with `pong=true`.
+- [x] Qt Remote Hosts offscreen smoke loaded `ubuntu-hyperv` from the real local Hub.
+- [x] Qt Live Migration dialog offscreen smoke listed `ubuntu-hyperv` from the real local Hub and kept Start Migration disabled until preflight.
+- [x] `timeout 8s ./scripts/dev-run.sh --no-install` reached preflight OK without traceback; timeout was controlled because the GUI remains open.
+
+NAS Clone Migration local E2E smoke on prepared host (2026-06-05):
+
+- [x] No second physical host was available in this environment; the E2E used two logical agent IDs on the same libvirt host: `ubuntu-hyperv-source` and `ubuntu-hyperv-target`.
+- [x] Hub Docker was running at `http://127.0.0.1:8765`.
+- [x] NAS staging was writable at `/home/gerard/NAS_Gerard/hypergery` in this environment.
+- [x] Created a shut off test source VM only: `hg-v06-e2e-source`, VNC display, 1 GiB RAM, 1 vCPU, 2 GiB qcow2.
+- [x] Registered source and target logical agents with KVM/libvirt OK.
+- [x] Ran CLI remote migration with `--source-host-id ubuntu-hyperv-source`, `--target-host-id ubuntu-hyperv-target`, `--target-vm-name hg-v06-e2e-target`, `--nas-path /home/gerard/NAS_Gerard/hypergery`, and `--no-snapshots`.
+- [x] Migration ID: `hg-v06-e2e-source-61900e7cec58`.
+- [x] Package path: `/home/gerard/NAS_Gerard/hypergery/migrations/hg-v06-e2e-source-61900e7cec58`.
+- [x] Package contains `manifest.json`, `domain.xml`, `logs/migration.log`, disk asset, ISO asset, and lab metadata.
+- [x] Hub migration status reached `done`, strategy `nas_clone`, `source_will_be_deleted=false`, no warnings, no errors.
+- [x] Target agent processed `import_vm_package` command with status `done`.
+- [x] Source VM remained defined and shut off after migration.
+- [x] Source disk remained present: `/home/gerard/.local/share/hypergery/vms/hg-v06-e2e-source/hg-v06-e2e-source.qcow2`.
+- [x] Target VM was imported as `hg-v06-e2e-target`.
+- [x] Target UUID differed from source UUID (`a847645b-261d-4ef1-9ab3-22d4947a34dd` -> `73b093dd-955e-4c62-8921-c9ea6cb4f783`).
+- [x] Target MAC differed from source MAC (`52:54:00:dc:03:8e` -> `52:54:1c:eb:af:72`).
+- [x] Target VM started successfully and reached `running`.
+- [x] Target VM was force-powered off after the start smoke and then cleaned up with `delete-vm hg-v06-e2e-target --delete-disks`.
+- [x] Qt Remote Hosts offscreen smoke showed source and target logical hosts.
+- [x] Qt Live Migration dialog offscreen smoke listed `ubuntu-hyperv-target`; offline target state blocked migration, and a refreshed online target allowed preflight and enabled Start Migration.
+- [x] A real two-physical-host NAS Clone Migration smoke passed before final release.
+
+NAS Clone Migration two-physical-host smoke on prepared hosts (2026-06-05):
+
+- [x] Hub URL: `http://192.168.1.44:8765`.
+- [x] Source host: `hg-source` (`Gerard Source` on `gerard-MS-7E26`).
+- [x] Target host: `hg-target` (`Lenovo Target` on `gery-Lenovo-ideapad-330S-14IKB`).
+- [x] Old offline hosts from previous smoke runs were ignored.
+- [x] `hg-target` initially reported `libvirt_ok=false` because an old agent process was running with stale state; restarting the agent after libvirt/group setup fixed it.
+- [x] `host test` commands initially printed `pending` because the CLI only queued commands; the agents did process them. `host test` now waits for terminal status by default.
+- [x] `hg-source` and `hg-target` both reported `online`, `kvm_ok=true`, and `libvirt_ok=true`.
+- [x] `host test hg-source` completed with `status=done` and `pong=true`.
+- [x] `host test hg-target` completed with `status=done` and `pong=true`.
+- [x] Hub VM inventory refreshed for `hg-source` and `hg-target`.
+- [x] NAS staging path `/mnt/hypergery-nas/hypergery` was writable from both hosts.
+- [x] Created only the allowed smoke source VM: `hg-v06-2host-source`.
+- [x] Source VM before migration: UUID `9ede2302-fabf-4b3a-a6c0-67bd20e217fb`, MAC `52:54:00:cb:ed:8f`, disk `/home/gerard/.local/share/hypergery/vms/hg-v06-2host-source/hg-v06-2host-source.qcow2`.
+- [x] Target VM name `hg-v06-2host-target` was absent before import.
+- [x] Migration ID: `hg-v06-2host-source-f67154f7803b`.
+- [x] Package path: `/mnt/hypergery-nas/hypergery/migrations/hg-v06-2host-source-f67154f7803b`.
+- [x] Migration status reached `done`, strategy `nas_clone`, no warnings, no errors.
+- [x] Package contains `manifest.json`, `domain.xml`, disk asset, ISO asset, lab metadata, and migration log.
+- [x] Source VM remained defined and shut off after migration.
+- [x] Source UUID and MAC remained unchanged.
+- [x] Target VM was imported as `hg-v06-2host-target`.
+- [x] Target UUID differed from source UUID: `113d0d29-1726-4a7e-a703-de84f81e2602`.
+- [x] Target MAC differed from source MAC: `52:54:a5:a1:4e:be`.
+- [x] Target disk existed at `/home/gery/.local/share/hypergery/vms/hg-v06-2host-target/hg-v06-2host-source.qcow2`.
+- [x] Target VM started and reached `running`.
+- [x] Target VM cleanup completed with `force-off` after ACPI timeout, then `delete-vm hg-v06-2host-target --delete-disks`.
+- [x] Target disk was removed by cleanup.
+- [x] Source VM and source disk were not deleted.
+- [x] NAS package was retained for audit.
+- [x] True live RAM migration remains intentionally not included in v0.6.0.
+
+v0.6.0 close-out check on prepared host (2026-06-05):
+
+- [x] `develop` was synchronized with `origin/develop`.
+- [x] `QT_QPA_PLATFORM=offscreen /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests` ran 214 tests OK.
+- [x] `python3 -m unittest discover -s tests` ran 214 tests OK, skipped 15 Qt tests without PySide6.
+- [x] `python3 -m compileall hypergery-ubuntu` passed.
+- [x] `bash -n` passed for all deployment/acceptance scripts.
+- [x] `docker compose config`, `docker compose build`, and `docker compose up -d` passed.
+- [x] `curl http://127.0.0.1:8765/health` returned `{"ok": true}`.
+- [x] `agent once` refreshed `ubuntu-hyperv-source` and `ubuntu-hyperv-target`.
+- [x] `host test ubuntu-hyperv-source` was processed by the source agent with `pong=true`.
+- [x] App settings added for Hub URL, host identity, NAS staging path, and default VM creation values.
+- [x] `doctor` diagnostics added and smoke-tested against the local Hub.
+- [x] Remote Hosts Hub status summary added.
+- [x] `docs/QUICK_START_V06.md` added.
+- [x] Real two-physical-host NAS Clone Migration smoke passed.
+- [x] v0.6.0 release prerequisites were satisfied before final publication.
+
+## v0.6.0 — NAS Clone Migration Validation Plan
+
+v0.6.0 final validation proves NAS Clone Migration behavior without deleting the source VM or original disks.
+
+Required automated checks:
+
+```bash
+cd hypergery-ubuntu && python3 -m unittest discover -s tests
+cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
+python3 -m compileall hypergery-ubuntu
+bash -n scripts/dev-run.sh scripts/bootstrap-ubuntu.sh scripts/preflight.sh scripts/acceptance-ubuntu.sh scripts/acceptance-real-host.sh scripts/install-ubuntu-deps.sh scripts/install-desktop-launcher.sh
+```
+
+First-run bootstrap smoke:
+
+- [ ] `./scripts/dev-run.sh --check-only` prints system/package/service/group/Python readiness and does not install.
+- [ ] `./scripts/dev-run.sh --no-install` exits clearly if anything is missing.
+- [ ] On a prepared host, `./scripts/dev-run.sh --no-install` runs preflight and starts the Qt app without reinstalling.
+- [ ] On a fresh Ubuntu laptop, `./scripts/dev-run.sh` asks before installing packages.
+- [ ] `./scripts/dev-run.sh --install` installs/fixes missing items without the interactive question, while sudo/pkexec still prompts normally.
+- [ ] If `kvm`/`libvirt` membership changes, the script prints the logout/login warning.
+- [ ] The venv is created at `~/.venvs/hypergery` with `--copies`, not inside the repo.
+
+Bootstrap smoke on prepared host (2026-06-04):
+
+- [x] `./scripts/dev-run.sh --check-only` reported no missing system tools, no inactive services, no missing groups, and Python environment ready.
+- [x] `timeout 8s ./scripts/dev-run.sh --no-install` did not reinstall anything, ran preflight successfully, and reached Qt app startup before the controlled timeout.
+
+Required local smoke:
+
+- [ ] Start local registry on port `8765`: `python -m hypergery_ubuntu.cli registry serve`.
+- [ ] Start local HyperGery agent or run one cycle: `python -m hypergery_ubuntu.cli agent once`.
+- [ ] Confirm local host registration and heartbeat with `python -m hypergery_ubuntu.cli host list`.
+- [ ] List hosts from CLI and UI.
+- [ ] Create a safe `ping` command with `python -m hypergery_ubuntu.cli host test <host_id>` and confirm the agent returns a result.
+- [ ] Start a remote migration with `python -m hypergery_ubuntu.cli migrate remote <vm_name> --nas-path /mnt/hypergery-nas --source-host-id <source> --target-host-id <target> --target-vm-name <target_name>`.
+- [ ] Poll it with `python -m hypergery_ubuntu.cli migrate status --migration-id <migration_id>`.
+- [ ] Run migration preflight with a fake/offline target and confirm a clear blocking error.
+- [ ] Package an existing stopped test VM if available.
+- [ ] Validate the migration package manifest and checksums.
+- [ ] Import package locally in dry-run or isolated test mode if no second host is available.
+- [ ] Confirm source VM still exists and source disks remain untouched.
+- [ ] Create or edit a VM with display mode `vnc`.
+- [ ] Start the VM and press **Console**.
+- [ ] Confirm a separate **HyperGery Console - <vm_name>** window opens.
+- [ ] Confirm it connects automatically for a running VNC VM.
+- [ ] Confirm the full guest framebuffer is visible, centered, and scaled with **Scale to Fit** enabled.
+- [ ] Resize the console window and confirm the image remains complete and centered.
+- [ ] Toggle **Scale to Fit** off/on and confirm real-size scrolling and fitted view work.
+- [ ] Click inside to capture input, and press Right Ctrl to release.
+- [ ] Confirm **External Console** still opens `virt-viewer` or `remote-viewer`.
+- [ ] Disconnect/close the console window and confirm the VM keeps running.
+- [ ] Start or select a running SPICE VM and confirm the console window shows the VNC-required card, does not capture input, and offers **Open External Viewer**.
+- [ ] Select a shut off SPICE VM and confirm **Switch to VNC** is enabled.
+- [ ] Switch to VNC, start the VM, press **Console**, and confirm the integrated VNC console connects.
+
+Registry/agent local smoke on prepared host (2026-06-04):
+
+- [x] Started local registry with a temporary SQLite DB on `127.0.0.1:18765`.
+- [x] Ran `agent once` with a temporary config and registered `local-smoke`.
+- [x] Listed hosts through CLI and confirmed `local-smoke` was present.
+- [x] Queued a safe `ping` command through `host test local-smoke`.
+- [x] Ran `agent once` again and confirmed command status `done` with `pong=true`.
+
+Migration package unit/CLI smoke on prepared host (2026-06-04):
+
+- [x] `migration_preflight()` blocks a running VM with `source_will_be_deleted=false`.
+- [x] `export_vm_package()` creates `manifest.json`, `domain.xml`, copied disk/ISO assets, checksums, lab metadata, and migration log in `migrations/<migration_id>/`.
+- [x] `validate_vm_package()` accepts a clean package and reports checksum mismatch after asset tampering.
+- [x] `import_vm_package()` rewrites target VM name, UUID, MAC address, disk paths, ISO paths, network metadata, and lab association using a simulated backend.
+- [x] CLI `migrate preflight` returns JSON and preserves `source_will_be_deleted=false`.
+- [x] Agent `preflight` command runs VM migration preflight and fails safely for running VMs.
+- [x] Agent `receive_vm_package` validates only packages inside configured NAS staging.
+- [x] Agent `import_vm_package` calls the package import flow and blocks paths outside staging.
+- [x] Qt **Live Migration** dialog runs VM preflight and keeps package creation disabled for running VMs.
+
+Recommended real NAS/two-host smoke:
+
+- [ ] Run registry on the NAS or a machine acting as NAS.
+- [ ] Configure shared staging path on source and target hosts.
+- [ ] Start agent on source host and target host.
+- [ ] Confirm CLI `host list` and the Qt Remote Hosts panel show both hosts online with KVM/libvirt OK.
+- [ ] Queue `host test <target_host_id>`, run the target agent, and confirm command status `done`.
+- [ ] Use a stopped test VM with a mounted ISO.
+- [ ] Right-click VM -> **Live Migration**.
+- [ ] Select target host and run preflight.
+- [ ] Start migration using offline or paused NAS Clone strategy.
+- [ ] Poll `migrate status --migration-id <migration_id>` until `done`.
+- [ ] Confirm package exists under `/mnt/hypergery-nas/migrations/<migration_id>`.
+- [ ] Confirm source VM remains on the source host.
+- [ ] Confirm target VM appears on destination with new UUID and MAC.
+- [ ] Confirm disks, ISO, lab metadata, network metadata, templates used, and migration log are present.
+- [ ] Start target VM.
+- [ ] Clean up only the test target VM/package after confirmation.
+
+Blocking conditions:
+
+- Running VM copy must be blocked unless a real safe libvirt/QEMU strategy is implemented.
+- Missing disks are critical errors.
+- Missing ISO is an error when `include_iso=True`.
+- Target host offline, missing staging path, insufficient space, and target name conflicts must block Start Migration.
+- No v0.6.0 release may be created until this checklist is completed.
+
 ## v0.5.0 RC — Automated Tests Status
 
 Run with system Python (PySide6 not required):

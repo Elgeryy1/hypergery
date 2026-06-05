@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from .backend import HyperGeryBackend, HyperGeryError
 from .labs import LabStore
 from .templates import TemplateStore
+
+
+def default_hub_url() -> str:
+    from .config import effective_value
+
+    return effective_value("hub_url")
 
 
 def print_preflight(backend: HyperGeryBackend) -> int:
@@ -116,6 +126,23 @@ def print_json(data: object) -> int:
     return 0
 
 
+def wait_for_command(client: object, command_id: str, *, timeout_seconds: float, interval_seconds: float) -> dict:
+    deadline = time.monotonic() + timeout_seconds
+    command = client.command(command_id)
+    while command.get("status") not in {"done", "failed"} and time.monotonic() < deadline:
+        time.sleep(interval_seconds)
+        command = client.command(command_id)
+    return command
+
+
+def doctor_action() -> int:
+    from .doctor import collect_doctor_items, doctor_exit_code, format_doctor_items
+
+    items = collect_doctor_items()
+    print(format_doctor_items(items))
+    return doctor_exit_code(items)
+
+
 def lab_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
     store = LabStore(backend.data_dir)
     if args.lab_command == "list":
@@ -206,10 +233,184 @@ def lab_instantiate_action(backend: HyperGeryBackend, args: argparse.Namespace) 
     return print_json(result)
 
 
+def registry_action(args: argparse.Namespace) -> int:
+    if args.registry_command == "serve":
+        from .registry import serve_registry
+
+        serve_registry(
+            args.host,
+            args.port,
+            db_path=args.db_path,
+            offline_timeout_seconds=args.offline_timeout,
+        )
+        return 0
+    if args.registry_command == "health":
+        url = args.registry_url.rstrip("/") + "/health"
+        try:
+            with urlopen(Request(url, method="GET"), timeout=5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except (OSError, URLError, json.JSONDecodeError) as exc:
+            raise HyperGeryError(f"Registry health check failed for {url}: {exc}") from exc
+        return print_json(data)
+    return 2
+
+
+def hub_action(args: argparse.Namespace) -> int:
+    from .registry import RegistryClient, RegistryStore, serve_registry
+
+    if args.hub_command == "serve":
+        serve_registry(
+            args.host,
+            args.port,
+            db_path=args.db_path,
+            offline_timeout_seconds=args.offline_timeout,
+        )
+        return 0
+    if args.hub_command == "init-db":
+        store = RegistryStore(args.db_path)
+        return print_json({"ok": True, "db_path": str(store.db_path)})
+    client = RegistryClient(args.hub_url)
+    if args.hub_command == "health":
+        return print_json(client.health())
+    if args.hub_command == "vms":
+        return print_json({"vms": client.list_vms(args.host_id or None)})
+    return 2
+
+
+def agent_action(args: argparse.Namespace) -> int:
+    from .agent import AgentConfig, HyperGeryAgent, main as agent_main
+
+    if args.agent_command == "config" and args.config_command == "show":
+        return agent_main(["config", "show", *(["--config", args.config] if args.config else [])])
+    config = AgentConfig.load(args.config or None)
+    agent = HyperGeryAgent(config)
+    if args.agent_command == "once":
+        return print_json(agent.run_once())
+    if args.agent_command == "run":
+        agent.run_forever()
+        return 0
+    return 2
+
+
+def host_action(args: argparse.Namespace) -> int:
+    from .registry import RegistryClient
+
+    client = RegistryClient(args.hub_url)
+    if args.host_command == "list":
+        return print_json({"hosts": client.list_hosts()})
+    if args.host_command == "show":
+        return print_json(client.get_host(args.host_id))
+    if args.host_command == "test":
+        command = client.create_command(args.host_id, "ping", {})
+        if args.timeout > 0:
+            command = wait_for_command(
+                client,
+                command["command_id"],
+                timeout_seconds=args.timeout,
+                interval_seconds=args.interval,
+            )
+        return print_json(command)
+    return 2
+
+
+def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
+    from .migration import (
+        export_vm_package,
+        poll_remote_migration_status,
+        import_vm_package,
+        list_migration_packages,
+        migration_preflight,
+        start_remote_migration,
+        validate_vm_package,
+    )
+
+    if args.migrate_command == "preflight":
+        return print_json(
+            migration_preflight(
+                backend,
+                args.vm_name,
+                target_host=args.target_host or "",
+                target_vm_name=args.target_vm_name or "",
+                nas_path=args.nas_path or "",
+                allow_paused=args.allow_paused,
+                include_iso=not args.no_iso,
+                include_snapshots=not args.no_snapshots,
+            )
+        )
+    if args.migrate_command == "package":
+        return print_json(
+            export_vm_package(
+                backend,
+                args.vm_name,
+                args.output_dir,
+                target_vm_name=args.target_vm_name or "",
+                allow_paused=args.allow_paused,
+                include_iso=not args.no_iso,
+                include_snapshots=not args.no_snapshots,
+            )
+        )
+    if args.migrate_command == "validate-package":
+        return print_json(validate_vm_package(args.package_dir))
+    if args.migrate_command == "import":
+        return print_json(
+            import_vm_package(
+                backend,
+                args.package_dir,
+                target_vm_name=args.target_vm_name or "",
+                target_lab_id=args.target_lab_id or "",
+            )
+        )
+    if args.migrate_command == "list":
+        return print_json({"packages": list_migration_packages(args.path)})
+    if args.migrate_command == "status":
+        if getattr(args, "migration_id", ""):
+            from .registry import RegistryClient
+
+            client = RegistryClient(args.registry_url)
+            return print_json(poll_remote_migration_status(client, args.migration_id))
+        if not args.package_dir:
+            raise HyperGeryError("migrate status requires a package_dir or --migration-id.")
+        validation = validate_vm_package(args.package_dir)
+        manifest = validation.get("manifest") or {}
+        return print_json(
+            {
+                "ok": validation["ok"],
+                "migration_id": manifest.get("migration_id", ""),
+                "source_vm_name": manifest.get("source_vm_name", ""),
+                "target_vm_name": manifest.get("target_vm_name", ""),
+                "created_at": manifest.get("created_at", ""),
+                "errors": validation["errors"],
+                "warnings": validation["warnings"],
+            }
+        )
+    if args.migrate_command == "remote":
+        from .registry import RegistryClient
+
+        client = RegistryClient(args.registry_url)
+        return print_json(
+            start_remote_migration(
+                backend,
+                client,
+                args.vm_name,
+                args.nas_path,
+                source_host_id=args.source_host_id,
+                target_host_id=args.target_host_id,
+                target_vm_name=args.target_vm_name or "",
+                target_lab_id=args.target_lab_id or "",
+                allow_paused=args.allow_paused,
+                include_iso=not args.no_iso,
+                include_snapshots=not args.no_snapshots,
+                start_after_import=args.start_after_import,
+            )
+        )
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hypergery-cli")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight", help="Run non-GUI host dependency checks.")
+    sub.add_parser("doctor", help="Run v0.6 Hub, agent, NAS, Docker, and libvirt diagnostics without changing the system.")
     sub.add_parser("list-vms", help="List real libvirt VMs managed by HyperGery.")
     vm_parser = sub.add_parser("validate-vm", help="Print real libvirt state for a HyperGery VM.")
     vm_parser.add_argument("name")
@@ -299,9 +500,109 @@ def main(argv: list[str] | None = None) -> int:
     lab_instantiate_p.add_argument("--description", default="")
     lab_instantiate_p.add_argument("--dry-run", action="store_true",
                                    help="Validate and show plan without creating anything.")
+    registry_parser = sub.add_parser("registry", help="Run or query the NAS control plane registry.")
+    registry_sub = registry_parser.add_subparsers(dest="registry_command", required=True)
+    registry_serve = registry_sub.add_parser("serve")
+    registry_serve.add_argument("--host", default=os.environ.get("HYPERGERY_REGISTRY_HOST", "127.0.0.1"))
+    registry_serve.add_argument("--port", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_PORT", "8765")))
+    registry_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_REGISTRY_DB", ""))
+    registry_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90")))
+    registry_health = registry_sub.add_parser("health")
+    registry_health.add_argument("--registry-url", default=default_hub_url())
+    hub_parser = sub.add_parser("hub", help="Run or query the HyperGery Hub control plane.")
+    hub_sub = hub_parser.add_subparsers(dest="hub_command", required=True)
+    hub_serve = hub_sub.add_parser("serve")
+    hub_serve.add_argument("--host", default=os.environ.get("HYPERGERY_HUB_HOST", "127.0.0.1"))
+    hub_serve.add_argument("--port", type=int, default=int(os.environ.get("HYPERGERY_HUB_PORT", "8765")))
+    hub_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
+    hub_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_HUB_OFFLINE_TIMEOUT", os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90"))))
+    hub_health = hub_sub.add_parser("health")
+    hub_health.add_argument("--hub-url", default=default_hub_url())
+    hub_init = hub_sub.add_parser("init-db")
+    hub_init.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
+    hub_vms = hub_sub.add_parser("vms")
+    hub_vms.add_argument("host_id", nargs="?")
+    hub_vms.add_argument("--hub-url", default=default_hub_url())
+    agent_parser = sub.add_parser("agent", help="Run the HyperGery host agent.")
+    agent_sub = agent_parser.add_subparsers(dest="agent_command", required=True)
+    agent_run = agent_sub.add_parser("run")
+    agent_run.add_argument("--config", default="")
+    agent_once = agent_sub.add_parser("once")
+    agent_once.add_argument("--config", default="")
+    agent_config = agent_sub.add_parser("config")
+    agent_config_sub = agent_config.add_subparsers(dest="config_command", required=True)
+    agent_config_show = agent_config_sub.add_parser("show")
+    agent_config_show.add_argument("--config", default="")
+    host_parser = sub.add_parser("host", help="Query registry hosts and queue safe host commands.")
+    host_sub = host_parser.add_subparsers(dest="host_command", required=True)
+    host_list = host_sub.add_parser("list")
+    host_list.add_argument("--hub-url", "--registry-url", dest="hub_url", default=default_hub_url())
+    host_show = host_sub.add_parser("show")
+    host_show.add_argument("host_id")
+    host_show.add_argument("--hub-url", "--registry-url", dest="hub_url", default=default_hub_url())
+    host_test = host_sub.add_parser("test")
+    host_test.add_argument("host_id")
+    host_test.add_argument("--hub-url", "--registry-url", dest="hub_url", default=default_hub_url())
+    host_test.add_argument("--timeout", type=float, default=30.0)
+    host_test.add_argument("--interval", type=float, default=1.0)
+    migrate_parser = sub.add_parser("migrate", help="Create, validate, import, and inspect safe VM migration packages.")
+    migrate_sub = migrate_parser.add_subparsers(dest="migrate_command", required=True)
+    migrate_preflight = migrate_sub.add_parser("preflight", help="Check whether a VM can be packaged safely.")
+    migrate_preflight.add_argument("vm_name")
+    migrate_preflight.add_argument("--target-host", default="")
+    migrate_preflight.add_argument("--target-vm-name", default="")
+    migrate_preflight.add_argument("--nas-path", default="")
+    migrate_preflight.add_argument("--allow-paused", action="store_true")
+    migrate_preflight.add_argument("--no-iso", action="store_true")
+    migrate_preflight.add_argument("--no-snapshots", action="store_true")
+    migrate_package = migrate_sub.add_parser("package", help="Export a shutoff VM into a NAS migration package.")
+    migrate_package.add_argument("vm_name")
+    migrate_package.add_argument("output_dir")
+    migrate_package.add_argument("--target-vm-name", default="")
+    migrate_package.add_argument("--allow-paused", action="store_true")
+    migrate_package.add_argument("--no-iso", action="store_true")
+    migrate_package.add_argument("--no-snapshots", action="store_true")
+    migrate_validate = migrate_sub.add_parser("validate-package", help="Verify a migration package manifest and checksums.")
+    migrate_validate.add_argument("package_dir")
+    migrate_import = migrate_sub.add_parser("import", help="Import a validated migration package on this host.")
+    migrate_import.add_argument("package_dir")
+    migrate_import.add_argument("--target-vm-name", default="")
+    migrate_import.add_argument("--target-lab-id", default="")
+    migrate_list = migrate_sub.add_parser("list", help="List migration packages under a path.")
+    migrate_list.add_argument("--path", default=".")
+    migrate_status = migrate_sub.add_parser("status", help="Show package status and validation summary.")
+    migrate_status.add_argument("package_dir", nargs="?")
+    migrate_status.add_argument("--migration-id", default="")
+    migrate_status.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
+    migrate_remote = migrate_sub.add_parser("remote", help="Package a VM and queue target import through the registry.")
+    migrate_remote.add_argument("vm_name")
+    migrate_remote.add_argument("--nas-path", required=True)
+    migrate_remote.add_argument("--source-host-id", required=True)
+    migrate_remote.add_argument("--target-host-id", required=True)
+    migrate_remote.add_argument("--target-vm-name", default="")
+    migrate_remote.add_argument("--target-lab-id", default="")
+    migrate_remote.add_argument("--allow-paused", action="store_true")
+    migrate_remote.add_argument("--no-iso", action="store_true")
+    migrate_remote.add_argument("--no-snapshots", action="store_true")
+    migrate_remote.add_argument("--start-after-import", action="store_true")
+    migrate_remote.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "registry":
+            if getattr(args, "db_path", "") == "":
+                args.db_path = None
+            return registry_action(args)
+        if args.command == "hub":
+            if getattr(args, "db_path", "") == "":
+                args.db_path = None
+            return hub_action(args)
+        if args.command == "agent":
+            return agent_action(args)
+        if args.command == "host":
+            return host_action(args)
+        if args.command == "doctor":
+            return doctor_action()
         backend = HyperGeryBackend()
         if args.command == "preflight":
             return print_preflight(backend)
@@ -327,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
             return lab_topology_action(backend, args)
         if args.command == "lab-instantiate":
             return lab_instantiate_action(backend, args)
+        if args.command == "migrate":
+            return migrate_action(backend, args)
     except HyperGeryError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

@@ -1,4 +1,5 @@
 import unittest
+import json
 import os
 import tempfile
 from contextlib import redirect_stdout
@@ -173,6 +174,130 @@ class CliTests(unittest.TestCase):
             data = json.loads(buf.getvalue())
             self.assertTrue(data["dry_run"])
             self.assertIsNone(data["lab"])
+
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_migrate_preflight_cli_returns_json(self, backend_cls):
+        from hypergery_ubuntu.backend import CommandResult, PreflightItem
+
+        backend = backend_cls.return_value
+        backend.get_vm.return_value = VmSummary(
+            name="hg-source",
+            state="shut off",
+            lab_id="default-lab",
+            ram_mib=2048,
+            vcpus=2,
+            disk_path="",
+            iso_path="",
+            network="hg-net-default-lab",
+            graphics="spice",
+            xml="<domain><name>hg-source</name><devices/></domain>",
+        )
+        backend.list_snapshots.return_value = []
+        backend.preflight.return_value = [PreflightItem("libvirt connection", "OK", "Connected.")]
+        backend.virsh.return_value = CommandResult(["virsh"], 1, "", "not found")
+        buf = StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["migrate", "preflight", "hg-source", "--target-vm-name", "hg-target"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["target_vm_name"], "hg-target")
+        self.assertFalse(data["source_will_be_deleted"])
+
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_migrate_status_registry_parses_remote_command_status(self, backend_cls):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def migration(self, migration_id):
+                return {
+                    "migration_id": migration_id,
+                    "source_host_id": "source",
+                    "target_host_id": "target",
+                    "source_vm_name": "hg-source",
+                    "target_vm_name": "hg-target",
+                    "status": "waiting_target",
+                    "result": {"command_id": "cmd-1"},
+                    "warnings": [],
+                }
+
+            def command(self, command_id):
+                return {"command_id": command_id, "status": "running", "result": {}}
+
+            def update_migration_status(self, migration_id, payload):
+                return {"migration_id": migration_id, **payload}
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient):
+            with redirect_stdout(buf):
+                code = cli.main(["migrate", "status", "--migration-id", "mig-1", "--registry-url", "http://registry:8765"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["migration"]["status"], "importing")
+
+    def test_hub_init_db_cli_creates_store_without_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "hub.sqlite")
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = cli.main(["hub", "init-db", "--db-path", db_path])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["db_path"], db_path)
+
+    def test_hub_url_env_takes_precedence_for_host_commands(self):
+        with patch.dict(os.environ, {"HYPERGERY_HUB_URL": "http://hub.local:8765", "HYPERGERY_REGISTRY_URL": "http://old.local:8765"}):
+            parser_default = cli.default_hub_url()
+        self.assertEqual(parser_default, "http://hub.local:8765")
+
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_host_test_waits_for_ping_result(self, backend_cls):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+                self.reads = [
+                    {"command_id": "cmd-1", "status": "pending", "result": {}},
+                    {"command_id": "cmd-1", "status": "done", "result": {"pong": True}},
+                ]
+
+            def create_command(self, host_id, command_type, payload):
+                return {"command_id": "cmd-1", "target_host_id": host_id, "command_type": command_type, "status": "pending", "result": {}}
+
+            def command(self, command_id):
+                return self.reads.pop(0)
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient), patch("hypergery_ubuntu.cli.time.sleep"):
+            with redirect_stdout(buf):
+                code = cli.main(["host", "test", "hg-target", "--hub-url", "http://hub:8765", "--interval", "0.01"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["status"], "done")
+        self.assertTrue(data["result"]["pong"])
+        backend_cls.assert_not_called()
+
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_host_test_timeout_zero_only_queues_command(self, backend_cls):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def create_command(self, host_id, command_type, payload):
+                return {"command_id": "cmd-1", "target_host_id": host_id, "command_type": command_type, "status": "pending", "result": {}}
+
+            def command(self, command_id):
+                raise AssertionError("command status should not be polled")
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient):
+            with redirect_stdout(buf):
+                code = cli.main(["host", "test", "hg-target", "--hub-url", "http://hub:8765", "--timeout", "0"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["status"], "pending")
+        backend_cls.assert_not_called()
 
 
 if __name__ == "__main__":

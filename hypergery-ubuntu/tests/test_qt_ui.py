@@ -1,13 +1,35 @@
 import importlib.util
 import os
+import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 HAS_PYSIDE6 = importlib.util.find_spec("PySide6") is not None
 
+FAKE_ONLINE_HOST = {
+    "host_id": "target",
+    "status": "online",
+    "hostname": "target.local",
+    "kvm_ok": True,
+    "libvirt_ok": True,
+    "ram_total_mib": 8192,
+    "ram_free_mib": 4096,
+    "disk_free_mib": 20000,
+    "active_vms": [],
+}
+
+
+def migration_fake_backend():
+    try:
+        from tests.test_migration import FakeBackend
+    except ModuleNotFoundError:
+        from test_migration import FakeBackend
+    return FakeBackend
+
 if HAS_PYSIDE6:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication, QFileDialog
+    from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
 
     from hypergery_ubuntu.ui_qt.dialogs import FILE_DIALOG_OPTIONS
     from hypergery_ubuntu.ui_qt.main import configure_qt_application, configure_qt_environment
@@ -52,10 +74,199 @@ class QtUiTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.main_window import MainWindow
 
-        window = MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
 
-        backend_cls.return_value.list_vms.assert_not_called()
-        window.close()
+            backend_cls.return_value.list_vms.assert_not_called()
+            window.close()
+        self.assertIsNotNone(app)
+
+    def test_live_migration_dialog_blocks_running_vm(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp), state="running")
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+            dialog.nas_path.setText(str(Path(tmp) / "nas"))
+            dialog.target_host.setCurrentIndex(0)
+            dialog.run_preflight()
+
+            self.assertFalse(dialog.package_button.isEnabled())
+            self.assertIn("Running VM migration is blocked", dialog.result_view.toPlainText())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_live_migration_dialog_shows_hub_unavailable(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.backend import HyperGeryError
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp))
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.side_effect = HyperGeryError("registry offline")
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+
+            self.assertFalse(dialog.package_button.isEnabled())
+            self.assertIn("Hub not reachable", dialog.result_view.toPlainText())
+            self.assertIn("HYPERGERY_HUB_URL", dialog.result_view.toPlainText())
+            self.assertIn("docker compose", dialog.result_view.toPlainText())
+            self.assertIn("registry offline", dialog.result_view.toPlainText())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_hosts_panel_uses_hub_labels(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            self.assertEqual(window.remote_status_label.text(), "Hub not loaded")
+            self.assertIn("HyperGery Hub", window.remote_detail.placeholderText())
+            self.assertTrue(hasattr(window, "hub_status_label"))
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_hosts_render_updates_vm_count_from_worker_result(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_remote_hosts({"hosts": [FAKE_ONLINE_HOST], "vm_count": 3})
+
+            self.assertEqual(window.hub_vm_count_label.text(), "3")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_render_hub_status_does_not_fetch_vm_inventory(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=4)
+
+            registry_cls.assert_not_called()
+            self.assertEqual(window.hub_vm_count_label.text(), "4")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_render_hub_status_marks_missing_inventory_unavailable(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=None)
+
+            self.assertEqual(window.hub_vm_count_label.text(), "unavailable")
+            window.close()
+        self.assertIsNotNone(app)
+
+    def test_app_settings_omits_unchanged_env_derived_hub_url(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import AppSettingsDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "HYPERGERY_CONFIG": str(Path(tmp) / "config.json"),
+                "HYPERGERY_HUB_URL": "http://env-hub.local:8765",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                dialog = AppSettingsDialog(object())
+
+            self.assertNotIn("hub_url", dialog.values())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_app_settings_rejects_invalid_hub_url(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import AppSettingsDialog
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HYPERGERY_CONFIG": str(Path(tmp) / "config.json")}, clear=False):
+            dialog = AppSettingsDialog(object())
+            dialog.hub_url.setText("foo")
+            dialog.validate_and_accept()
+
+            self.assertNotEqual(dialog.result(), int(QDialog.DialogCode.Accepted))
+            self.assertIn("http:// or https://", dialog.status.text())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_app_settings_values_include_user_edits(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import AppSettingsDialog
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HYPERGERY_CONFIG": str(Path(tmp) / "config.json")}, clear=False):
+            dialog = AppSettingsDialog(object())
+            dialog.hub_url.setText("http://edited-hub.local:8765")
+
+            self.assertEqual(dialog.values()["hub_url"], "http://edited-hub.local:8765")
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_app_settings_save_oserror_shows_error(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            fake_dialog = Mock()
+            fake_dialog.exec.return_value = QDialog.DialogCode.Accepted
+            fake_dialog.values.return_value = {"hub_url": "http://saved-hub.local:8765"}
+            with (
+                patch("hypergery_ubuntu.ui_qt.main_window.AppSettingsDialog", return_value=fake_dialog),
+                patch("hypergery_ubuntu.config.HyperGeryConfig.save", side_effect=OSError("disk full")),
+                patch.object(window, "show_error") as show_error,
+            ):
+                window.app_settings()
+
+            show_error.assert_called_once()
+            self.assertIn("Cannot save HyperGery settings", show_error.call_args[0][0])
+            window.close()
+        self.assertIsNotNone(app)
+
+    def test_live_migration_dialog_uses_config_defaults(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.config import HyperGeryConfig
+        from hypergery_ubuntu.backend import HyperGeryError
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            HyperGeryConfig(
+                hub_url="http://config-hub.local:8765",
+                host_id="source-from-config",
+                nas_staging_path=str(Path(tmp) / "nas"),
+            ).save(config_path)
+            env = {"HYPERGERY_CONFIG": str(config_path)}
+            backend = MigrationFakeBackend(Path(tmp))
+            with patch.dict(os.environ, env, clear=True), patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.side_effect = HyperGeryError("hub offline")
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+            self.assertEqual(dialog.registry_url.text(), "http://config-hub.local:8765")
+            self.assertEqual(dialog.source_host_id.text(), "source-from-config")
+            self.assertEqual(dialog.nas_path.text(), str(Path(tmp) / "nas"))
+            dialog.close()
         self.assertIsNotNone(app)
 
 

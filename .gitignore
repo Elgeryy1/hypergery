@@ -44,6 +44,7 @@ state/
 # Secrets
 .env
 .env.*
+!docker/.env.example
 *.key
 *.pem
 *.crt

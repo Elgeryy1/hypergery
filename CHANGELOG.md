@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.6.0 - NAS Clone Migration
+
+Release scope:
+
+- NAS Control Plane.
+- HyperGery Agent.
+- Host Discovery.
+- NAS Migration Staging.
+- VM Package Export.
+- VM Package Import.
+- Live Migration UI action.
+- Right-click VM context menu.
+- Migration preflight.
+- Migration progress/logs.
+- CLI migration commands.
+
+Release strategy: v0.6.0 presents the UI action as "Live Migration", but the shipped safe implementation is NAS Clone Migration. Source VMs, disks, and metadata remain untouched. Running VM migration is blocked unless a real safe libvirt/QEMU strategy is available.
+
+Released in v0.6.0:
+
+- HyperGery Hub Docker / NAS control plane with host registration, heartbeat/offline tracking, safe command queue, VM inventory, events, migration status records, Docker Compose setup, Docker healthcheck, and local Docker volume persistence for the SQLite DB.
+- HyperGery Agent with config file support, capability heartbeat, safe command allowlist, migration command execution, and CLI `agent` commands.
+- Remote Hosts support with CLI `host list`, `host show`, and `host test`.
+- First-run Ubuntu bootstrap in `scripts/dev-run.sh` and `scripts/bootstrap-ubuntu.sh`.
+- Migration package module with VM asset collection, offline preflight, package export, package validation, target identity regeneration, import rollback, and package listing.
+- CLI `migrate preflight`, `migrate package`, `migrate validate-package`, `migrate import`, `migrate list`, and `migrate status`.
+- NAS Clone Migration remote orchestration: source package creation in NAS staging, Hub `import_vm_package` command creation for the target host, target agent import, migration status polling helpers, and source VM preservation.
+- Qt **Remote Hosts** panel with Hub host list, online/offline state, last seen, RAM/disk info, KVM/libvirt readiness, active VMs, Refresh, and Test command.
+- Qt **Live Migration** VM action with real target host selection, target VM name, include ISO/snapshots, start-after-import, preflight output, and Start Migration gated by successful preflight.
+- CLI `migrate remote` and `migrate status --migration-id` for registry-backed orchestration and polling.
+- Separate HyperGery Console window for local VNC displays, with toolbar actions, explicit input capture/release, and Right Ctrl as Host Key.
+- SPICE VMs now show a clear integrated-console fallback message and keep using the external viewer path.
+- SPICE console UX now uses a clear VNC-required card, avoids input capture without an active VNC connection, and offers **Switch to VNC** while the VM is shut off.
+- Switching a shut off VM from SPICE to VNC now removes SPICE-only audio/channel XML so libvirt can redefine the domain.
+- HyperGery Console now auto-connects running VNC VMs and uses Scale to Fit rendering with a centered framebuffer and real-size scrollbars.
+- Toolbar split between integrated **Console** and **External Console** so `virt-viewer` / `remote-viewer` remain available for SPICE and fallback.
+- App-level settings for Hub URL, host identity, NAS staging path, default display, default ISO folder, and default VM storage path in `~/.config/hypergery/config.json`, with environment variables as overrides.
+- CLI `doctor` command for non-destructive diagnostics of Python, KVM, libvirt, tools, Hub reachability, NAS staging, Docker Compose, and Hub VM inventory.
+- Remote Hosts Hub status summary showing Hub URL, online/offline state, last check, online host count, VM record count, and NAS staging writability.
+- v0.6 quick start guide at `docs/QUICK_START_V06.md`.
+
+Validation status for final release:
+
+- Automated tests pass: 214 tests OK in the Qt/offscreen venv and 214 tests OK with 15 skipped on system Python.
+- Docker Hub smoke passed: `docker compose config`, `build`, `up`, `/health`, `/hosts`, and `/vms`.
+- Hub/Agent smoke passed: agent registration, host list, VM inventory, and queued host test with `pong=true`.
+- Local NAS Clone Migration E2E passed with two logical agents on one libvirt host: package created on NAS staging, source VM/disk preserved, target imported, UUID/MAC regenerated, target started, and target cleanup completed.
+- Real two-physical-host NAS Clone Migration smoke passed with `hg-source` and `hg-target`: both hosts online with KVM/libvirt OK, NAS staging writable at `/mnt/hypergery-nas/hypergery`, command ping completed with `pong=true`, migration `hg-v06-2host-source-f67154f7803b` reached `done`, source VM/disk remained intact, target UUID/MAC were regenerated, target booted to `running`, target cleanup completed, and the NAS package was retained.
+
+Not included in v0.6.0:
+
+- True live RAM migration.
+- HG-MEMDIFF or any custom dirty-page transfer protocol.
+- AutoBoost.
+- Android Hub.
+- IsardVDI.
+- SPICE integrated console.
+
+Future topology polish:
+
+- v0.7.0 or v0.6.x: export topology to PNG/SVG.
+- v0.7.0 or v0.6.x: zoom and pan for large labs.
+- v0.7.0 or v0.6.x: role badges in topology nodes.
+- v0.7.0 or v0.6.x: progress per VM during lab instantiation.
+- v0.7.0 or v0.6.x: improved cleanup actions.
+- v0.7.0 or v0.6.x: optional removal of Tkinter legacy fallback.
+
 ## v0.5.0 - Lab Topology & UX
 
 HyperGery v0.5.0 — topología visual de labs y mejoras de UX.

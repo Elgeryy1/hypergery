@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import html
+import os
+import socket
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,6 +35,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
+from ..config import CONFIG_FIELDS, HyperGeryConfig, default_config_values, effective_config
+from ..registry import RegistryClient
 from ..templates import normalize_template_id
 from .lab_helpers import build_lab_preview
 from .styles import details_block
@@ -43,9 +48,141 @@ if TYPE_CHECKING:
 FILE_DIALOG_OPTIONS = QFileDialog.Option.DontUseNativeDialog
 
 
+class AppSettingsDialog(QDialog):
+    def __init__(self, backend: HyperGeryBackend, parent=None) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.setWindowTitle("HyperGery Settings")
+        effective = effective_config()
+        saved = HyperGeryConfig.load()
+        self._effective = effective
+        self._initial_values = {field: effective[field].value for field in CONFIG_FIELDS}
+
+        self.hub_url = QLineEdit(saved.hub_url or effective["hub_url"].value)
+        self.host_id = QLineEdit(saved.host_id or effective["host_id"].value)
+        self.host_name = QLineEdit(saved.host_name or effective["host_name"].value)
+        self.nas_staging_path = QLineEdit(saved.nas_staging_path or effective["nas_staging_path"].value)
+        self.default_display = QComboBox()
+        self.default_display.addItems(["vnc", "spice"])
+        display = saved.default_display or effective["default_display"].value
+        idx = self.default_display.findText(display)
+        self.default_display.setCurrentIndex(idx if idx >= 0 else 0)
+        self.default_iso_folder = QLineEdit(saved.default_iso_folder or effective["default_iso_folder"].value)
+        self.default_vm_storage_path = QLineEdit(saved.default_vm_storage_path or effective["default_vm_storage_path"].value)
+        self.status = QLabel("")
+        self.status.setObjectName("mutedLabel")
+
+        form = QFormLayout()
+        for label, field, key in (
+            ("Hub URL", self.hub_url, "hub_url"),
+            ("Host ID", self.host_id, "host_id"),
+            ("Host name", self.host_name, "host_name"),
+            ("NAS staging path", self.nas_staging_path, "nas_staging_path"),
+            ("Default display", self.default_display, "default_display"),
+            ("Default ISO folder", self.default_iso_folder, "default_iso_folder"),
+            ("Default VM storage path", self.default_vm_storage_path, "default_vm_storage_path"),
+        ):
+            row = QHBoxLayout()
+            row.addWidget(field, 1)
+            source = QLabel(effective[key].source)
+            source.setObjectName("mutedLabel")
+            row.addWidget(source)
+            form.addRow(label, row)
+
+        test_hub = QPushButton("Test Hub")
+        test_hub.clicked.connect(self.test_hub)
+        test_nas = QPushButton("Test NAS Write")
+        test_nas.clicked.connect(self.test_nas)
+        test_libvirt = QPushButton("Test libvirt")
+        test_libvirt.clicked.connect(self.test_libvirt)
+        reset = QPushButton("Reset Defaults")
+        reset.clicked.connect(self.reset_defaults)
+        action_row = QHBoxLayout()
+        action_row.addWidget(test_hub)
+        action_row.addWidget(test_nas)
+        action_row.addWidget(test_libvirt)
+        action_row.addWidget(reset)
+        action_row.addStretch()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addLayout(action_row)
+        layout.addWidget(self.status)
+        layout.addWidget(buttons)
+        self.resize(760, 380)
+
+    def values(self) -> dict[str, str]:
+        current = {
+            "hub_url": self.hub_url.text().strip(),
+            "host_id": self.host_id.text().strip(),
+            "host_name": self.host_name.text().strip(),
+            "nas_staging_path": self.nas_staging_path.text().strip(),
+            "default_display": self.default_display.currentText(),
+            "default_iso_folder": self.default_iso_folder.text().strip(),
+            "default_vm_storage_path": self.default_vm_storage_path.text().strip(),
+        }
+        return {
+            field: value
+            for field, value in current.items()
+            if self._effective[field].source == "config" or value != self._initial_values[field]
+        }
+
+    def validate_and_accept(self) -> None:
+        hub_url = self.hub_url.text().strip()
+        if hub_url and not (hub_url.startswith("http://") or hub_url.startswith("https://")):
+            self.status.setText("Hub URL must start with http:// or https://")
+            return
+        self.accept()
+
+    def test_hub(self) -> None:
+        try:
+            result = RegistryClient(self.hub_url.text().strip(), timeout=3).health()
+            self.status.setText(f"Hub OK: {result}")
+        except HyperGeryError as exc:
+            self.status.setText(f"Hub FAIL: {exc}")
+
+    def test_nas(self) -> None:
+        path = Path(self.nas_staging_path.text().strip()).expanduser()
+        if not path.is_dir():
+            self.status.setText(f"NAS FAIL: path does not exist: {path}")
+            return
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".hypergery-write-", dir=path, delete=True) as fh:
+                fh.write(b"ok")
+                fh.flush()
+            self.status.setText(f"NAS OK: writable {path}")
+        except OSError as exc:
+            self.status.setText(f"NAS FAIL: {exc}")
+
+    def test_libvirt(self) -> None:
+        try:
+            items = self.backend.preflight()
+        except Exception as exc:
+            self.status.setText(f"libvirt FAIL: {exc}")
+            return
+        failures = [item for item in items if item.status == "Error" and item.name in {"libvirt connection", "virsh"}]
+        self.status.setText("libvirt OK" if not failures else "libvirt FAIL: " + "; ".join(item.detail for item in failures))
+
+    def reset_defaults(self) -> None:
+        defaults = default_config_values()
+        self.hub_url.setText(defaults["hub_url"])
+        self.host_id.setText(defaults["host_id"])
+        self.host_name.setText(defaults["host_name"])
+        self.nas_staging_path.setText(defaults["nas_staging_path"])
+        self.default_display.setCurrentIndex(self.default_display.findText(defaults["default_display"]))
+        self.default_iso_folder.setText(defaults["default_iso_folder"])
+        self.default_vm_storage_path.setText(defaults["default_vm_storage_path"])
+        self.status.setText("Defaults loaded. Select Save to persist them.")
+
+
 class IdentityPage(QWizardPage):
-    def __init__(self) -> None:
+    def __init__(self, default_iso_folder: str = "") -> None:
         super().__init__()
+        self.default_iso_folder = default_iso_folder
         self.setTitle("Identity")
         self.setSubTitle("Choose the VM name and boot ISO.")
         self.error_label = QLabel("")
@@ -82,7 +219,7 @@ class IdentityPage(QWizardPage):
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Select boot ISO",
-            "",
+            self.default_iso_folder,
             "ISO images (*.iso);;All files (*)",
             "",
             FILE_DIALOG_OPTIONS,
@@ -133,11 +270,12 @@ class ResourcesPage(QWizardPage):
 
 
 class IntegrationPage(QWizardPage):
-    def __init__(self, default_lab_id: str = "default-lab") -> None:
+    def __init__(self, default_lab_id: str = "default-lab", default_disk_dir: str = "", default_display: str = "") -> None:
         super().__init__()
         self.setTitle("Storage & Network")
         self.setSubTitle("Choose disk location, lab network and console type.")
         self.disk_dir = QLineEdit()
+        self.disk_dir.setText(default_disk_dir)
         self.disk_dir.setPlaceholderText("Default HyperGery VM directory")
         browse = QPushButton("Browse")
         browse.clicked.connect(self.pick_dir)
@@ -145,6 +283,10 @@ class IntegrationPage(QWizardPage):
         self.network.addItems(["nat", "isolated"])
         self.display = QComboBox()
         self.display.addItems(["spice", "vnc"])
+        if default_display:
+            idx = self.display.findText(default_display)
+            if idx >= 0:
+                self.display.setCurrentIndex(idx)
         self.lab_id = QLineEdit(default_lab_id or "default-lab")
 
         disk_row = QHBoxLayout()
@@ -159,6 +301,9 @@ class IntegrationPage(QWizardPage):
         hint = QLabel("Empty disk directory uses ~/.local/share/hypergery/vms/<vm-name>/")
         hint.setObjectName("mutedLabel")
         form.addRow("", hint)
+        display_hint = QLabel("Integrated console requires VNC. SPICE uses external viewer.")
+        display_hint.setObjectName("mutedLabel")
+        form.addRow("", display_hint)
         self.registerField("disk_dir", self.disk_dir)
         self.registerField("network", self.network, "currentText", self.network.currentTextChanged)
         self.registerField("display", self.display, "currentText", self.display.currentTextChanged)
@@ -212,9 +357,14 @@ class VMWizard(QWizard):
         super().__init__(parent)
         self.setWindowTitle("Create Virtual Machine")
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
-        self.identity_page = IdentityPage()
+        app_defaults = effective_config()
+        self.identity_page = IdentityPage(app_defaults["default_iso_folder"].value)
         self.resources_page = ResourcesPage()
-        self.integration_page = IntegrationPage(default_lab_id)
+        self.integration_page = IntegrationPage(
+            default_lab_id,
+            app_defaults["default_vm_storage_path"].value,
+            app_defaults["default_display"].value,
+        )
         self.review_page = ReviewPage(self)
         self.addPage(self.identity_page)
         self.addPage(self.resources_page)
@@ -521,6 +671,9 @@ class SettingsDialog(QDialog):
         form.addRow("Network", self.network)
         form.addRow("Display", self.display)
         form.addRow("Lab ID", self.lab_id)
+        display_hint = QLabel("Integrated console requires VNC. SPICE uses external viewer.")
+        display_hint.setObjectName("mutedLabel")
+        form.addRow("", display_hint)
         form.addRow("", self.error_label)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -637,6 +790,232 @@ class DeleteConfirmationDialog(QDialog):
 
     def delete_disks(self) -> bool:
         return self.delete_disk.isChecked()
+
+
+class LiveMigrationDialog(QDialog):
+    def __init__(self, backend: HyperGeryBackend, vm: VmSummary, parent=None) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.vm = vm
+        self.preflight_result: dict | None = None
+        self.hosts: list[dict] = []
+        self.setWindowTitle(f"Live Migration: {vm.name}")
+        title = QLabel(vm.name)
+        title.setObjectName("sectionTitle")
+        notice = QLabel(
+            "v0.6.0 uses a safe NAS Clone Migration package. The source VM and source disks are not deleted."
+        )
+        notice.setObjectName("mutedLabel")
+        notice.setWordWrap(True)
+
+        app_config = effective_config()
+        self.registry_url = QLineEdit(app_config["hub_url"].value)
+        self.source_host_id = QLineEdit(app_config["host_id"].value)
+        self.target_host = QComboBox()
+        refresh_hosts = QPushButton("Refresh Hosts")
+        refresh_hosts.clicked.connect(self.refresh_hosts)
+        host_row = QHBoxLayout()
+        host_row.addWidget(self.target_host, 1)
+        host_row.addWidget(refresh_hosts)
+        self.target_name = QLineEdit(f"{vm.name}-migrated")
+        self.nas_path = QLineEdit(app_config["nas_staging_path"].value)
+        browse = QPushButton("Browse")
+        browse.clicked.connect(self.pick_nas_path)
+        path_row = QHBoxLayout()
+        path_row.addWidget(self.nas_path, 1)
+        path_row.addWidget(browse)
+        self.include_iso = QCheckBox("Include attached ISO")
+        self.include_iso.setChecked(True)
+        self.include_snapshots = QCheckBox("Include snapshot file assets when detectable")
+        self.include_snapshots.setChecked(True)
+        self.allow_paused = QCheckBox("Allow paused VM packaging")
+        self.start_after_import = QCheckBox("Start after import")
+        self.result_view = QTextEdit()
+        self.result_view.setReadOnly(True)
+        self.result_view.setMinimumHeight(190)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+
+        form = QFormLayout()
+        form.addRow("Hub URL", self.registry_url)
+        form.addRow("Source host ID", self.source_host_id)
+        form.addRow("Target host", host_row)
+        form.addRow("Target VM name", self.target_name)
+        form.addRow("NAS staging path", path_row)
+        form.addRow("", self.include_iso)
+        form.addRow("", self.include_snapshots)
+        form.addRow("", self.allow_paused)
+        form.addRow("", self.start_after_import)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.preflight_button = buttons.addButton("Run Preflight", QDialogButtonBox.ButtonRole.ActionRole)
+        self.package_button = buttons.addButton("Start Migration", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.package_button.setObjectName("primaryButton")
+        self.package_button.setEnabled(False)
+        buttons.rejected.connect(self.reject)
+        self.preflight_button.clicked.connect(self.run_preflight)
+        self.package_button.clicked.connect(self.accept)
+        for widget in (self.registry_url, self.source_host_id, self.target_name, self.nas_path):
+            widget.textChanged.connect(self.invalidate_preflight)
+        for widget in (self.include_iso, self.include_snapshots, self.allow_paused):
+            widget.toggled.connect(self.invalidate_preflight)
+        self.target_host.currentIndexChanged.connect(self.invalidate_preflight)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addWidget(notice)
+        layout.addLayout(form)
+        layout.addWidget(self.result_view)
+        layout.addWidget(self.error_label)
+        layout.addWidget(buttons)
+        self.resize(760, 560)
+        self.refresh_hosts()
+
+    def refresh_hosts(self) -> None:
+        from ..registry import RegistryClient
+
+        self.error_label.clear()
+        self.target_host.clear()
+        self.hosts = []
+        try:
+            hosts = RegistryClient(self.registry_url.text().strip()).list_hosts()
+        except HyperGeryError as exc:
+            self.result_view.setPlainText(
+                "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
+                f"{exc}"
+            )
+            self.invalidate_preflight()
+            return
+        self.hosts = hosts
+        for host in hosts:
+            host_id = str(host.get("host_id") or "")
+            status = str(host.get("status") or "offline")
+            label = f"{host_id} ({status})"
+            if host.get("hostname"):
+                label += f" - {host.get('hostname')}"
+            self.target_host.addItem(label, host_id)
+            index = self.target_host.count() - 1
+            self.target_host.model().item(index).setEnabled(status == "online")
+        if not hosts:
+            self.result_view.setPlainText("Hub returned no hosts. Start agents on source and target hosts first.")
+        else:
+            self.result_view.setPlainText(self._format_hosts(hosts))
+        self.invalidate_preflight()
+
+    def pick_nas_path(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select NAS staging directory", self.nas_path.text(), FILE_DIALOG_OPTIONS)
+        if path:
+            self.nas_path.setText(path)
+
+    def invalidate_preflight(self) -> None:
+        self.preflight_result = None
+        self.package_button.setEnabled(False)
+
+    def values(self) -> dict:
+        return {
+            "vm_name": self.vm.name,
+            "registry_url": self.registry_url.text().strip(),
+            "source_host_id": self.source_host_id.text().strip(),
+            "target_host_id": str(self.target_host.currentData() or ""),
+            "target_vm_name": self.target_name.text().strip(),
+            "nas_path": self.nas_path.text().strip(),
+            "include_iso": self.include_iso.isChecked(),
+            "include_snapshots": self.include_snapshots.isChecked(),
+            "allow_paused": self.allow_paused.isChecked(),
+            "start_after_import": self.start_after_import.isChecked(),
+        }
+
+    def run_preflight(self) -> None:
+        from ..migration import migration_preflight
+
+        self.error_label.clear()
+        values = self.values()
+        if not values["target_vm_name"]:
+            self.error_label.setText("Target VM name is required.")
+            return
+        if not values["source_host_id"]:
+            self.error_label.setText("Source host ID is required.")
+            return
+        if not values["target_host_id"]:
+            self.error_label.setText("Select an online target host from the Hub.")
+            return
+        if not values["nas_path"]:
+            self.error_label.setText("NAS staging path is required.")
+            return
+        target = next((host for host in self.hosts if host.get("host_id") == values["target_host_id"]), None)
+        if not target or target.get("status") != "online":
+            self.error_label.setText("Selected target host is offline.")
+            self.package_button.setEnabled(False)
+            return
+        if not target.get("kvm_ok") or not target.get("libvirt_ok"):
+            self.error_label.setText("Selected target host is not ready: KVM/libvirt check failed.")
+            self.package_button.setEnabled(False)
+            return
+        try:
+            result = migration_preflight(
+                self.backend,
+                self.vm.name,
+                target_host=values["target_host_id"],
+                target_vm_name=values["target_vm_name"],
+                nas_path=values["nas_path"],
+                allow_paused=values["allow_paused"],
+                include_iso=values["include_iso"],
+                include_snapshots=values["include_snapshots"],
+            )
+        except HyperGeryError as exc:
+            self.error_label.setText(str(exc))
+            self.package_button.setEnabled(False)
+            return
+        self.preflight_result = result
+        self.result_view.setPlainText(self._format_preflight(result))
+        self.package_button.setEnabled(bool(result.get("ok")))
+
+    def _format_preflight(self, result: dict) -> str:
+        errors = result.get("errors", [])
+        warnings = result.get("warnings", [])
+        assets = result.get("assets", [])
+        lines = [
+            f"Status: {'OK' if result.get('ok') else 'Blocked'}",
+            f"Strategy: {result.get('strategy', 'offline-copy')}",
+            f"Source will be deleted: {result.get('source_will_be_deleted')}",
+            f"Estimated package size: {result.get('estimated_size_bytes', 0)} bytes",
+            "",
+            "Errors:",
+            *(f"- {item}" for item in errors),
+            "" if errors else "- none",
+            "",
+            "Warnings:",
+            *(f"- {item}" for item in warnings),
+            "" if warnings else "- none",
+            "",
+            "Assets:",
+        ]
+        if assets:
+            lines.extend(
+                f"- {asset.get('type')} {asset.get('path')} ({asset.get('size_bytes', 0)} bytes)"
+                for asset in assets
+            )
+        else:
+            lines.append("- none")
+        return "\n".join(lines)
+
+    def _format_hosts(self, hosts: list[dict]) -> str:
+        lines = ["Remote hosts:"]
+        for host in hosts:
+            active = ", ".join(host.get("active_vms") or []) or "none"
+            lines.append(
+                f"- {host.get('host_id')} status={host.get('status')} last_seen={host.get('last_seen')} "
+                f"ram={host.get('ram_free_mib')}/{host.get('ram_total_mib')} MiB "
+                f"disk_free={host.get('disk_free_mib')} MiB "
+                f"kvm={host.get('kvm_ok')} libvirt={host.get('libvirt_ok')} active_vms={active}"
+            )
+        return "\n".join(lines)
+
+    def accept(self) -> None:
+        if not self.preflight_result or not self.preflight_result.get("ok"):
+            self.error_label.setText("Run a successful preflight before starting migration.")
+            return
+        super().accept()
 
 
 class SnapshotDialog(QDialog):

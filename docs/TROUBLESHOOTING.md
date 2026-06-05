@@ -1,5 +1,90 @@
 # Troubleshooting
 
+## Hub Not Reachable
+
+If Remote Hosts or Live Migration shows `Hub not reachable`, start the Docker service or point the app/agent at the NAS Hub:
+
+```bash
+export HYPERGERY_HUB_URL=http://192.168.1.150:8765
+curl http://192.168.1.150:8765/health
+```
+
+On the NAS:
+
+```bash
+cd /share/CACHEDEV2_DATA/Gerard/proyectos_hacen_bulto_en_CV/miversiondevirtualbox/docker
+docker compose up -d
+docker compose logs -f
+```
+
+Do not put passwords, SSH keys, or SMB credentials in `.env`.
+
+## Docker Container Unhealthy
+
+Check the Hub container health and logs:
+
+```bash
+cd /share/CACHEDEV2_DATA/Gerard/proyectos_hacen_bulto_en_CV/miversiondevirtualbox/docker
+docker compose ps
+docker inspect --format '{{.State.Health.Status}}' hypergery-hub
+docker compose logs --tail=100
+curl http://127.0.0.1:8765/health
+```
+
+If the healthcheck fails, confirm port `8765` is not already occupied and rebuild the image:
+
+```bash
+docker compose config
+docker compose build
+docker compose up -d --force-recreate
+```
+
+Do not run `docker compose down -v` unless you intentionally want to remove the Hub DB volume.
+
+## SQLite DB Locked or Corrupted
+
+The Hub SQLite DB must live in Docker volume `hypergery-hub-data`, not on the NAS/SMB share. If logs show `sqlite3.OperationalError: database is locked`, confirm Compose maps `/data` to a Docker volume:
+
+```bash
+cd docker
+docker compose config | grep -A4 /data
+```
+
+Expected: `/data` is a volume. The NAS bind mount should appear only as `/hypergery`.
+
+If the old `docker/data/hypergery-hub.sqlite` file exists from a failed smoke, stop the container and move that local repo artifact aside. Do not delete NAS migration packages.
+
+## First Run on a Fresh Ubuntu Laptop
+
+Use the first-run launcher:
+
+```bash
+git clone https://github.com/Elgeryy1/hypergery.git
+cd hypergery
+./scripts/dev-run.sh
+```
+
+The script checks:
+
+- `qemu-system-x86_64`, `qemu-img`, `virsh`, and a console viewer (`virt-viewer` or `remote-viewer`).
+- `libvirtd` or modular `virtqemud` services.
+- `/dev/kvm` existence and current-user access.
+- `kvm` and `libvirt` group membership.
+- `python3`, `python3-venv`, `python3-pip`.
+- PySide6 and HyperGery inside `~/.venvs/hypergery`.
+
+If anything is missing, the script prints a summary and asks before installing. It does not run sudo silently. `--install` skips the interactive question but sudo/pkexec can still ask for your password.
+
+```bash
+./scripts/dev-run.sh --check-only
+./scripts/dev-run.sh --no-install
+./scripts/dev-run.sh --install
+```
+
+The launcher always creates the venv at `~/.venvs/hypergery` with `--copies`; it does not create a local `.venv` inside the repository.
+
+If the script adds you to `kvm` or `libvirt`, log out and back in before expecting `/dev/kvm` and `qemu:///system` access to work reliably.
+
 ## Virtualenv Fails on a NAS or Filesystem Without Symlinks
 
 Some NAS mounts and shared filesystems do not handle Python virtualenv symlinks
@@ -57,7 +142,7 @@ Log out and back in before rerunning HyperGery.
 If `/etc/group` already lists your user in `libvirt` but `id -nG` does not, the current login session has not inherited the new group yet. Log out completely and back in, or use a temporary subsession:
 
 ```bash
-sg libvirt -c 'cd /path/to/miversiondevirtualbox && source ~/.venvs/hypergery/bin/activate && ./scripts/dev-run.sh'
+sg libvirt -c 'cd /path/to/hypergery && ./scripts/dev-run.sh --no-install'
 ```
 
 ## VM State Looks Wrong or Does Not Refresh
@@ -118,3 +203,122 @@ If this still fails, launch HyperGery from a normal terminal:
 Installer ISOs and early boot environments may ignore ACPI shutdown. Use Force Off for test VMs when ACPI does not complete within a reasonable timeout.
 
 The acceptance script falls back to force off before testing snapshots on a stopped VM.
+
+## Hub Is Not Reachable
+
+Confirm the Hub is running and the URL matches on every host:
+
+```bash
+python -m hypergery_ubuntu.cli hub health --hub-url http://nas-or-hub-host:8765
+python -m hypergery_ubuntu.cli host list --hub-url http://nas-or-hub-host:8765
+```
+
+In the Qt app, the Remote Hosts panel uses `HYPERGERY_HUB_URL`, then the compatible `HYPERGERY_REGISTRY_URL` fallback, then `http://127.0.0.1:8765`.
+
+## Target Host Is Offline or Blocked
+
+The Hub marks a host offline when its heartbeat is stale. Run the agent on the target host:
+
+```bash
+python -m hypergery_ubuntu.cli agent once
+python -m hypergery_ubuntu.cli agent run
+```
+
+If KVM or libvirt shows blocked, rerun preflight on that target host:
+
+```bash
+python -m hypergery_ubuntu.cli preflight
+```
+
+Fix `/dev/kvm`, `libvirt` group membership, or libvirt service issues before starting migration.
+
+## Agent Not Showing
+
+Verify the effective Hub URL, host ID, host name, and NAS staging path:
+
+```bash
+python -m hypergery_ubuntu.cli agent config show
+python -m hypergery_ubuntu.cli doctor
+```
+
+Then send one heartbeat:
+
+```bash
+export HYPERGERY_HUB_URL=http://192.168.1.150:8765
+export HYPERGERY_HOST_ID=<stable-host-id>
+export HYPERGERY_HOST_NAME="<readable host name>"
+export HYPERGERY_NAS_STAGING_PATH=/mnt/hypergery-nas/hypergery
+python -m hypergery_ubuntu.cli agent once
+python -m hypergery_ubuntu.cli host list
+```
+
+Host IDs must be stable and unique per physical host.
+
+## NAS Staging Not Writable
+
+Confirm the path exists on every participating host and is writable by the current user:
+
+```bash
+mkdir -p /mnt/hypergery-nas/hypergery/migrations
+touch /mnt/hypergery-nas/hypergery/migrations/write-test
+rm /mnt/hypergery-nas/hypergery/migrations/write-test
+```
+
+Do not use Windows paths. Use the same Linux NAS mount path on source and target when possible.
+
+## Live Migration Blocked Because VM Is Running
+
+v0.6.0 does not implement true live RAM migration or HG-MEMDIFF. Running VM copy is blocked by design. Shut down the source VM before NAS Clone Migration:
+
+```bash
+python -m hypergery_ubuntu.cli validate-vm <vm-name>
+python -m hypergery_ubuntu.cli shutdown <vm-name>
+python -m hypergery_ubuntu.cli wait-state <vm-name> "shut off" --timeout 120
+```
+
+Use Force Off only for disposable test VMs when ACPI shutdown does not respond.
+
+## Target Name Already Exists
+
+Migration preflight blocks target name conflicts. Pick a new target name or clean up only the test target VM you created:
+
+```bash
+virsh --connect qemu:///system dominfo <target-name>
+python -m hypergery_ubuntu.cli migrate preflight <source-vm> \
+  --target-vm-name <new-target-name> \
+  --nas-path /mnt/hypergery-nas/hypergery
+```
+
+## Target Agent Cannot Import Package
+
+`import_vm_package` accepts only package paths inside the agent `nas_staging_path` or its `migrations/` child. Configure the same Linux NAS mount on source and target, for example `/mnt/hypergery-nas`, and do not use Windows paths.
+
+```bash
+python -m hypergery_ubuntu.cli agent config show
+python -m hypergery_ubuntu.cli migrate validate-package /mnt/hypergery-nas/migrations/<migration_id>
+```
+
+## HyperGery Console Window Does Not Connect
+
+The HyperGery Console window currently targets local VNC displays. Check the VM display mode:
+
+```bash
+virsh --connect qemu:///system dumpxml <vm-name> | grep graphics
+virsh --connect qemu:///system domdisplay <vm-name>
+```
+
+Expected for the integrated console:
+
+```xml
+<graphics type="vnc" autoport="yes" listen="127.0.0.1"/>
+```
+
+For a running VNC VM, **Console** opens the HyperGery Console window and connects automatically. **Scale to Fit** is enabled by default, keeps aspect ratio, and centers the framebuffer. Disable **Scale to Fit** to inspect the guest framebuffer at real size with scrollbars.
+
+If the VM uses SPICE, the HyperGery Console window shows a card instead of a black screen. Use **Open External Viewer** for SPICE, or use **Switch to VNC** while the VM is shut off. HyperGery will configure the display as local VNC with `listen="127.0.0.1"` and `autoport="yes"`.
+
+If libvirt reports `spice audio is not supported without spice graphics` or a localized variant such as `Sonido de especia no esta admitido sin graficos de especia`, the VM XML still has SPICE audio while using VNC graphics. HyperGery removes `audio type="spice"` and SPICE-only channels when switching a shut off VM to VNC.
+
+If the integrated console says authentication is required, use **External Console**. The built-in client intentionally supports only local no-auth VNC because libvirt binds it to `127.0.0.1`.
+
+Click inside the console window to capture keyboard and mouse input only after a VNC connection is active. Press Right Ctrl to release input. Right Ctrl does not apply to SPICE fallback mode. Disconnecting or closing the console window does not stop the VM.

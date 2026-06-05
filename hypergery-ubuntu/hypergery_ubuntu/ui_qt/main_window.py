@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -32,9 +33,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary, now_iso
+from ..config import HyperGeryConfig, effective_config, effective_value
 from ..labs import LabStore
 from ..templates import TemplateStore
 from .dialogs import (
+    AppSettingsDialog,
     CleanupPreviewDialog,
     CloneDialog,
     DeleteConfirmationDialog,
@@ -46,6 +49,7 @@ from .dialogs import (
     EditVmTemplateDialog,
     FILE_DIALOG_OPTIONS,
     InstantiateLabTemplateWizard,
+    LiveMigrationDialog,
     NewLabDialog,
     NewLabTemplateDialog,
     NewVmTemplateDialog,
@@ -54,6 +58,8 @@ from .dialogs import (
     SnapshotDialog,
     VMWizard,
 )
+from .console import VmConsoleWindow
+from .console_helpers import should_autoconnect_console
 from .lab_helpers import build_lab_topology, filter_vms_for_lab, vm_count_for_lab
 from .topology import LabTopologyWidget
 from .styles import (
@@ -83,6 +89,8 @@ class MainWindow(QMainWindow):
         self.lab_templates: list[dict] = []
         self.selected_vm_template: dict | None = None
         self.selected_lab_template: dict | None = None
+        self.remote_hosts: list[dict[str, Any]] = []
+        self.console_windows: dict[str, VmConsoleWindow] = {}
         self.jobs: list[BackendJob] = []
         self.completed_jobs: list[BackendJob] = []
         self.setWindowTitle(f"HyperGery v{APP_DISPLAY_VERSION}")
@@ -127,24 +135,30 @@ class MainWindow(QMainWindow):
         layout.addSpacing(18)
 
         self.new_button = self._button("New VM", self.new_vm, primary=True)
+        self.app_settings_button = self._button("App Settings", self.app_settings)
         self.settings_button = self._button("Settings", self.settings_vm)
         self.start_button = self._button("Start", self.start_vm)
         self.shutdown_button = self._button("ACPI Shutdown", self.shutdown_vm)
         self.console_button = self._button("Console", self.open_console)
+        self.external_console_button = self._button("External Console", self.open_external_console)
         self.snapshots_button = self._button("Snapshots", self.snapshots_vm)
         self.clone_button = self._button("Clone", self.clone_vm)
+        self.migrate_button = self._button("Live Migration", self.live_migration_vm)
         self.refresh_button = self._button("Refresh", self.refresh_all)
         self.force_button = self._button("Force Off", self.force_off_vm, danger=True)
         self.delete_button = self._button("Delete", self.delete_vm, danger=True)
         self.overview_button = self._button("Resources…", self.show_cleanup_preview)
         for button in (
             self.new_button,
+            self.app_settings_button,
             self.settings_button,
             self.start_button,
             self.shutdown_button,
             self.console_button,
+            self.external_console_button,
             self.snapshots_button,
             self.clone_button,
+            self.migrate_button,
             self.refresh_button,
         ):
             layout.addWidget(button)
@@ -357,6 +371,74 @@ class MainWindow(QMainWindow):
         self.templates_tabs.addTab(lab_templates_tab, "Lab Templates")
 
         self.main_tabs.addTab(templates_tab, "Templates")
+
+        remote_tab = QWidget()
+        remote_layout = QVBoxLayout(remote_tab)
+        remote_layout.setContentsMargins(18, 18, 12, 18)
+        remote_layout.setSpacing(12)
+        remote_header = QHBoxLayout()
+        remote_title = QLabel("Remote Hosts")
+        remote_title.setObjectName("sectionTitle")
+        self.remote_status_label = QLabel("Hub not loaded")
+        self.remote_status_label.setObjectName("mutedLabel")
+        self.refresh_remote_button = self._button("Refresh", self.refresh_remote_hosts)
+        self.test_remote_button = self._button("Test", self.test_selected_remote_host)
+        remote_header.addWidget(remote_title)
+        remote_header.addStretch()
+        remote_header.addWidget(self.remote_status_label)
+        remote_header.addWidget(self.refresh_remote_button)
+        remote_header.addWidget(self.test_remote_button)
+        remote_layout.addLayout(remote_header)
+        hub_grid = QGridLayout()
+        self.hub_url_label = QLabel(self.registry_url())
+        self.hub_status_label = QLabel("not checked")
+        self.hub_last_check_label = QLabel("")
+        self.hub_hosts_online_label = QLabel("0")
+        self.hub_vm_count_label = QLabel("0")
+        self.hub_nas_label = QLabel("")
+        for label in (
+            self.hub_url_label,
+            self.hub_status_label,
+            self.hub_last_check_label,
+            self.hub_hosts_online_label,
+            self.hub_vm_count_label,
+            self.hub_nas_label,
+        ):
+            label.setObjectName("mutedLabel")
+        hub_grid.addWidget(QLabel("Hub URL"), 0, 0)
+        hub_grid.addWidget(self.hub_url_label, 0, 1)
+        hub_grid.addWidget(QLabel("Hub status"), 0, 2)
+        hub_grid.addWidget(self.hub_status_label, 0, 3)
+        hub_grid.addWidget(QLabel("Last check"), 1, 0)
+        hub_grid.addWidget(self.hub_last_check_label, 1, 1)
+        hub_grid.addWidget(QLabel("Hosts online"), 1, 2)
+        hub_grid.addWidget(self.hub_hosts_online_label, 1, 3)
+        hub_grid.addWidget(QLabel("VM records"), 2, 0)
+        hub_grid.addWidget(self.hub_vm_count_label, 2, 1)
+        hub_grid.addWidget(QLabel("NAS staging"), 2, 2)
+        hub_grid.addWidget(self.hub_nas_label, 2, 3)
+        remote_layout.addLayout(hub_grid)
+        self.remote_host_table = QTableWidget(0, 8)
+        self.remote_host_table.setHorizontalHeaderLabels(["Host", "Status", "Last seen", "RAM", "Disk free", "KVM", "libvirt", "Active VMs"])
+        self.remote_host_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.remote_host_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.remote_host_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.remote_host_table.setAlternatingRowColors(True)
+        self.remote_host_table.verticalHeader().setVisible(False)
+        self.remote_host_table.horizontalHeader().setStretchLastSection(True)
+        self.remote_host_table.setColumnWidth(0, 130)
+        self.remote_host_table.setColumnWidth(1, 80)
+        self.remote_host_table.setColumnWidth(2, 165)
+        self.remote_host_table.setColumnWidth(3, 120)
+        self.remote_host_table.setColumnWidth(4, 90)
+        self.remote_host_table.itemSelectionChanged.connect(self.update_actions)
+        remote_layout.addWidget(self.remote_host_table, 1)
+        self.remote_detail = QTextEdit()
+        self.remote_detail.setReadOnly(True)
+        self.remote_detail.setMaximumHeight(160)
+        self.remote_detail.setPlaceholderText("Select Refresh to load hosts from the HyperGery Hub.")
+        remote_layout.addWidget(self.remote_detail)
+        self.main_tabs.addTab(remote_tab, "Remote Hosts")
         
         return panel
 
@@ -563,11 +645,14 @@ class MainWindow(QMainWindow):
         for button in (
             self.new_button,
             self.settings_button,
+            self.app_settings_button,
             self.start_button,
             self.shutdown_button,
             self.console_button,
+            self.external_console_button,
             self.snapshots_button,
             self.clone_button,
+            self.migrate_button,
             self.refresh_button,
             self.force_button,
             self.delete_button,
@@ -592,6 +677,8 @@ class MainWindow(QMainWindow):
             self.export_lab_template_button,
             self.import_lab_template_button,
             self.refresh_lab_templates_button,
+            self.refresh_remote_button,
+            self.test_remote_button,
         ):
             button.setEnabled(not busy)
         if busy:
@@ -610,8 +697,10 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(has_vm and not running)
         self.shutdown_button.setEnabled(has_vm and running)
         self.console_button.setEnabled(has_vm and running)
+        self.external_console_button.setEnabled(has_vm and running)
         self.snapshots_button.setEnabled(has_vm)
         self.clone_button.setEnabled(has_vm and shut_off)
+        self.migrate_button.setEnabled(has_vm)
         self.force_button.setEnabled(has_vm and running)
         self.delete_button.setEnabled(has_vm and shut_off)
         has_lab = self.selected_lab is not None
@@ -630,6 +719,109 @@ class MainWindow(QMainWindow):
         self.delete_lab_template_button.setEnabled(has_lab_tmpl)
         self.edit_lab_template_button.setEnabled(has_lab_tmpl)
         self.export_lab_template_button.setEnabled(has_lab_tmpl)
+        self.test_remote_button.setEnabled(bool(self.remote_host_table.selectionModel().selectedRows()))
+
+    def registry_url(self) -> str:
+        return effective_value("hub_url")
+
+    def refresh_remote_hosts(self) -> None:
+        self.run_operation(
+            "Loading remote hosts",
+            self._load_remote_hosts,
+            on_success=self.render_remote_hosts,
+            refresh_after=False,
+        )
+
+    def _load_remote_hosts(self) -> dict[str, Any]:
+        from ..registry import RegistryClient
+
+        client = RegistryClient(self.registry_url())
+        hosts = client.list_hosts()
+        try:
+            vm_count: int | None = len(client.list_vms())
+        except Exception:
+            vm_count = None
+        return {"hosts": hosts, "vm_count": vm_count}
+
+    def render_remote_hosts(self, result: dict[str, Any] | list[dict[str, Any]]) -> None:
+        if isinstance(result, dict):
+            hosts = result.get("hosts", [])
+            vm_count = result.get("vm_count")
+        else:
+            hosts = result
+            vm_count = None
+        self.remote_hosts = hosts
+        self.remote_host_table.setRowCount(0)
+        for host in hosts:
+            row = self.remote_host_table.rowCount()
+            self.remote_host_table.insertRow(row)
+            active = ", ".join(host.get("active_vms") or [])
+            ram = f"{host.get('ram_free_mib', 0)}/{host.get('ram_total_mib', 0)} MiB"
+            values = [
+                str(host.get("host_id", "")),
+                str(host.get("status", "offline")),
+                str(host.get("last_seen", "")),
+                ram,
+                f"{host.get('disk_free_mib', 0)} MiB",
+                "OK" if host.get("kvm_ok") else "Blocked",
+                "OK" if host.get("libvirt_ok") else "Blocked",
+                active or "none",
+            ]
+            for col, value in enumerate(values):
+                self._set_table_item(self.remote_host_table, row, col, value)
+        self.remote_status_label.setText(f"{len(hosts)} host(s)")
+        if hosts:
+            self.remote_detail.setPlainText(details_block(("Hub", self.registry_url()), ("Status", "reachable")))
+        else:
+            self.remote_detail.setPlainText(
+                "Hub is reachable but has no hosts. Start a HyperGery agent on each participating host."
+            )
+        self.render_hub_status(hosts, reachable=True, vm_count=vm_count)
+        self.update_actions()
+
+    def render_hub_status(self, hosts: list[dict[str, Any]], *, reachable: bool, vm_count: int | None = None) -> None:
+        config = effective_config()
+        nas_path = os.path.expanduser(config["nas_staging_path"].value)
+        nas_label = f"{nas_path} writable={os.path.isdir(nas_path) and os.access(nas_path, os.W_OK)}"
+        vm_count_label = "unknown"
+        if reachable:
+            vm_count_label = str(vm_count) if vm_count is not None else "unavailable"
+        self.hub_url_label.setText(self.registry_url())
+        self.hub_status_label.setText("online" if reachable else "offline")
+        self.hub_last_check_label.setText(now_iso())
+        self.hub_hosts_online_label.setText(str(sum(1 for host in hosts if host.get("status") == "online")))
+        self.hub_vm_count_label.setText(vm_count_label)
+        self.hub_nas_label.setText(nas_label)
+
+    def test_selected_remote_host(self) -> None:
+        indexes = self.remote_host_table.selectionModel().selectedRows()
+        if not indexes:
+            self.show_error("Select a remote host first.")
+            return
+        row = indexes[0].row()
+        host = self.remote_hosts[row] if 0 <= row < len(self.remote_hosts) else None
+        if not host:
+            self.show_error("Selected host is no longer available.")
+            return
+        host_id = str(host.get("host_id", ""))
+
+        def do_test() -> dict:
+            from ..registry import RegistryClient
+
+            return RegistryClient(self.registry_url()).create_command(host_id, "ping", {})
+
+        def on_done(result: dict) -> None:
+            self.remote_detail.setPlainText(
+                details_block(
+                    ("Hub", self.registry_url()),
+                    ("Host", host_id),
+                    ("Queued command", str(result.get("command_id", ""))),
+                    ("Status", str(result.get("status", ""))),
+                )
+            )
+            self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
+
+        self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
 
     def refresh_all(self) -> None:
         self.status.showMessage("Loading host state...")
@@ -650,6 +842,7 @@ class MainWindow(QMainWindow):
             ("logs", self.backend.recent_logs),
             ("vm_templates", self.template_store.list_vm_templates),
             ("lab_templates", self.template_store.list_lab_templates),
+            ("remote_hosts", self._load_remote_hosts),
         )
         for key, callback in jobs:
             try:
@@ -681,6 +874,18 @@ class MainWindow(QMainWindow):
             self.render_vm_templates(overview["vm_templates"])
         if "lab_templates" in overview:
             self.render_lab_templates(overview["lab_templates"])
+        if "remote_hosts" in overview:
+            self.render_remote_hosts(overview["remote_hosts"])
+        elif "remote_hosts" in errors:
+            self.remote_hosts = []
+            self.remote_host_table.setRowCount(0)
+            self.remote_status_label.setText("Hub unavailable")
+            self.render_hub_status([], reachable=False)
+            self.remote_detail.setPlainText(
+                "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
+                f"Current Hub URL: {self.registry_url()}\n"
+                f"Example: export HYPERGERY_HUB_URL=http://192.168.1.150:8765\n\n{errors['remote_hosts']}"
+            )
         self.render_selected()
         if not errors:
             self.status.showMessage("Ready")
@@ -1117,7 +1322,13 @@ class MainWindow(QMainWindow):
         )
         self.detail_views["System"].setPlainText(details_block(("RAM", format_mib(vm.ram_mib)), ("vCPUs", str(vm.vcpus or "unknown"))))
         self.detail_views["Display"].setPlainText(
-            details_block(("Graphics", vm.graphics or "unknown"), ("Console", "virt-viewer or remote-viewer"))
+            details_block(
+                ("Graphics", vm.graphics or "unknown"),
+                ("HyperGery Console", "separate VNC console window" if vm.graphics == "vnc" else "use External Console or switch display to VNC"),
+                ("External console", "virt-viewer or remote-viewer"),
+                ("Host Key", "Right Ctrl"),
+                ("Close behavior", "closing the console window does not stop the VM"),
+            )
         )
         self.detail_views["Storage"].setPlainText(
             details_block(
@@ -1238,6 +1449,17 @@ class MainWindow(QMainWindow):
             return
         self.run_operation(f"Creating {values['name']}", lambda: self.backend.create_vm(**values))
 
+    def app_settings(self) -> None:
+        dialog = AppSettingsDialog(self.backend, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            HyperGeryConfig(**dialog.values()).save()
+        except (OSError, HyperGeryError, ValueError) as exc:
+            self.show_error(f"Cannot save HyperGery settings: {exc}")
+            return
+        self.status.showMessage("HyperGery settings saved", 5000)
+
     def settings_vm(self) -> None:
         if self.selected_vm is None:
             self.show_error("Select a VM first.")
@@ -1285,12 +1507,30 @@ class MainWindow(QMainWindow):
         self.run_operation(f"Forcing off {name}", lambda: self.backend.force_off_vm(name))
 
     def open_console(self) -> None:
+        if self.selected_vm is None:
+            self.show_error("Select a VM first.")
+            return
+        vm = self.selected_vm
+        window = self.console_windows.get(vm.name)
+        if window is None:
+            window = VmConsoleWindow(self.backend, vm, self, on_vm_changed=lambda _name: self.refresh_all())
+            window.destroyed.connect(lambda _=None, name=vm.name: self.console_windows.pop(name, None))
+            self.console_windows[vm.name] = window
+        else:
+            window.set_vm(vm)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        if should_autoconnect_console(vm.graphics, vm.state) and not window.console.is_connected():
+            window.console.connect_console()
+
+    def open_external_console(self) -> None:
         try:
             name = self.selected_name()
         except HyperGeryError as exc:
             self.show_error(str(exc))
             return
-        self.run_operation(f"Opening console for {name}", lambda: self.backend.open_console(name))
+        self.run_operation(f"Opening external console for {name}", lambda: self.backend.open_console(name))
 
     def snapshots_vm(self) -> None:
         if self.selected_vm is None:
@@ -1310,6 +1550,70 @@ class MainWindow(QMainWindow):
             return
         source = self.selected_vm.name
         self.run_operation(f"Cloning {source}", lambda: self.backend.clone_vm(source, clone_name))
+
+    def live_migration_vm(self) -> None:
+        if self.selected_vm is None:
+            self.show_error("Select a VM first.")
+            return
+        dialog = LiveMigrationDialog(self.backend, self.selected_vm, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        if (
+            QMessageBox.question(
+                self,
+                "Start NAS Live Migration",
+                (
+                    f"Start NAS migration for {values['vm_name']}?\n\n"
+                    f"Source host: {values['source_host_id']}\n"
+                    f"Target host: {values['target_host_id']}\n"
+                    f"Target VM: {values['target_vm_name']}\n"
+                    f"NAS staging path: {values['nas_path']}\n\n"
+                    "HyperGery will package the source VM, queue an import command on the target agent, "
+                    "and leave the source VM and disks untouched."
+                ),
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+
+        def do_migration() -> dict:
+            from ..migration import start_remote_migration
+            from ..registry import RegistryClient
+
+            return start_remote_migration(
+                self.backend,
+                RegistryClient(values["registry_url"]),
+                values["vm_name"],
+                values["nas_path"],
+                source_host_id=values["source_host_id"],
+                target_host_id=values["target_host_id"],
+                target_vm_name=values["target_vm_name"],
+                allow_paused=values["allow_paused"],
+                include_iso=values["include_iso"],
+                include_snapshots=values["include_snapshots"],
+                start_after_import=values["start_after_import"],
+            )
+
+        def on_done(result: dict) -> None:
+            package_dir = result.get("package_dir", "")
+            migration_id = result.get("migration_id", "")
+            command_id = result.get("command_id", "")
+            self.log_activity(
+                f"Remote migration queued: migration_id={migration_id} command_id={command_id} package={package_dir}"
+            )
+            QMessageBox.information(
+                self,
+                "Migration Queued",
+                (
+                    f"Migration: {migration_id}\n"
+                    f"Target command: {command_id}\n"
+                    f"Package: {package_dir}\n\n"
+                    "The target agent will import the package on its next run. Source VM remains untouched."
+                ),
+            )
+
+        self.run_operation(f"Starting migration for {values['vm_name']}", do_migration, on_success=on_done, refresh_after=False)
 
     def delete_vm(self) -> None:
         if self.selected_vm is None:

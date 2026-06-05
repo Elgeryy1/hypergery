@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
-import grp
 import hashlib
 import json
 import logging
 import os
-import pwd
 import re
 import shutil
 import subprocess
@@ -16,6 +14,17 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
+
+try:
+    import grp
+except ImportError:  # pragma: no cover - Windows editing environment only.
+    grp = None  # type: ignore[assignment]
+
+try:
+    import pwd
+except ImportError:  # pragma: no cover - Windows editing environment only.
+    pwd = None  # type: ignore[assignment]
 
 
 APP_NAME = "HyperGery"
@@ -60,11 +69,100 @@ class VmSummary:
     xml: str = ""
 
 
+@dataclass
+class ConsoleDisplay:
+    type: str
+    host: str
+    port: int
+    display: str
+    uri: str
+
+
 def is_snap_private_xdg_path(path: Path) -> bool:
     try:
         return bool(os.environ.get("SNAP")) and (Path.home() / "snap") in path.parents
     except RuntimeError:
         return False
+
+
+def _console_port(display_type: str, value: str) -> tuple[int, str]:
+    try:
+        raw = int(value)
+    except (TypeError, ValueError):
+        raise HyperGeryError("Console display does not expose a usable TCP port.")
+    if display_type == "vnc" and 0 <= raw < 100:
+        return 5900 + raw, f":{raw}"
+    if raw <= 0:
+        raise HyperGeryError("Console display does not expose a usable TCP port.")
+    if display_type == "vnc" and raw >= 5900:
+        return raw, f":{raw - 5900}"
+    return raw, f":{raw}"
+
+
+def parse_console_display(uri: str = "", xml: str = "") -> ConsoleDisplay:
+    display_type = ""
+    host = "127.0.0.1"
+    port = 0
+    display = ""
+    uri = (uri or "").strip()
+    if uri:
+        parsed = urlparse(uri)
+        display_type = parsed.scheme.lower()
+        if display_type not in {"vnc", "spice"}:
+            raise HyperGeryError(f"Unsupported console display type: {display_type or uri}")
+        if parsed.hostname and parsed.hostname not in {"0.0.0.0", "::", "[::]"}:
+            host = parsed.hostname
+        if parsed.port is not None:
+            port, display = _console_port(display_type, str(parsed.port))
+    if xml and (not display_type or not port):
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as exc:
+            raise HyperGeryError(f"Cannot parse libvirt domain XML for console display: {exc}") from exc
+        graphics = root.find("./devices/graphics")
+        if graphics is not None:
+            display_type = display_type or graphics.attrib.get("type", "").lower()
+            listen = graphics.attrib.get("listen", "")
+            if listen and listen not in {"0.0.0.0", "::"}:
+                host = listen
+            if not port:
+                port_attr = graphics.attrib.get("port") or graphics.attrib.get("tlsPort") or ""
+                port, display = _console_port(display_type, port_attr)
+    if display_type not in {"vnc", "spice"}:
+        raise HyperGeryError("VM has no supported graphical console display.")
+    if not port:
+        raise HyperGeryError("VM console display is not ready yet. Start the VM and retry.")
+    normalized_uri = f"{display_type}://{host}:{port}"
+    if not display:
+        display = f":{port - 5900}" if display_type == "vnc" and port >= 5900 else f":{port}"
+    return ConsoleDisplay(display_type, host, port, display, normalized_uri)
+
+
+def normalize_graphics_audio_for_display(root: ET.Element, display_mode: str) -> None:
+    if display_mode not in {"spice", "vnc"}:
+        raise HyperGeryError("Display mode must be spice or vnc.")
+    devices = root.find("./devices")
+    if devices is None:
+        devices = ET.SubElement(root, "devices")
+
+    graphics = devices.find("graphics")
+    if graphics is None:
+        graphics = ET.SubElement(devices, "graphics")
+    graphics.attrib.clear()
+    graphics.attrib.update({"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
+
+    spice_channels = [channel for channel in devices.findall("channel") if channel.attrib.get("type") == "spicevmc"]
+    if display_mode == "spice":
+        if not spice_channels:
+            channel = ET.SubElement(devices, "channel", {"type": "spicevmc"})
+            ET.SubElement(channel, "target", {"type": "virtio", "name": "com.redhat.spice.0"})
+        return
+
+    for channel in spice_channels:
+        devices.remove(channel)
+    for audio in list(devices.findall("audio")):
+        if audio.attrib.get("type") == "spice":
+            devices.remove(audio)
 
 
 def xdg_data_home() -> Path:
@@ -260,6 +358,8 @@ class HyperGeryBackend:
     @staticmethod
     def current_group_names() -> set[str]:
         names: set[str] = set()
+        if grp is None:
+            return names
         for gid in os.getgroups():
             try:
                 names.add(grp.getgrgid(gid).gr_name)
@@ -506,6 +606,9 @@ class HyperGeryBackend:
     def grant_libvirt_qemu_access(self, *paths: Path) -> None:
         if not shutil.which("setfacl"):
             logging.warning("setfacl is unavailable; cannot grant libvirt-qemu ACLs for VM media")
+            return
+        if pwd is None:
+            logging.info("pwd module is unavailable; skipping libvirt-qemu ACL grant")
             return
         try:
             pwd.getpwnam("libvirt-qemu")
@@ -844,6 +947,13 @@ class HyperGeryBackend:
             return
         raise HyperGeryError("No console viewer installed. Install virt-viewer or remote-viewer.")
 
+    def get_console_display(self, name: str) -> dict[str, object]:
+        name = validate_vm_name(name)
+        vm = self.get_vm(name)
+        domdisplay = self.virsh(["domdisplay", name], check=False)
+        uri = domdisplay.stdout.strip() if domdisplay.returncode == 0 else ""
+        return parse_console_display(uri, vm.xml).__dict__
+
     def launch_viewer(self, args: list[str]) -> None:
         proc = subprocess.Popen(
             args,
@@ -946,22 +1056,7 @@ class HyperGeryBackend:
             model = interface.find("model")
             if model is None:
                 ET.SubElement(interface, "model", {"type": "virtio"})
-        graphics = root.find("./devices/graphics")
-        if graphics is None:
-            graphics = ET.SubElement(devices, "graphics")
-        graphics.attrib.clear()
-        graphics.attrib.update({"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
-        spice_channels = [
-            channel
-            for channel in devices.findall("channel")
-            if channel.attrib.get("type") == "spicevmc"
-        ]
-        if display_mode == "spice" and not spice_channels:
-            channel = ET.SubElement(devices, "channel", {"type": "spicevmc"})
-            ET.SubElement(channel, "target", {"type": "virtio", "name": "com.redhat.spice.0"})
-        if display_mode == "vnc":
-            for channel in spice_channels:
-                devices.remove(channel)
+        normalize_graphics_audio_for_display(root, display_mode)
         cdrom_source = None
         for disk in root.findall("./devices/disk"):
             if disk.attrib.get("device") == "cdrom":
