@@ -9,8 +9,13 @@ hardening; see NEXT_STEPS_V12_SECURITY.md).
 
 ```bash
 python -m hypergery_ubuntu.cli v1 api serve            # default 127.0.0.1:8799
-python -m hypergery_ubuntu.cli v1 api serve --host 0.0.0.0 --port 8799
+# Non-loopback binds require an explicit opt-in (the API is unauthenticated):
+python -m hypergery_ubuntu.cli v1 api serve --host 0.0.0.0 --port 8799 --allow-remote
 ```
+
+Binding to a non-loopback address without `--allow-remote` is refused, because
+the API has no authentication and `/teleport/start` can suspend a live VM. Only
+use `--allow-remote` on a trusted LAN.
 
 Host/port also configurable via `~/.config/hypergery/v1-settings.json`
 (`api_host`, `api_port`) or `HYPERGERY_V1_API_HOST` / `HYPERGERY_V1_API_PORT`.

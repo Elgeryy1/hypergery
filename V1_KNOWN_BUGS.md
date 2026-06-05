@@ -2,6 +2,28 @@
 
 Formato: bug/limitación · severidad · reproducción · workaround · objetivo.
 
+## Corregidos en la ronda de QA (2026-06-06)
+
+Tras una revisión adversarial + pruebas dinámicas se encontraron y
+arreglaron, con tests de regresión:
+
+- **NAS path traversal** (alta): `lab_id`/`commit_id` se usaban como nombres
+  de directorio sin validar; `commit_lab('../../x', …)` escribía fuera del
+  NAS root. Ahora `_safe_segment()` valida los ids en commit/verify/restore/
+  list y el `lab_id` debe coincidir con el manifest.
+- **Commit corrupto listable** (media-alta): si fallaba la verificación de
+  checksums tras copiar, el paquete quedaba y aparecía como commit válido en
+  `list_commits()`/`health()`/API. Ahora se borra al fallar.
+- **Pérdida de muestras de telemetría** (media): `record()` hacía
+  read-modify-write sin lock; bajo concurrencia perdía casi todo. Ahora con
+  lock por fichero y escritura atómica (temp+rename).
+- **Ficheros parciales en memdiff** (baja): `apply_delta` podía dejar un
+  fichero a medias ante OSError. Ahora se borra.
+- **Rollback de teleport engañoso** (baja): decía "resumed" aunque el resume
+  fallara. Ahora reporta "still paused" con log de error.
+- **API expuesta por error** (media): bind no-loopback ahora exige
+  `--allow-remote` explícito (la API sigue sin auth — eso es v1.2).
+
 1. **Control Center muestra JSON crudo**
    - Severidad: baja (UX).
    - Repro: Control Center → cualquier tab.
