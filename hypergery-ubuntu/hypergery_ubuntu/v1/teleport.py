@@ -249,6 +249,9 @@ class TeleportEngine:
             paused_here = True
             get_logger().info("teleport", f"suspended {vm_name} for teleport", vm_id=vm_name, operation_id=operation_id)
         try:
+            # transfer="hub" computes its own staging dir on the source host;
+            # start_remote_migration ignores nas_path in hub mode, so any
+            # staging_dir passed here is intentionally unused for this mode.
             outcome = start_remote_migration(
                 self.backend,
                 self.hub_client,
@@ -262,14 +265,25 @@ class TeleportEngine:
                 transfer="hub",
             )
         except Exception as exc:
+            recovery = state
             if paused_here:
-                self.backend.virsh(["resume", vm_name], check=False)
-                get_logger().warning(
-                    "teleport", f"teleport failed; resumed {vm_name}", vm_id=vm_name, operation_id=operation_id
-                )
+                resume = self.backend.virsh(["resume", vm_name], check=False)
+                if resume.returncode == 0:
+                    recovery = "resumed"
+                    get_logger().warning(
+                        "teleport", f"teleport failed; resumed {vm_name}", vm_id=vm_name, operation_id=operation_id
+                    )
+                else:
+                    recovery = "still paused (automatic resume failed — resume it manually)"
+                    get_logger().error(
+                        "teleport",
+                        f"teleport failed AND resume failed for {vm_name}; VM is still paused",
+                        vm_id=vm_name,
+                        operation_id=operation_id,
+                        details={"resume_error": resume.stderr.strip() or resume.stdout.strip()},
+                    )
             raise TeleportError(
-                f"suspend_copy_start failed: {exc}. Source VM left in a safe state "
-                f"({'resumed' if paused_here else state}); nothing was deleted."
+                f"suspend_copy_start failed: {exc}. Source VM left {recovery}; nothing was deleted."
             ) from exc
         get_logger().info(
             "teleport",

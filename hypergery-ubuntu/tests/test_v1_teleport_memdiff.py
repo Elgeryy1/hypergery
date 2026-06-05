@@ -101,6 +101,17 @@ class MemDiffTests(unittest.TestCase):
         with self.assertRaises(MemDiffError):
             load_delta(delta_dir)
 
+    def test_apply_io_error_leaves_no_partial_file(self):
+        from unittest.mock import patch
+
+        base = snapshot_state(self.base_path, block_size=self.block)
+        delta = produce_delta(base, self.target_path)
+        output = self.root / "io-fail.bin"
+        with patch("shutil.copyfile", side_effect=OSError("disk full")):
+            with self.assertRaises(MemDiffError):
+                apply_delta(self.base_path, delta, output)
+        self.assertFalse(output.exists())
+
     def test_default_block_size_sane(self):
         self.assertEqual(DEFAULT_BLOCK_SIZE, 64 * 1024)
 
@@ -232,11 +243,39 @@ class TeleportEngineTests(unittest.TestCase):
             engine.teleport_vm(
                 "hg-source", mode="suspend_copy_start", target_host_id="target", staging_dir=self.root / "s"
             )
-        self.assertIn("safe state", str(ctx.exception))
+        self.assertIn("left resumed", str(ctx.exception))
         self.assertIn(["resume", "hg-source"], backend.virsh_calls)
         self.assertEqual(backend.state, "running")
         # Source data intact.
         self.assertEqual(backend.disk.read_bytes(), b"disk-data")
+
+    def test_rollback_reports_truthfully_when_resume_fails(self):
+        from hypergery_ubuntu.backend import CommandResult
+
+        client = FakeRegistryClient()
+
+        def broken_upload(migration_id, package_dir):
+            raise OSError("hub upload exploded")
+
+        client.upload_package = broken_upload
+        engine, backend = self.make_engine(state="running", client=client)
+
+        original_virsh = backend.virsh
+
+        def virsh(args, *, timeout=120, check=True):
+            if args[:1] == ["resume"]:
+                backend.virsh_calls.append(list(args))
+                return CommandResult(["virsh", *args], 1, "", "resume failed")
+            return original_virsh(args, timeout=timeout, check=check)
+
+        backend.virsh = virsh
+        with self.assertRaises(TeleportError) as ctx:
+            engine.teleport_vm(
+                "hg-source", mode="suspend_copy_start", target_host_id="target", staging_dir=self.root / "s"
+            )
+        # The message must NOT claim the VM was resumed when resume failed.
+        self.assertIn("still paused", str(ctx.exception))
+        self.assertNotIn("left resumed", str(ctx.exception))
 
     def test_suspend_failure_aborts_cleanly(self):
         client = FakeRegistryClient()

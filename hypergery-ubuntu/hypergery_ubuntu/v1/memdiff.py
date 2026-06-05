@@ -172,12 +172,17 @@ def apply_delta(base_path: str | Path, delta: MemDiffDelta, output_path: str | P
         raise MemDiffError(f"Base state file does not exist: {base}")
     output = Path(output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(base, output)
-    with output.open("r+b") as handle:
-        handle.truncate(delta.size_bytes)
-        for index, block in sorted(delta.changed_blocks.items()):
-            handle.seek(index * delta.block_size)
-            handle.write(block)
+    try:
+        shutil.copyfile(base, output)
+        with output.open("r+b") as handle:
+            handle.truncate(delta.size_bytes)
+            for index, block in sorted(delta.changed_blocks.items()):
+                handle.seek(index * delta.block_size)
+                handle.write(block)
+    except OSError as exc:
+        # Never leave a half-written file that looks like a result.
+        output.unlink(missing_ok=True)
+        raise MemDiffError(f"Failed to apply delta: {exc}") from exc
     if not verify_result(output, delta):
         output.unlink(missing_ok=True)
         raise MemDiffError("Applied delta does not match the target hash — refusing to keep the corrupt result.")
