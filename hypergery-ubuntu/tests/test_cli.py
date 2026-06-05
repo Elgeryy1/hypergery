@@ -278,6 +278,105 @@ class CliTests(unittest.TestCase):
         self.assertTrue(data["result"]["pong"])
         backend_cls.assert_not_called()
 
+    def test_hub_packages_cli_prints_staging_summary(self):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def list_staged_packages(self):
+                return {
+                    "staging_dir": "/data/staging",
+                    "count": 1,
+                    "orphan_count": 1,
+                    "total_size_bytes": 4096,
+                    "packages": [
+                        {
+                            "migration_id": "mig-orphan",
+                            "size_bytes": 4096,
+                            "file_count": 2,
+                            "age_hours": 48.0,
+                            "migration_status": "",
+                            "orphan": True,
+                        }
+                    ],
+                }
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient):
+            with redirect_stdout(buf):
+                code = cli.main(["hub", "packages", "--hub-url", "http://hub:8765"])
+        self.assertEqual(code, 0)
+        output = buf.getvalue()
+        self.assertIn("mig-orphan", output)
+        self.assertIn("4.0 KiB", output)
+
+    def test_hub_cleanup_staging_without_confirm_is_dry_run(self):
+        calls = []
+
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def cleanup_staging(self, **kwargs):
+                calls.append(kwargs)
+                return {
+                    "staging_dir": "/data/staging",
+                    "dry_run": kwargs["dry_run"],
+                    "older_than_hours": kwargs["older_than_hours"],
+                    "candidates": [],
+                    "total_size_bytes": 0,
+                    "deleted_count": 0,
+                    "deleted_size_bytes": 0,
+                    "skipped": [],
+                    "errors": [],
+                }
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient):
+            with redirect_stdout(buf):
+                code = cli.main(["hub", "cleanup-staging", "--older-than-hours", "24", "--hub-url", "http://hub:8765"])
+        self.assertEqual(code, 0)
+        self.assertTrue(calls[0]["dry_run"])
+        self.assertIn("DRY RUN", buf.getvalue())
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient):
+            with redirect_stdout(buf):
+                code = cli.main(
+                    ["hub", "cleanup-staging", "--older-than-hours", "24", "--confirm", "--hub-url", "http://hub:8765"]
+                )
+        self.assertEqual(code, 0)
+        self.assertFalse(calls[1]["dry_run"])
+        self.assertIn("CLEANUP EXECUTED", buf.getvalue())
+
+    def test_hub_cleanup_staging_real_errors_return_nonzero(self):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def cleanup_staging(self, **kwargs):
+                return {
+                    "staging_dir": "/data/staging",
+                    "dry_run": False,
+                    "older_than_hours": 24.0,
+                    "candidates": [{"migration_id": "mig-bad", "size_bytes": 10, "reason": "orphan"}],
+                    "total_size_bytes": 10,
+                    "deleted_count": 0,
+                    "deleted_size_bytes": 0,
+                    "skipped": [],
+                    "errors": [{"migration_id": "mig-bad", "error": "permission denied"}],
+                }
+
+        buf = StringIO()
+        err = StringIO()
+        from contextlib import redirect_stderr
+
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient):
+            with redirect_stdout(buf), redirect_stderr(err):
+                code = cli.main(["hub", "cleanup-staging", "--confirm", "--hub-url", "http://hub:8765"])
+        self.assertEqual(code, 1)
+        self.assertIn("permission denied", err.getvalue())
+
     @patch("hypergery_ubuntu.cli.HyperGeryBackend")
     def test_host_test_timeout_zero_only_queues_command(self, backend_cls):
         class FakeRegistryClient:

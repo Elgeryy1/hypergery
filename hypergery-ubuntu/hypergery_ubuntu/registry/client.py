@@ -198,3 +198,26 @@ class RegistryClient:
 
     def delete_package(self, migration_id: str) -> dict[str, Any]:
         return self.request("DELETE", f"/packages/{quote(migration_id, safe='')}")
+
+    def list_staged_packages(self) -> dict[str, Any]:
+        return self.request("GET", "/packages")
+
+    def cleanup_staging(
+        self,
+        *,
+        older_than_hours: float = 24.0,
+        dry_run: bool = True,
+        include_failed: bool = False,
+        include_orphans: bool = True,
+    ) -> dict[str, Any]:
+        """Preview (dry_run=True, the default) or delete leftover staging packages."""
+        return self.request(
+            "POST",
+            "/packages/cleanup",
+            {
+                "older_than_hours": older_than_hours,
+                "dry_run": bool(dry_run),
+                "include_failed": bool(include_failed),
+                "include_orphans": bool(include_orphans),
+            },
+        )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import time
@@ -10,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from hypergery_ubuntu.backend import HyperGeryError
 from hypergery_ubuntu.registry import RegistryServer, RegistryStore
+from hypergery_ubuntu.registry.server import cleanup_staged_packages, list_staged_packages
 
 
 class RegistryStoreTests(unittest.TestCase):
@@ -287,6 +289,40 @@ class PackageStagingTests(unittest.TestCase):
         deleted = self.client.delete_package("nope")
         self.assertFalse(deleted["deleted"])
 
+    def test_packages_listing_and_cleanup_endpoints(self):
+        package = self.make_package()
+        self.client.upload_package("mig-test", package)
+
+        listing = self.client.list_staged_packages()
+        self.assertEqual(listing["count"], 1)
+        self.assertEqual(listing["packages"][0]["migration_id"], "mig-test")
+        self.assertTrue(listing["packages"][0]["orphan"])
+        self.assertEqual(listing["packages"][0]["file_count"], 2)
+        self.assertGreater(listing["total_size_bytes"], 4096)
+
+        # Default cleanup is a dry run and never touches recent packages.
+        result = self.client.cleanup_staging(older_than_hours=24)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual([item["migration_id"] for item in result["skipped"]], ["mig-test"])
+        self.assertTrue((self.staging / "mig-test").is_dir())
+
+        # Age the package, then a real cleanup removes it as an orphan.
+        old = time.time() - 48 * 3600
+        for item in [self.staging / "mig-test", *(self.staging / "mig-test").rglob("*")]:
+            os.utime(item, (old, old))
+        confirmed = self.client.cleanup_staging(older_than_hours=24, dry_run=False)
+        self.assertFalse(confirmed["dry_run"])
+        self.assertEqual(confirmed["deleted_count"], 1)
+        self.assertEqual(confirmed["errors"], [])
+        self.assertFalse((self.staging / "mig-test").exists())
+
+    def test_cleanup_endpoint_rejects_invalid_threshold(self):
+        from hypergery_ubuntu.registry import RegistryClient
+
+        with self.assertRaises(HyperGeryError):
+            RegistryClient(self.base_url).cleanup_staging(older_than_hours="not-a-number")
+
     def test_path_traversal_is_rejected(self):
         secret = Path(self.tmp.name) / "secret.txt"
         secret.write_text("nope", encoding="utf-8")
@@ -300,6 +336,151 @@ class PackageStagingTests(unittest.TestCase):
             status = 400
         self.assertNotEqual(status, 200)
         self.assertFalse((self.staging.parent / "escape.txt").exists())
+
+
+class StagingCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.staging = Path(self.tmp.name) / "staging"
+        self.staging.mkdir()
+        self.store = RegistryStore(Path(self.tmp.name) / "registry.sqlite3")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def make_staged_package(self, migration_id: str, *, age_hours: float = 48.0, size_bytes: int = 2048) -> Path:
+        package = self.staging / migration_id
+        (package / "disks").mkdir(parents=True)
+        (package / "manifest.json").write_text(json.dumps({"migration_id": migration_id}), encoding="utf-8")
+        (package / "disks" / "vm.qcow2").write_bytes(b"\x00" * size_bytes)
+        stamp = time.time() - age_hours * 3600
+        for item in [package, package / "disks", package / "manifest.json", package / "disks" / "vm.qcow2"]:
+            os.utime(item, (stamp, stamp))
+        return package
+
+    def record_migration(self, migration_id: str, status: str) -> None:
+        self.store.update_migration_status(
+            migration_id,
+            {
+                "source_host_id": "source",
+                "target_host_id": "target",
+                "source_vm_name": "hg-source",
+                "target_vm_name": "hg-target",
+                "strategy": "hub_transfer",
+                "status": status,
+            },
+        )
+
+    def test_list_reports_sizes_orphans_and_migration_status(self):
+        self.make_staged_package("mig-orphan", size_bytes=4096)
+        self.make_staged_package("mig-done", size_bytes=1024)
+        self.record_migration("mig-done", "done")
+        listing = list_staged_packages(self.staging, self.store)
+        self.assertEqual(listing["count"], 2)
+        self.assertEqual(listing["orphan_count"], 1)
+        by_id = {package["migration_id"]: package for package in listing["packages"]}
+        self.assertTrue(by_id["mig-orphan"]["orphan"])
+        self.assertEqual(by_id["mig-orphan"]["migration_status"], "")
+        self.assertFalse(by_id["mig-done"]["orphan"])
+        self.assertEqual(by_id["mig-done"]["migration_status"], "done")
+        self.assertGreaterEqual(by_id["mig-orphan"]["size_bytes"], 4096)
+        self.assertEqual(by_id["mig-orphan"]["file_count"], 2)
+        self.assertGreater(by_id["mig-orphan"]["age_hours"], 24)
+
+    def test_list_with_missing_staging_dir_is_empty(self):
+        listing = list_staged_packages(self.staging / "missing", self.store)
+        self.assertEqual(listing["count"], 0)
+        self.assertEqual(listing["packages"], [])
+
+    def test_dry_run_reports_candidates_but_deletes_nothing(self):
+        package = self.make_staged_package("mig-orphan")
+        result = cleanup_staged_packages(self.staging, self.store, older_than_hours=24, dry_run=True)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual([item["migration_id"] for item in result["candidates"]], ["mig-orphan"])
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertTrue(package.is_dir())
+
+    def test_confirmed_cleanup_deletes_only_staging_packages(self):
+        self.make_staged_package("mig-orphan")
+        outside = Path(self.tmp.name) / "not-staging.txt"
+        outside.write_text("untouchable", encoding="utf-8")
+        result = cleanup_staged_packages(self.staging, self.store, older_than_hours=24, dry_run=False)
+        self.assertEqual(result["deleted_count"], 1)
+        self.assertEqual(result["errors"], [])
+        self.assertFalse((self.staging / "mig-orphan").exists())
+        self.assertTrue(outside.exists())
+        self.assertTrue(self.staging.is_dir())
+
+    def test_recent_package_is_never_deleted(self):
+        self.make_staged_package("mig-fresh", age_hours=0.1)
+        result = cleanup_staged_packages(self.staging, self.store, older_than_hours=24, dry_run=False)
+        self.assertEqual(result["candidates"], [])
+        self.assertIn("too recent", result["skipped"][0]["reason"])
+        self.assertTrue((self.staging / "mig-fresh").is_dir())
+
+    def test_minimum_age_floor_protects_against_zero_threshold(self):
+        self.make_staged_package("mig-fresh", age_hours=0.1)
+        result = cleanup_staged_packages(self.staging, self.store, older_than_hours=0, dry_run=False)
+        self.assertEqual(result["older_than_hours"], 1.0)
+        self.assertEqual(result["candidates"], [])
+        self.assertTrue((self.staging / "mig-fresh").is_dir())
+
+    def test_active_migration_package_is_always_skipped(self):
+        for status in ("created", "uploaded", "waiting_target", "importing", "defining_vm"):
+            migration_id = f"mig-{status.replace('_', '-')}"
+            self.make_staged_package(migration_id)
+            self.record_migration(migration_id, status)
+        result = cleanup_staged_packages(self.staging, self.store, older_than_hours=1, dry_run=False)
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["deleted_count"], 0)
+        for item in result["skipped"]:
+            self.assertIn("migration is active", item["reason"])
+
+    def test_failed_migration_requires_include_failed(self):
+        self.make_staged_package("mig-failed")
+        self.record_migration("mig-failed", "failed")
+        kept = cleanup_staged_packages(self.staging, self.store, older_than_hours=24, dry_run=False)
+        self.assertEqual(kept["candidates"], [])
+        self.assertTrue((self.staging / "mig-failed").is_dir())
+        removed = cleanup_staged_packages(
+            self.staging, self.store, older_than_hours=24, dry_run=False, include_failed=True
+        )
+        self.assertEqual(removed["deleted_count"], 1)
+        self.assertFalse((self.staging / "mig-failed").exists())
+
+    def test_orphans_can_be_excluded(self):
+        self.make_staged_package("mig-orphan")
+        result = cleanup_staged_packages(
+            self.staging, self.store, older_than_hours=24, dry_run=False, include_orphans=False
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertIn("include_orphans disabled", result["skipped"][0]["reason"])
+        self.assertTrue((self.staging / "mig-orphan").is_dir())
+
+    def test_done_migration_leftover_is_candidate(self):
+        self.make_staged_package("mig-done")
+        self.record_migration("mig-done", "done")
+        result = cleanup_staged_packages(self.staging, self.store, older_than_hours=24, dry_run=True)
+        self.assertEqual(result["candidates"][0]["migration_id"], "mig-done")
+        self.assertIn("leftover", result["candidates"][0]["reason"])
+
+    def test_symlinked_entries_are_ignored(self):
+        target = Path(self.tmp.name) / "real-data"
+        (target / "disks").mkdir(parents=True)
+        (target / "disks" / "vm.qcow2").write_bytes(b"\x00" * 1024)
+        link = self.staging / "mig-link"
+        link.symlink_to(target)
+        listing = list_staged_packages(self.staging, self.store)
+        self.assertEqual(listing["count"], 0)
+        result = cleanup_staged_packages(self.staging, self.store, older_than_hours=1, dry_run=False)
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertTrue(target.is_dir())
+
+    def test_invalid_threshold_is_rejected(self):
+        with self.assertRaises(HyperGeryError):
+            cleanup_staged_packages(self.staging, self.store, older_than_hours="soon")
+        with self.assertRaises(HyperGeryError):
+            cleanup_staged_packages(self.staging, self.store, older_than_hours=-1)
 
 
 if __name__ == "__main__":
