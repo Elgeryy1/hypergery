@@ -30,11 +30,27 @@ def _run(args: list[str], *, timeout: int = 5) -> subprocess.CompletedProcess[st
     return subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
 
 
+def _current_group_names() -> set[str]:
+    group_ids = set(os.getgroups())
+    try:
+        group_ids.add(os.getgid())
+    except OSError:
+        pass
+    groups: set[str] = set()
+    for gid in group_ids:
+        try:
+            groups.add(grp.getgrgid(gid).gr_name)
+        except KeyError:
+            continue
+    return groups
+
+
 def collect_doctor_items() -> list[DoctorItem]:
     values = effective_config()
     hub_url = values["hub_url"].value
     host_id = values["host_id"].value
-    nas_path = Path(values["nas_staging_path"].value).expanduser()
+    nas_value = values["nas_staging_path"]
+    nas_path = Path(nas_value.value).expanduser()
     items: list[DoctorItem] = [
         DoctorItem("OK", "python", sys.version.split()[0]),
         DoctorItem("OK", "hub url", f"{hub_url} ({values['hub_url'].source})"),
@@ -49,12 +65,7 @@ def collect_doctor_items() -> list[DoctorItem]:
     else:
         items.append(DoctorItem("FAIL", "/dev/kvm", "missing", True))
 
-    group_ids = set(os.getgroups())
-    try:
-        group_ids.add(os.getgid())
-    except OSError:
-        pass
-    groups = {grp.getgrgid(gid).gr_name for gid in group_ids}
+    groups = _current_group_names()
     missing_groups = sorted({"kvm", "libvirt"} - groups)
     if missing_groups:
         items.append(DoctorItem("WARN", "user groups", "missing " + ", ".join(missing_groups)))
@@ -74,8 +85,11 @@ def collect_doctor_items() -> list[DoctorItem]:
             items.append(DoctorItem("FAIL", "libvirt", str(exc), True))
 
     if nas_path.is_dir():
-        status = "OK" if os.access(nas_path, os.W_OK) else "FAIL"
-        items.append(DoctorItem(status, "nas staging path", f"{nas_path} writable={os.access(nas_path, os.W_OK)}", status == "FAIL"))
+        writable = os.access(nas_path, os.W_OK)
+        status = "OK" if writable else "FAIL"
+        items.append(DoctorItem(status, "nas staging path", f"{nas_path} writable={writable}", status == "FAIL"))
+    elif nas_value.source == "default":
+        items.append(DoctorItem("WARN", "nas staging path", f"not configured; default path missing: {nas_path}"))
     else:
         items.append(DoctorItem("FAIL", "nas staging path", f"missing: {nas_path}", True))
 
