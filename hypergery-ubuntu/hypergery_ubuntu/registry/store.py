@@ -18,6 +18,11 @@ ALLOWED_COMMAND_TYPES = {
     "receive_vm_package",
     "import_vm_package",
     "migration_status",
+    # v0.8 remote VM power control. Deliberately excluded: delete, undefine,
+    # delete-disks, XML edits, arbitrary shell — nothing destructive on disks.
+    "vm_start",
+    "vm_shutdown",
+    "vm_force_off",
 }
 
 MIGRATION_STATUSES = {

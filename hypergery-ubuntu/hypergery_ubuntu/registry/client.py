@@ -13,6 +13,14 @@ from ..backend import HyperGeryError
 TRANSFER_CHUNK_BYTES = 1024 * 1024
 TRANSFER_TIMEOUT_SECONDS = 600
 
+# UI/CLI-facing action names → Hub command types. Only safe power actions;
+# delete/undefine/console are intentionally not remote-controllable.
+VM_POWER_ACTIONS = {
+    "start": "vm_start",
+    "shutdown": "vm_shutdown",
+    "force_off": "vm_force_off",
+}
+
 
 def default_hub_url() -> str:
     from ..config import effective_value
@@ -79,6 +87,26 @@ class RegistryClient:
 
     def command(self, command_id: str) -> dict[str, Any]:
         return self.request("GET", f"/commands/id/{command_id}")
+
+    def queue_vm_power_command(self, host_id: str, vm_name: str, action: str) -> dict[str, Any]:
+        command_type = VM_POWER_ACTIONS.get(action)
+        if command_type is None:
+            allowed = ", ".join(sorted(VM_POWER_ACTIONS))
+            raise HyperGeryError(f"Unsupported remote power action: {action}. Allowed: {allowed}.")
+        if not str(vm_name or "").strip():
+            raise HyperGeryError("vm_name is required for remote power commands.")
+        if not str(host_id or "").strip():
+            raise HyperGeryError("host_id is required for remote power commands.")
+        return self.create_command(host_id, command_type, {"vm_name": str(vm_name).strip()})
+
+    def start_remote_vm(self, host_id: str, vm_name: str) -> dict[str, Any]:
+        return self.queue_vm_power_command(host_id, vm_name, "start")
+
+    def shutdown_remote_vm(self, host_id: str, vm_name: str) -> dict[str, Any]:
+        return self.queue_vm_power_command(host_id, vm_name, "shutdown")
+
+    def force_off_remote_vm(self, host_id: str, vm_name: str) -> dict[str, Any]:
+        return self.queue_vm_power_command(host_id, vm_name, "force_off")
 
     def set_command_result(self, command_id: str, status: str, result: dict[str, Any]) -> dict[str, Any]:
         return self.request("POST", f"/commands/{command_id}/result", {"status": status, "result": result})

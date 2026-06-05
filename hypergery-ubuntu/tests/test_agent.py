@@ -67,6 +67,116 @@ class FakeClient:
         return update
 
 
+class PowerFakeBackend(FakeBackend):
+    def __init__(self, *, fail_action: str = ""):
+        self.states = {"running-vm": "running", "off-vm": "shut off"}
+        self.calls: list[tuple[str, str]] = []
+        self.fail_action = fail_action
+
+    def get_vm(self, name):
+        if name not in self.states:
+            raise HyperGeryError(f"{name} is not managed by HyperGery.")
+        return VmSummary(name=name, state=self.states[name], lab_id="lab1", ram_mib=1024, vcpus=1, disk_path="/tmp/a.qcow2")
+
+    def vm_state(self, name):
+        return self.states[name]
+
+    def start_vm(self, name):
+        self.calls.append(("start_vm", name))
+        if self.fail_action == "start":
+            raise HyperGeryError("libvirt start failed")
+        self.states[name] = "running"
+
+    def shutdown_vm(self, name):
+        self.calls.append(("shutdown_vm", name))
+        if self.fail_action == "shutdown":
+            raise HyperGeryError("libvirt shutdown failed")
+        self.states[name] = "shut off"
+
+    def force_off_vm(self, name):
+        self.calls.append(("force_off_vm", name))
+        if self.fail_action == "force_off":
+            raise HyperGeryError("libvirt destroy failed")
+        self.states[name] = "shut off"
+
+
+class AgentPowerCommandTests(unittest.TestCase):
+    def make_agent(self, **backend_kwargs):
+        backend = PowerFakeBackend(**backend_kwargs)
+        client = FakeClient()
+        agent = HyperGeryAgent(AgentConfig(host_id="local", name="Local"), backend=backend, client=client)
+        return agent, backend, client
+
+    def power(self, agent, command_type, vm_name):
+        return agent.execute_command({"command_type": command_type, "payload": {"vm_name": vm_name}})
+
+    def test_vm_start_calls_backend_and_reports_inventory(self):
+        agent, backend, client = self.make_agent()
+        status, result = self.power(agent, "vm_start", "off-vm")
+        self.assertEqual(status, "done")
+        self.assertEqual(backend.calls, [("start_vm", "off-vm")])
+        self.assertEqual(result["action"], "start")
+        self.assertEqual(result["previous_state"], "shut off")
+        self.assertEqual(result["new_state"], "running")
+        self.assertEqual(result["host_id"], "local")
+        self.assertIn("off-vm", result["message"])
+        # Inventory is re-reported to the Hub right after the action.
+        self.assertEqual(client.reported_vms["host_id"], "local")
+
+    def test_vm_shutdown_uses_acpi_backend_method(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_shutdown", "running-vm")
+        self.assertEqual(status, "done")
+        self.assertEqual(backend.calls, [("shutdown_vm", "running-vm")])
+        self.assertEqual(result["action"], "shutdown")
+
+    def test_vm_force_off_uses_destroy_backend_method(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_force_off", "running-vm")
+        self.assertEqual(status, "done")
+        self.assertEqual(backend.calls, [("force_off_vm", "running-vm")])
+        self.assertEqual(result["action"], "force_off")
+        self.assertEqual(result["new_state"], "shut off")
+
+    def test_missing_vm_fails_without_touching_backend(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_start", "missing-vm")
+        self.assertEqual(status, "failed")
+        self.assertEqual(backend.calls, [])
+        self.assertIn("missing-vm", result["error"])
+
+    def test_empty_vm_name_fails(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_start", "  ")
+        self.assertEqual(status, "failed")
+        self.assertEqual(backend.calls, [])
+        self.assertIn("vm_name is required", result["error"])
+
+    def test_state_mismatch_fails_without_touching_backend(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_start", "running-vm")
+        self.assertEqual(status, "failed")
+        self.assertEqual(backend.calls, [])
+        self.assertIn("running", result["error"])
+        status, result = self.power(agent, "vm_shutdown", "off-vm")
+        self.assertEqual(status, "failed")
+        self.assertEqual(backend.calls, [])
+
+    def test_backend_error_becomes_failed_with_clear_message(self):
+        agent, backend, _ = self.make_agent(fail_action="start")
+        status, result = self.power(agent, "vm_start", "off-vm")
+        self.assertEqual(status, "failed")
+        self.assertIn("libvirt start failed", result["error"])
+        self.assertEqual(result["previous_state"], "shut off")
+
+    def test_destructive_remote_commands_stay_blocked(self):
+        agent, backend, _ = self.make_agent()
+        for command_type in ("vm_delete", "vm_undefine", "delete_disks", "shell", "vm_reboot", "vm_reset"):
+            with self.assertRaises(HyperGeryError):
+                agent.execute_command({"command_type": command_type, "payload": {"vm_name": "running-vm"}})
+        self.assertEqual(backend.calls, [])
+
+
 class AgentTests(unittest.TestCase):
     def test_config_loads_json_without_password_fields(self):
         with tempfile.TemporaryDirectory() as tmp:

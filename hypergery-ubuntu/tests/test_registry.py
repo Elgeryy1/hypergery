@@ -208,6 +208,29 @@ class RegistryHttpTests(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(event["kind"], "test")
 
+    def test_vm_power_command_helpers_queue_allowed_commands(self):
+        from hypergery_ubuntu.registry import RegistryClient
+
+        self.request_json("POST", "/hosts/register", {"host_id": "remote", "hostname": "remote"})
+        client = RegistryClient(self.base_url)
+        queued = client.start_remote_vm("remote", "vm1")
+        self.assertEqual(queued["command_type"], "vm_start")
+        self.assertEqual(queued["payload"], {"vm_name": "vm1"})
+        self.assertEqual(queued["target_host_id"], "remote")
+        self.assertEqual(client.shutdown_remote_vm("remote", "vm1")["command_type"], "vm_shutdown")
+        self.assertEqual(client.force_off_remote_vm("remote", "vm1")["command_type"], "vm_force_off")
+        # The generic helper validates inputs before touching the Hub.
+        with self.assertRaises(HyperGeryError):
+            client.queue_vm_power_command("remote", "vm1", "delete")
+        with self.assertRaises(HyperGeryError):
+            client.queue_vm_power_command("remote", "  ", "start")
+        with self.assertRaises(HyperGeryError):
+            client.queue_vm_power_command("", "vm1", "start")
+        # Hub-side allowlist still rejects destructive command types.
+        for command_type in ("vm_delete", "vm_undefine", "delete_disks", "vm_reboot"):
+            with self.assertRaises(HyperGeryError):
+                client.create_command("remote", command_type, {"vm_name": "vm1"})
+
 
 class PackageStagingTests(unittest.TestCase):
     def setUp(self):
