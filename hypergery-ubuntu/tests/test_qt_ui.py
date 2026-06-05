@@ -616,6 +616,55 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    def test_console_window_status_bar_and_spice_card(self):
+        app = QApplication.instance() or QApplication([])
+        from unittest.mock import MagicMock
+        from hypergery_ubuntu.backend import VmSummary
+        from hypergery_ubuntu.ui_qt.console import VmConsoleWindow
+
+        backend = MagicMock()
+        vm = VmSummary(name="hg-spice", state="shut off", lab_id="lab", ram_mib=1024, vcpus=1, graphics="spice")
+        window = VmConsoleWindow(backend, vm)
+        self.assertIn("HyperGery Console - hg-spice", window.windowTitle())
+        self.assertIn("Right Ctrl", window.host_key_label.text())
+        self.assertIn("does not stop the VM", window.close_note_label.text())
+        self.assertIn("SPICE", window.display_label.text())
+
+        # SPICE card keeps the v0.6 microcopy and is the active mode.
+        self.assertIs(window.console.mode_stack.currentWidget(), window.console.spice_card)
+        from PySide6.QtWidgets import QLabel
+        texts = " ".join(label.text() for label in window.console.spice_card.findChildren(QLabel))
+        self.assertIn("SPICE", texts)
+
+        # No input capture without an active VNC connection.
+        window.console.capture_input()
+        self.assertFalse(window.console.input_captured)
+
+        # Closing the console never powers off or deletes the VM.
+        window.close()
+        for call in backend.method_calls:
+            self.assertNotIn("shutdown", str(call))
+            self.assertNotIn("force_off", str(call))
+            self.assertNotIn("delete", str(call))
+        self.assertIsNotNone(app)
+
+    def test_console_window_powered_off_vnc_vm_message(self):
+        app = QApplication.instance() or QApplication([])
+        from unittest.mock import MagicMock
+        from hypergery_ubuntu.backend import VmSummary
+        from hypergery_ubuntu.ui_qt.console import VmConsoleWindow
+
+        backend = MagicMock()
+        vm = VmSummary(name="hg-vnc", state="shut off", lab_id="lab", ram_mib=1024, vcpus=1, graphics="vnc")
+        window = VmConsoleWindow(backend, vm)
+        self.assertIn("powered off", window.console.screen.message.lower())
+        self.assertIn("then reconnect", window.console.screen.message)
+        self.assertFalse(window.connect_action.isEnabled())
+        window.console.capture_input()
+        self.assertFalse(window.console.input_captured)
+        window.close()
+        self.assertIsNotNone(app)
+
     def test_migration_wizard_steps_and_microcopy(self):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QLabel
