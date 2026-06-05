@@ -1144,5 +1144,149 @@ class QtUiTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
 
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 not installed — run inside the project venv")
+class QtHubStagingTests(unittest.TestCase):
+    def make_window(self, backend_cls, tmp):
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+        return MainWindow()
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_staging_panel_renders_stats_and_packages(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            window.render_hub_staging(
+                {
+                    "staging_dir": "/data/staging",
+                    "count": 1,
+                    "orphan_count": 1,
+                    "total_size_bytes": 4096,
+                    "packages": [
+                        {
+                            "migration_id": "mig-orphan",
+                            "size_bytes": 4096,
+                            "file_count": 2,
+                            "age_hours": 48.0,
+                            "migration_status": "",
+                            "orphan": True,
+                        }
+                    ],
+                }
+            )
+            self.assertIn("/data/staging", window.staging_stats_label.text())
+            self.assertIn("1 orphan(s)", window.staging_stats_label.text())
+            self.assertIn("mig-orphan", window.staging_detail.toPlainText())
+            self.assertIn("no migration record (orphan)", window.staging_detail.toPlainText())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_staging_panel_empty_state(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            window.render_hub_staging(
+                {"staging_dir": "/data/staging", "count": 0, "orphan_count": 0, "total_size_bytes": 0, "packages": []}
+            )
+            self.assertEqual(window.staging_detail.toPlainText(), "No staged packages found.")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_staging_panel_hub_offline_does_not_crash(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            window.render_hub_staging({"error": "connection refused"})
+            self.assertIn("Hub not reachable", window.staging_stats_label.text())
+            self.assertIn("HYPERGERY_HUB_URL", window.staging_stats_label.text())
+            window.render_hub_cleanup_result({"error": "connection refused"})
+            self.assertIn("Hub not reachable", window.staging_detail.toPlainText())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_dry_run_renders_candidates_without_deleting(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            window.render_hub_cleanup_result(
+                {
+                    "dry_run": True,
+                    "older_than_hours": 24.0,
+                    "candidates": [{"migration_id": "mig-orphan", "size_bytes": 4096, "reason": "orphan"}],
+                    "total_size_bytes": 4096,
+                    "deleted_count": 0,
+                    "deleted_size_bytes": 0,
+                    "skipped": [{"migration_id": "mig-active", "reason": "migration is active (status: importing)"}],
+                    "errors": [],
+                }
+            )
+            text = window.staging_detail.toPlainText()
+            self.assertIn("DRY RUN", text)
+            self.assertIn("mig-orphan", text)
+            self.assertIn("mig-active", text)
+            self.assertNotIn("Deleted", text)
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_confirmed_cleanup_requires_confirmation(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            with (
+                patch.object(window, "_run_hub_cleanup") as run_cleanup,
+                patch(
+                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.warning",
+                    return_value=QMessageBox.StandardButton.Cancel,
+                ) as warning,
+            ):
+                window.confirm_hub_cleanup()
+                warning.assert_called_once()
+                run_cleanup.assert_not_called()
+            with (
+                patch.object(window, "_run_hub_cleanup") as run_cleanup,
+                patch(
+                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.warning",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ),
+            ):
+                window.confirm_hub_cleanup()
+                run_cleanup.assert_called_once_with(dry_run=False)
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_real_cleanup_result_logs_and_refreshes(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            with patch.object(window, "refresh_hub_staging") as refresh:
+                window.render_hub_cleanup_result(
+                    {
+                        "dry_run": False,
+                        "older_than_hours": 24.0,
+                        "candidates": [{"migration_id": "mig-orphan", "size_bytes": 4096, "reason": "orphan"}],
+                        "total_size_bytes": 4096,
+                        "deleted_count": 1,
+                        "deleted_size_bytes": 4096,
+                        "skipped": [],
+                        "errors": [],
+                    }
+                )
+                refresh.assert_called_once()
+            text = window.staging_detail.toPlainText()
+            self.assertIn("CLEANUP EXECUTED", text)
+            self.assertIn("Deleted 1 package(s)", text)
+            self.assertIn("Hub staging cleanup done", window.activity_log.toPlainText())
+            window.close()
+        self.assertIsNotNone(app)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QInputDialog,
     QScrollArea,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -178,6 +179,7 @@ class MainWindow(QMainWindow):
         self.main_tabs.setCurrentIndex(page_map[section])
         if section == "Migrations" and not getattr(self, "_migrations_loaded", False):
             self.refresh_migrations()
+            self.refresh_hub_staging()
         self.right_panel.setVisible(section in {"Virtual Machines", "Labs"})
         self.labs_mode_banner.setVisible(section == "Labs")
         self.vm_page_title.setText("Labs" if section == "Labs" else "Virtual Machines")
@@ -1483,15 +1485,202 @@ class MainWindow(QMainWindow):
         layout.addLayout(actions)
 
         safety = QLabel(
-            "History is read-only: migration records and packages are never deleted from this page. "
+            "History is read-only: migration records are never deleted from this page. "
             "Source VMs are never touched by migrations."
         )
         safety.setObjectName("calloutInfo")
         safety.setWordWrap(True)
         layout.addWidget(safety)
+        layout.addWidget(self._build_hub_staging_panel())
         self.migrations_history: list[dict[str, Any]] = []
         self._migrations_loaded = False
         return page
+
+    def _build_hub_staging_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        title = QLabel("Hub Staging Maintenance")
+        title.setObjectName("sectionTitle")
+        header.addWidget(title)
+        header.addStretch()
+        hours_label = QLabel("Older than (hours):")
+        hours_label.setObjectName("mutedLabel")
+        self.staging_hours_spin = QSpinBox()
+        self.staging_hours_spin.setRange(1, 720)
+        self.staging_hours_spin.setValue(24)
+        self.staging_refresh_button = self._button("Refresh Staging", self.refresh_hub_staging)
+        self.staging_dry_run_button = self._button("Dry Run Cleanup", self.dry_run_hub_cleanup)
+        self.staging_cleanup_button = self._button("Cleanup Confirmed", self.confirm_hub_cleanup, danger=True)
+        header.addWidget(hours_label)
+        header.addWidget(self.staging_hours_spin)
+        header.addWidget(self.staging_refresh_button)
+        header.addWidget(self.staging_dry_run_button)
+        header.addWidget(self.staging_cleanup_button)
+        layout.addLayout(header)
+
+        self.staging_stats_label = QLabel("Staging not loaded yet — press Refresh Staging.")
+        self.staging_stats_label.setObjectName("mutedLabel")
+        self.staging_stats_label.setWordWrap(True)
+        layout.addWidget(self.staging_stats_label)
+
+        self.staging_detail = QTextEdit()
+        self.staging_detail.setReadOnly(True)
+        self.staging_detail.setMaximumHeight(150)
+        self.staging_detail.setPlaceholderText(
+            "Staged packages and cleanup previews appear here. Run Dry Run Cleanup to see candidates."
+        )
+        layout.addWidget(self.staging_detail)
+
+        staging_safety = QLabel(
+            "Only temporary Hub staging packages are deleted. VMs and imported disks are never touched."
+        )
+        staging_safety.setObjectName("calloutInfo")
+        staging_safety.setWordWrap(True)
+        layout.addWidget(staging_safety)
+        return panel
+
+    @staticmethod
+    def _format_size(size_bytes: int | float) -> str:
+        size = float(size_bytes or 0)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if size < 1024 or unit == "GiB":
+                return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{int(size)} B"
+
+    HUB_OFFLINE_STAGING_MESSAGE = "Hub not reachable. Check the NAS Hub and HYPERGERY_HUB_URL."
+
+    def refresh_hub_staging(self) -> None:
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return RegistryClient(url).list_staged_packages()
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            "Loading Hub staging packages",
+            fetch,
+            on_success=self.render_hub_staging,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def render_hub_staging(self, result: dict[str, Any]) -> None:
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.staging_stats_label.setText(f"{self.HUB_OFFLINE_STAGING_MESSAGE}\n{error}")
+            return
+        packages = list((result or {}).get("packages") or [])
+        orphans = int((result or {}).get("orphan_count") or 0)
+        total = self._format_size((result or {}).get("total_size_bytes") or 0)
+        oldest = max((float(p.get("age_hours") or 0) for p in packages), default=0.0)
+        self.staging_stats_label.setText(
+            f"Staging path: {result.get('staging_dir', '')} · "
+            f"{len(packages)} package(s) · {total} · {orphans} orphan(s) · "
+            f"oldest {oldest:.1f}h"
+        )
+        if not packages:
+            self.staging_detail.setPlainText("No staged packages found.")
+            return
+        lines = []
+        for package in packages:
+            status = package.get("migration_status") or "no migration record (orphan)"
+            lines.append(
+                f"{package.get('migration_id', '')} · {self._format_size(package.get('size_bytes') or 0)} · "
+                f"{package.get('file_count', 0)} file(s) · {package.get('age_hours', 0)}h · {status}"
+            )
+        self.staging_detail.setPlainText("\n".join(lines))
+
+    def _run_hub_cleanup(self, *, dry_run: bool) -> None:
+        url = self.registry_url()
+        hours = int(self.staging_hours_spin.value())
+
+        def cleanup() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return RegistryClient(url).cleanup_staging(older_than_hours=hours, dry_run=dry_run)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        label = "Previewing Hub staging cleanup" if dry_run else "Cleaning Hub staging packages"
+        self.run_operation(
+            label,
+            cleanup,
+            on_success=self.render_hub_cleanup_result,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def dry_run_hub_cleanup(self) -> None:
+        self._run_hub_cleanup(dry_run=True)
+
+    def confirm_hub_cleanup(self) -> None:
+        hours = int(self.staging_hours_spin.value())
+        answer = QMessageBox.warning(
+            self,
+            "Cleanup Hub Staging",
+            (
+                f"Delete leftover Hub staging packages older than {hours}h?\n\n"
+                "Only temporary Hub staging packages are deleted. "
+                "VMs and imported disks are never touched.\n\n"
+                "Packages of active migrations are always kept."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._run_hub_cleanup(dry_run=False)
+
+    def render_hub_cleanup_result(self, result: dict[str, Any]) -> None:
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.staging_detail.setPlainText(f"{self.HUB_OFFLINE_STAGING_MESSAGE}\n{error}")
+            return
+        dry_run = bool(result.get("dry_run"))
+        candidates = list(result.get("candidates") or [])
+        skipped = list(result.get("skipped") or [])
+        errors = list(result.get("errors") or [])
+        lines = ["DRY RUN — nothing was deleted." if dry_run else "CLEANUP EXECUTED."]
+        lines.append(
+            f"{len(candidates)} candidate(s) · {self._format_size(result.get('total_size_bytes') or 0)} "
+            f"(older than {result.get('older_than_hours', '?')}h)"
+        )
+        for candidate in candidates:
+            lines.append(
+                f"  - {candidate.get('migration_id', '')} "
+                f"({self._format_size(candidate.get('size_bytes') or 0)}): {candidate.get('reason', '')}"
+            )
+        if not candidates:
+            lines.append("  No cleanup candidates found.")
+        if skipped:
+            lines.append(f"{len(skipped)} skipped:")
+            for item in skipped:
+                lines.append(f"  - {item.get('migration_id', '')}: {item.get('reason', '')}")
+        if not dry_run:
+            lines.append(
+                f"Deleted {result.get('deleted_count', 0)} package(s), "
+                f"freed {self._format_size(result.get('deleted_size_bytes') or 0)}."
+            )
+        for item in errors:
+            lines.append(f"ERROR {item.get('migration_id', '')}: {item.get('error', '')}")
+        self.staging_detail.setPlainText("\n".join(lines))
+        if not dry_run:
+            self.log_activity(
+                f"Hub staging cleanup done: {result.get('deleted_count', 0)} deleted, "
+                f"{len(errors)} error(s)"
+            )
+            self.refresh_hub_staging()
 
     def refresh_migrations(self) -> None:
         url = self.registry_url()
@@ -1846,6 +2035,9 @@ class MainWindow(QMainWindow):
             self.refresh_lab_templates_button,
             self.refresh_remote_button,
             self.test_remote_button,
+            self.staging_refresh_button,
+            self.staging_dry_run_button,
+            self.staging_cleanup_button,
         ):
             button.setEnabled(not busy)
         if busy:
