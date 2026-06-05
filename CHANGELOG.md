@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.9.0 / v1.0 - Unreleased (develop, overnight build 2026-06-06)
+
+New `hypergery_ubuntu/v1/` service layer on top of the closed v0.8 base
+(everything dry-run-first, injectable, and fully tested — 149 new tests,
+suite at 463 passed +1 hardware skip). See V09_REPORT.md, V10_REPORT.md,
+ARCHITECTURE_V1.md, and TEST_RESULTS_V1.md for detail.
+
+### v0.9 — Core stabilization
+- Structured JSONL logging with categories and operation ids; stable error
+  hierarchy with machine codes; central typed `V1Settings` (battery/RAM
+  thresholds, offline & dry-run modes, experimental flags, API binding).
+- Unified host registry (local + Hub + loopback, roles & capabilities) with
+  non-destructive health checks; real telemetry (psutil + /proc //sys
+  fallback, sysfs battery, history, staleness) and pure alert evaluation.
+- Labs workspace v0.9: subject/owner/tags/favorite/archived manifest fields
+  with safe migration, lab validation (names, roles, subnet overlaps),
+  filters; VM provider abstraction (Local libvirt incl. pause/resume,
+  Agent via Hub allowlist, Simulated for tests).
+- NAS commit/restore: checksum-verified lab packages, atomic staging,
+  dry-run by default, hash-validated restore that never overwrites.
+
+### v1.0 — Visión completa (versión funcional bruta)
+- Auto-Boost orchestrator: explainable placement plans (battery tiers, RAM
+  headroom, VM weights, host roles, guest/offline restrictions); never
+  executes by itself.
+- Battery manager on the real battery: tiers 50/30/20/10 (configurable),
+  transition events, modes disabled/recommend_only/auto_prepare/
+  auto_execute_safe (only data-safe actions ever auto-execute).
+- Teleport engine over the v0.8 migration pipeline: dry_run,
+  local_loopback (validated E2E), suspend_copy_start (suspend → package →
+  Hub → import → start, resume-on-failure rollback), experimental_memdiff.
+- MemDiff experimental block-delta engine with mandatory verification and
+  corruption-detecting persistence.
+- Per-lab network manager (CIDR/gateway/DHCP conflicts, blocked cross-lab
+  links); local RBAC (4 roles, guest hard limits, audit log); external node
+  connector (manual registration, health, orchestrator integration).
+- Android-ready local API (uniform ok/data/error envelope, 15 GET + 3 POST,
+  confirm-guarded teleport start) documented in docs/API_V1.md; `v1` CLI
+  group for every workflow; Control Center UI page (8 tabs over real
+  services, read-only/dry-run, export report).
+- Not included (honest scope): true live-RAM migration, API/Hub
+  authentication (v1.2 plan in NEXT_STEPS_V12_SECURITY.md), rich per-module
+  UI screens (v1.1 plan in NEXT_STEPS_V11.md).
+
 ## v0.8.0 - Unreleased / Planned
 
 ### Added — Remote VM Power Control (Fase 1, implemented)
