@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 HAS_PYSIDE6 = importlib.util.find_spec("PySide6") is not None
 
@@ -29,7 +29,7 @@ def migration_fake_backend():
 
 if HAS_PYSIDE6:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication, QFileDialog
+    from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
 
     from hypergery_ubuntu.ui_qt.dialogs import FILE_DIALOG_OPTIONS
     from hypergery_ubuntu.ui_qt.main import configure_qt_application, configure_qt_environment
@@ -176,6 +176,71 @@ class QtUiTests(unittest.TestCase):
             window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=None)
 
             self.assertEqual(window.hub_vm_count_label.text(), "unavailable")
+            window.close()
+        self.assertIsNotNone(app)
+
+    def test_app_settings_omits_unchanged_env_derived_hub_url(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import AppSettingsDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "HYPERGERY_CONFIG": str(Path(tmp) / "config.json"),
+                "HYPERGERY_HUB_URL": "http://env-hub.local:8765",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                dialog = AppSettingsDialog(object())
+
+            self.assertNotIn("hub_url", dialog.values())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_app_settings_rejects_invalid_hub_url(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import AppSettingsDialog
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HYPERGERY_CONFIG": str(Path(tmp) / "config.json")}, clear=False):
+            dialog = AppSettingsDialog(object())
+            dialog.hub_url.setText("foo")
+            dialog.validate_and_accept()
+
+            self.assertNotEqual(dialog.result(), int(QDialog.DialogCode.Accepted))
+            self.assertIn("http:// or https://", dialog.status.text())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_app_settings_values_include_user_edits(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import AppSettingsDialog
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HYPERGERY_CONFIG": str(Path(tmp) / "config.json")}, clear=False):
+            dialog = AppSettingsDialog(object())
+            dialog.hub_url.setText("http://edited-hub.local:8765")
+
+            self.assertEqual(dialog.values()["hub_url"], "http://edited-hub.local:8765")
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_app_settings_save_oserror_shows_error(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            fake_dialog = Mock()
+            fake_dialog.exec.return_value = QDialog.DialogCode.Accepted
+            fake_dialog.values.return_value = {"hub_url": "http://saved-hub.local:8765"}
+            with (
+                patch("hypergery_ubuntu.ui_qt.main_window.AppSettingsDialog", return_value=fake_dialog),
+                patch("hypergery_ubuntu.config.HyperGeryConfig.save", side_effect=OSError("disk full")),
+                patch.object(window, "show_error") as show_error,
+            ):
+                window.app_settings()
+
+            show_error.assert_called_once()
+            self.assertIn("Cannot save HyperGery settings", show_error.call_args[0][0])
             window.close()
         self.assertIsNotNone(app)
 

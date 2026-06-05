@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
-from ..config import HyperGeryConfig, default_config_values, effective_config
+from ..config import CONFIG_FIELDS, HyperGeryConfig, default_config_values, effective_config
 from ..registry import RegistryClient
 from ..templates import normalize_template_id
 from .lab_helpers import build_lab_preview
@@ -55,6 +55,8 @@ class AppSettingsDialog(QDialog):
         self.setWindowTitle("HyperGery Settings")
         effective = effective_config()
         saved = HyperGeryConfig.load()
+        self._effective = effective
+        self._initial_values = {field: effective[field].value for field in CONFIG_FIELDS}
 
         self.hub_url = QLineEdit(saved.hub_url or effective["hub_url"].value)
         self.host_id = QLineEdit(saved.host_id or effective["host_id"].value)
@@ -103,7 +105,7 @@ class AppSettingsDialog(QDialog):
         action_row.addStretch()
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
@@ -114,7 +116,7 @@ class AppSettingsDialog(QDialog):
         self.resize(760, 380)
 
     def values(self) -> dict[str, str]:
-        return {
+        current = {
             "hub_url": self.hub_url.text().strip(),
             "host_id": self.host_id.text().strip(),
             "host_name": self.host_name.text().strip(),
@@ -123,6 +125,18 @@ class AppSettingsDialog(QDialog):
             "default_iso_folder": self.default_iso_folder.text().strip(),
             "default_vm_storage_path": self.default_vm_storage_path.text().strip(),
         }
+        return {
+            field: value
+            for field, value in current.items()
+            if self._effective[field].source == "config" or value != self._initial_values[field]
+        }
+
+    def validate_and_accept(self) -> None:
+        hub_url = self.hub_url.text().strip()
+        if hub_url and not (hub_url.startswith("http://") or hub_url.startswith("https://")):
+            self.status.setText("Hub URL must start with http:// or https://")
+            return
+        self.accept()
 
     def test_hub(self) -> None:
         try:

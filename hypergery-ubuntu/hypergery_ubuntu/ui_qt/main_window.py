@@ -1453,7 +1453,11 @@ class MainWindow(QMainWindow):
         dialog = AppSettingsDialog(self.backend, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        HyperGeryConfig(**dialog.values()).save()
+        try:
+            HyperGeryConfig(**dialog.values()).save()
+        except (OSError, HyperGeryError, ValueError) as exc:
+            self.show_error(f"Cannot save HyperGery settings: {exc}")
+            return
         self.status.showMessage("HyperGery settings saved", 5000)
 
     def settings_vm(self) -> None:
