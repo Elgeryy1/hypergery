@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -161,6 +162,23 @@ def default_history_path() -> Path:
     return xdg_state_home() / "hypergery" / "telemetry" / "history.json"
 
 
+# One lock per history file path, shared across TelemetryService instances in
+# the same process so the UI worker threads and the CLI cannot clobber each
+# other's read-modify-write of the history file.
+_history_locks: dict[str, threading.Lock] = {}
+_history_locks_guard = threading.Lock()
+
+
+def _history_lock(path: Path) -> threading.Lock:
+    key = str(path)
+    with _history_locks_guard:
+        lock = _history_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _history_locks[key] = lock
+        return lock
+
+
 class TelemetryService:
     """Local sampling, per-host history, remote (Hub) samples, and alerts."""
 
@@ -239,15 +257,22 @@ class TelemetryService:
             return {}
 
     def record(self, sample: TelemetrySample) -> None:
-        history = self._read_history()
-        per_host = history.setdefault(sample.host_id or "unknown", [])
-        per_host.append(sample.to_dict())
-        del per_host[: max(0, len(per_host) - self.settings.telemetry_history_samples)]
-        try:
-            self.history_path.parent.mkdir(parents=True, exist_ok=True)
-            self.history_path.write_text(json.dumps(history, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        except OSError:
-            get_logger().warning("telemetry", f"Cannot persist telemetry history at {self.history_path}")
+        # Serialize the whole read-modify-write so concurrent recorders (UI
+        # worker threads, CLI) don't lose each other's samples, and write
+        # atomically (temp file + rename) so a reader never sees a partial
+        # file.
+        with _history_lock(self.history_path):
+            history = self._read_history()
+            per_host = history.setdefault(sample.host_id or "unknown", [])
+            per_host.append(sample.to_dict())
+            del per_host[: max(0, len(per_host) - self.settings.telemetry_history_samples)]
+            try:
+                self.history_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = self.history_path.with_suffix(self.history_path.suffix + ".tmp")
+                tmp_path.write_text(json.dumps(history, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                tmp_path.replace(self.history_path)
+            except OSError:
+                get_logger().warning("telemetry", f"Cannot persist telemetry history at {self.history_path}")
 
     def history(self, host_id: str | None = None) -> list[dict[str, Any]]:
         history = self._read_history()
@@ -271,8 +296,10 @@ def evaluate_alerts(
     nas_path: str | Path | None = None,
     settings: V1Settings | None = None,
 ) -> list[dict[str, str]]:
-    """Minimum alert set: RAM low, battery low, host offline, NAS offline,
-    disk low, agent stale. Pure function — easy to test and reuse in UI/API."""
+    """Minimum alert set: RAM low, disk low, battery tiers, host offline
+    (the Hub already flips a host to offline once its agent stops sending
+    heartbeats past the offline timeout), and NAS offline. Pure function —
+    easy to test and reuse in UI/API."""
     cfg = settings or V1Settings()
     alerts: list[dict[str, str]] = []
 

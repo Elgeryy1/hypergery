@@ -80,6 +80,24 @@ class TelemetryServiceTests(unittest.TestCase):
         self.assertEqual(history[0]["timestamp"], "t2")
         self.assertEqual(history[-1]["timestamp"], "t4")
 
+    def test_concurrent_record_keeps_all_samples(self):
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self.make_service(Path(tmp), telemetry_history_samples=1000)
+
+            def writer(n):
+                for i in range(25):
+                    service.record(TelemetrySample(timestamp=f"{n}-{i}", host_id=f"host{n % 2}"))
+
+            threads = [threading.Thread(target=writer, args=(n,)) for n in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            total = sum(len(samples) for samples in [service.history("host0"), service.history("host1")])
+        self.assertEqual(total, 6 * 25)
+
     def test_remote_sample_marks_stale_hosts(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = self.make_service(Path(tmp))
