@@ -61,7 +61,7 @@ Environment variables such as `HYPERGERY_HUB_URL`, `HYPERGERY_HOST_ID`, and `HYP
 
 ```bash
 cd /mnt/hypergery-nas/proyectos_hacen_bulto_en_CV/miversiondevirtualbox/hypergery-ubuntu
-source /home/gery/.venvs/hypergery/bin/activate
+source ~/.venvs/hypergery/bin/activate
 export HYPERGERY_HUB_URL=http://192.168.1.150:8765
 export HYPERGERY_NAS_STAGING_PATH=/mnt/hypergery-nas/hypergery
 python -m hypergery_ubuntu.cli doctor
