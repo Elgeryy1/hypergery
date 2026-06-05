@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.0 - Planned
+
+- v0.7 roadmap TBD.
+
 ## v0.6.0 - NAS Clone Migration
 
 Release scope:
