@@ -2,6 +2,8 @@
 
 HyperGery v0.6.0 development uses the product label **Live Migration**, but the safe baseline implementation is NAS Clone Migration.
 
+Status before final release: local NAS Clone Migration E2E has passed with two logical agents on one libvirt host. A real two-physical-host NAS Clone Migration smoke is still pending before v0.6.0 can be treated as final release-ready.
+
 The source VM, source disks, source lab manifest, and source templates are not deleted or modified by migration packaging.
 
 HyperGery Hub coordinates the remote flow: the app reads hosts and inventory from the Hub, the source creates a package under `/mnt/hypergery-nas/hypergery/migrations`, the Hub queues `import_vm_package`, and the target agent imports and reports progress.
@@ -84,7 +86,7 @@ List staged packages:
 python -m hypergery_ubuntu.cli migrate list --path /mnt/hypergery-nas
 ```
 
-Remote registry/agent orchestration:
+Remote Hub/agent orchestration:
 
 ```bash
 python -m hypergery_ubuntu.cli migrate remote hg-demo \
@@ -92,25 +94,25 @@ python -m hypergery_ubuntu.cli migrate remote hg-demo \
   --source-host-id source-host \
   --target-host-id target-host \
   --target-vm-name hg-demo-target \
-  --registry-url http://nas-or-registry-host:8765
+  --hub-url http://nas-or-hub-host:8765
 
 python -m hypergery_ubuntu.cli migrate status \
   --migration-id <migration_id> \
-  --registry-url http://nas-or-registry-host:8765
+  --hub-url http://nas-or-hub-host:8765
 ```
 
 Remote flow:
 
 1. Source runs preflight and records `preflight`.
 2. Source exports package into NAS staging and records `packaging` then `uploaded`.
-3. Registry creates `import_vm_package` for the target host and records `waiting_target`.
+3. Hub creates `import_vm_package` for the target host and records `waiting_target`.
 4. Target agent picks up the command and records `importing`.
 5. Target import defines the VM, rewrites identity/media paths, and records `defining_vm` then `done`.
 6. Any exception records `failed` with a clear error.
 
 ## Agent Commands
 
-The registry can queue only allowlisted commands. For migration packages, the agent supports:
+The Hub can queue only allowlisted commands. For migration packages, the agent supports:
 
 - `preflight` with `vm_name`: runs VM migration preflight and returns `done` only when the VM can be packaged safely.
 - `receive_vm_package`: validates a staged package manifest and checksums.
@@ -129,9 +131,10 @@ The first v0.6 UI entry point is the **Live Migration** VM action in the main to
 - runs migration preflight
 - enables package creation only after a successful preflight
 
-The UI now includes a **Remote Hosts** panel and a **Live Migration** dialog. The dialog loads real target hosts from the registry, blocks offline or KVM/libvirt-unready hosts, runs local preflight, creates the NAS package, queues the target import command, and records migration IDs for status polling.
+The UI now includes a **Remote Hosts** panel and a **Live Migration** dialog. The dialog loads real target hosts from the Hub, blocks offline or KVM/libvirt-unready hosts, runs local preflight, creates the NAS package, queues the target import command, and records migration IDs for status polling.
 
 ## Not Implemented Yet
 
 - True live RAM migration.
+- HG-MEMDIFF or any custom dirty-page transfer protocol.
 - Streaming byte-level progress from agent commands.

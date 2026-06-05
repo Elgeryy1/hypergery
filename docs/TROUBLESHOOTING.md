@@ -169,20 +169,20 @@ Installer ISOs and early boot environments may ignore ACPI shutdown. Use Force O
 
 The acceptance script falls back to force off before testing snapshots on a stopped VM.
 
-## Registry Is Not Reachable
+## Hub Is Not Reachable
 
-Confirm the registry is running and the URL matches on every host:
+Confirm the Hub is running and the URL matches on every host:
 
 ```bash
-python -m hypergery_ubuntu.cli registry health --registry-url http://nas-or-registry-host:8765
-python -m hypergery_ubuntu.cli host list --registry-url http://nas-or-registry-host:8765
+python -m hypergery_ubuntu.cli hub health --hub-url http://nas-or-hub-host:8765
+python -m hypergery_ubuntu.cli host list --hub-url http://nas-or-hub-host:8765
 ```
 
-In the Qt app, the Remote Hosts panel uses `HYPERGERY_REGISTRY_URL` or `http://127.0.0.1:8765`.
+In the Qt app, the Remote Hosts panel uses `HYPERGERY_HUB_URL`, then the compatible `HYPERGERY_REGISTRY_URL` fallback, then `http://127.0.0.1:8765`.
 
 ## Target Host Is Offline or Blocked
 
-The registry marks a host offline when its heartbeat is stale. Run the agent on the target host:
+The Hub marks a host offline when its heartbeat is stale. Run the agent on the target host:
 
 ```bash
 python -m hypergery_ubuntu.cli agent once

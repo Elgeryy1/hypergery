@@ -13,6 +13,8 @@ HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor,
 
 HyperGery v0.6.0 development is focused on NAS Live Migration: a NAS-backed control plane, host agents, host discovery, VM package export/import, migration preflight, remote import orchestration, and a UI action named **Live Migration**. The implementation is intentionally conservative: when a true live RAM/disk migration is not safe, HyperGery performs a NAS Clone Migration strategy and keeps the source VM untouched.
 
+Current v0.6.0 status: tests, Docker Hub, Hub/Agent smoke, UI smoke, and local NAS Clone Migration E2E have passed on `develop`. A real two-physical-host NAS Clone Migration smoke remains pending before final release; v0.6.0 can be treated only as RC-candidate work until that is completed.
+
 ## Screenshots
 
 ![HyperGery v0.2.0 PySide6 dashboard](docs/screenshots/hypergery-v0.2-main.png)
@@ -106,17 +108,18 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - Docker deployment lives in `docker/` and starts with `cd docker && docker compose up -d`.
 - On the NAS/QNAP, use `HYPERGERY_NAS_ROOT=/share/CACHEDEV2_DATA/Gerard/hypergery`.
 - On the Ubuntu VM/app, use `HYPERGERY_HUB_URL=http://192.168.1.150:8765`.
-- The Hub DB is stored in `docker/data`; migration packages stay under the NAS data folder.
+- The Hub DB is stored in the Docker volume `hypergery-hub-data`; migration packages stay under the NAS data folder.
+- The container has a `/health` Docker healthcheck.
 - See [docs/HYPERGERY_HUB.md](docs/HYPERGERY_HUB.md) and [docs/NAS_DEPLOYMENT.md](docs/NAS_DEPLOYMENT.md).
 
 ### NAS Live Migration (v0.6.0)
 
-- HyperGery Hub / NAS Control Plane registry for host discovery, VM inventory, command queueing, events, and migration status.
+- HyperGery Hub / NAS Control Plane for host discovery, VM inventory, command queueing, events, and migration status.
 - HyperGery Agent on each participating host with safe command allowlist only.
 - NAS staging directory for migration packages.
 - VM package export/import for domain XML, qcow2 disks, attached ISO when requested, lab/network/template metadata, checksums, and migration logs.
 - Migration preflight checks for source VM state, disk/ISO availability, staging path, local name conflicts, host readiness, and running-VM safety.
-- Remote Hosts UI panel reads real hosts from the registry and shows online/offline state, last seen, RAM/disk, KVM/libvirt readiness, and active VMs.
+- Remote Hosts UI panel reads real hosts from the Hub and shows online/offline state, last seen, RAM/disk, KVM/libvirt readiness, and active VMs.
 - **Live Migration** dialog lists real online target hosts, blocks offline/unready targets, runs local preflight, creates the source package in NAS staging, queues `import_vm_package` on the target host, and records migration status for polling.
 - Development CLI: hub, registry compatibility alias, agent, host, and migrate commands.
 
@@ -125,8 +128,8 @@ v0.6.0 must not delete the source VM or original disks. Running VM copy is block
 Current development CLI:
 
 ```bash
-python -m hypergery_ubuntu.cli registry serve --host 127.0.0.1 --port 8765
-python -m hypergery_ubuntu.cli registry health
+python -m hypergery_ubuntu.cli hub serve --host 127.0.0.1 --port 8765
+python -m hypergery_ubuntu.cli hub health
 python -m hypergery_ubuntu.cli agent config show
 python -m hypergery_ubuntu.cli agent once
 python -m hypergery_ubuntu.cli host list
@@ -139,7 +142,7 @@ python -m hypergery_ubuntu.cli migrate validate-package /mnt/hypergery-nas/migra
 python -m hypergery_ubuntu.cli migrate import /mnt/hypergery-nas/migrations/<migration_id> --target-vm-name <target_name>
 python -m hypergery_ubuntu.cli migrate list --path /mnt/hypergery-nas
 
-# Remote registry/agent orchestration
+# Remote Hub/agent orchestration
 python -m hypergery_ubuntu.cli migrate remote <vm_name> \
   --nas-path /mnt/hypergery-nas \
   --source-host-id source-host \
@@ -153,6 +156,8 @@ See [docs/NAS_LIVE_MIGRATION.md](docs/NAS_LIVE_MIGRATION.md) for the package lay
 ### Not yet implemented
 
 - True live RAM migration with custom dirty-page transfer.
+- HG-MEMDIFF or any custom RAM dirty-page transfer protocol.
+- Real two-physical-host NAS Clone Migration validation is still pending before final release.
 - Integrated SPICE renderer.
 - Lab topology zoom/pan and PNG/SVG export.
 - VM role badges on topology nodes.

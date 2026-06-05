@@ -33,9 +33,9 @@ Agent config is JSON and must not contain passwords:
 ## Host Commands
 
 ```bash
-python -m hypergery_ubuntu.cli host list --registry-url http://nas-or-registry-host:8765
-python -m hypergery_ubuntu.cli host show ubuntu-laptop-1 --registry-url http://nas-or-registry-host:8765
-python -m hypergery_ubuntu.cli host test ubuntu-laptop-1 --registry-url http://nas-or-registry-host:8765
+python -m hypergery_ubuntu.cli host list --hub-url http://nas-or-hub-host:8765
+python -m hypergery_ubuntu.cli host show ubuntu-laptop-1 --hub-url http://nas-or-hub-host:8765
+python -m hypergery_ubuntu.cli host test ubuntu-laptop-1 --hub-url http://nas-or-hub-host:8765
 ```
 
 `host test` queues a safe `ping` command. The target agent marks it `running` then `done` on its next cycle.

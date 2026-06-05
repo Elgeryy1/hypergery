@@ -2,6 +2,8 @@
 
 HyperGery Hub is the v0.6.0 NAS control-plane service. It exposes an HTTP JSON API on port `8765` and coordinates hosts, agents, command queues, VM inventory, migration status, and basic events.
 
+Current validation status: Docker Hub, Hub/Agent smoke, UI smoke, and local NAS Clone Migration E2E have passed. A real two-physical-host NAS Clone Migration smoke is still pending before final release.
+
 The existing `registry` module remains as the compatible implementation name. User-facing commands can use `hub`:
 
 ```bash
@@ -56,6 +58,8 @@ Tables:
 
 NAS storage is only for migration packages, disks, and ISO assets. In Docker the NAS root is mounted at `/hypergery`, with migration packages under `/hypergery/migrations`.
 
+The Docker deployment persists `/data` in the Docker volume `hypergery-hub-data` so SQLite does not live on the NAS share.
+
 ## Configuration
 
 App and agent URL resolution:
@@ -82,3 +86,8 @@ python -m hypergery_ubuntu.cli agent run
 ```
 
 No passwords, SSH keys, SMB credentials, or other secrets are stored by the Hub.
+
+## Not Included
+
+- True live RAM migration.
+- HG-MEMDIFF or any custom dirty-page transfer protocol.

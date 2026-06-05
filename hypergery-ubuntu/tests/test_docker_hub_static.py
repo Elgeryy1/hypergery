@@ -13,6 +13,9 @@ class DockerHubStaticTests(unittest.TestCase):
         self.assertTrue((ROOT / "docker" / "docker-compose.yml").is_file())
         self.assertTrue((ROOT / "docker" / ".env.example").is_file())
         self.assertTrue((ROOT / "docker" / "data" / ".gitkeep").is_file())
+        dockerfile = (ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("HEALTHCHECK", dockerfile)
+        self.assertIn("http://127.0.0.1:8765/health", dockerfile)
 
     def test_compose_exposes_hub_without_secrets(self):
         compose = (ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8")

@@ -375,7 +375,7 @@ class MainWindow(QMainWindow):
         remote_header = QHBoxLayout()
         remote_title = QLabel("Remote Hosts")
         remote_title.setObjectName("sectionTitle")
-        self.remote_status_label = QLabel("Registry not loaded")
+        self.remote_status_label = QLabel("Hub not loaded")
         self.remote_status_label.setObjectName("mutedLabel")
         self.refresh_remote_button = self._button("Refresh", self.refresh_remote_hosts)
         self.test_remote_button = self._button("Test", self.test_selected_remote_host)
@@ -403,7 +403,7 @@ class MainWindow(QMainWindow):
         self.remote_detail = QTextEdit()
         self.remote_detail.setReadOnly(True)
         self.remote_detail.setMaximumHeight(160)
-        self.remote_detail.setPlaceholderText("Select Refresh to load hosts from the NAS registry.")
+        self.remote_detail.setPlaceholderText("Select Refresh to load hosts from the HyperGery Hub.")
         remote_layout.addWidget(self.remote_detail)
         self.main_tabs.addTab(remote_tab, "Remote Hosts")
         

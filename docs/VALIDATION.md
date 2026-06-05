@@ -34,6 +34,7 @@ Docker/Hub/Agent smoke on prepared host (2026-06-05):
 - [x] `docker compose config` passed.
 - [x] Initial Docker smoke exposed a real deployment issue: SQLite DB on `./data` can lock when the repo is on a NAS/shared mount.
 - [x] Docker Compose now persists `/data` in the Docker volume `hypergery-hub-data`; `/hypergery` remains the NAS data bind mount.
+- [x] Docker image includes a `/health` healthcheck.
 - [x] `docker compose build` completed.
 - [x] `docker compose up -d --force-recreate` started `hypergery-hub`.
 - [x] `curl http://127.0.0.1:8765/health` returned `{"ok": true}`.
@@ -70,6 +71,20 @@ NAS Clone Migration local E2E smoke on prepared host (2026-06-05):
 - [x] Qt Remote Hosts offscreen smoke showed source and target logical hosts.
 - [x] Qt Live Migration dialog offscreen smoke listed `ubuntu-hyperv-target`; offline target state blocked migration, and a refreshed online target allowed preflight and enabled Start Migration.
 - [ ] A real two-physical-host NAS Clone Migration remains required before declaring v0.6.0 RC.
+
+v0.6.0 close-out check on prepared host (2026-06-05):
+
+- [x] `develop` was synchronized with `origin/develop`.
+- [x] `QT_QPA_PLATFORM=offscreen /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests` ran 192 tests OK.
+- [x] `python3 -m unittest discover -s tests` ran 192 tests OK, skipped 6 Qt tests without PySide6.
+- [x] `python3 -m compileall hypergery-ubuntu` passed.
+- [x] `bash -n` passed for all deployment/acceptance scripts.
+- [x] `docker compose config`, `docker compose build`, and `docker compose up -d` passed.
+- [x] `curl http://127.0.0.1:8765/health` returned `{"ok": true}`.
+- [x] `agent once` refreshed `ubuntu-hyperv-source` and `ubuntu-hyperv-target`.
+- [x] `host test ubuntu-hyperv-source` was processed by the source agent with `pong=true`.
+- [x] No release, tag, or `main` merge was created.
+- [ ] v0.6.0 final release remains blocked on a real two-physical-host NAS Clone Migration smoke.
 
 ## v0.6.0 — NAS Live Migration Validation Plan
 

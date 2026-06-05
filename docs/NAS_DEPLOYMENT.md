@@ -2,6 +2,8 @@
 
 This is the v0.6.0 deployment shape for HyperGery Hub on the QNAP/NAS.
 
+Status before final release: Hub Docker and local Hub/Agent/NAS Clone Migration smoke have passed. A real two-physical-host NAS Clone Migration smoke remains pending before v0.6.0 final release.
+
 Real paths:
 
 - NAS IP: `192.168.1.150`
@@ -26,6 +28,8 @@ curl http://192.168.1.150:8765/health
 ```
 
 Do not store passwords, SSH keys, or SMB credentials in `.env`, scripts, or docs.
+
+The Hub SQLite DB is stored in the Docker volume `hypergery-hub-data`, not in the NAS share. The NAS bind mount is only for migration packages and assets under `/hypergery`.
 
 ## Ubuntu Agent
 
@@ -55,3 +59,5 @@ Remote Hosts and Live Migration use the Hub for host list, target selection, com
 - DB: metadata and state.
 
 Source VMs and source disks remain untouched during NAS clone migration.
+
+v0.6.0 does not include true live RAM migration or HG-MEMDIFF/custom dirty-page transfer.

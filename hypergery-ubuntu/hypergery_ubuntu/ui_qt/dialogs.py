@@ -791,7 +791,7 @@ class LiveMigrationDialog(QDialog):
             self.error_label.setText("Source host ID is required.")
             return
         if not values["target_host_id"]:
-            self.error_label.setText("Select an online target host from the registry.")
+            self.error_label.setText("Select an online target host from the Hub.")
             return
         if not values["nas_path"]:
             self.error_label.setText("NAS staging path is required.")
