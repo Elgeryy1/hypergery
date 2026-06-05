@@ -86,10 +86,11 @@ List staged packages:
 python -m hypergery_ubuntu.cli migrate list --path /mnt/hypergery-nas
 ```
 
-Remote Hub/agent orchestration:
+Remote Hub/agent orchestration (shared NAS mode):
 
 ```bash
 python -m hypergery_ubuntu.cli migrate remote hg-demo \
+  --transfer nas \
   --nas-path /mnt/hypergery-nas \
   --source-host-id source-host \
   --target-host-id target-host \
@@ -101,7 +102,7 @@ python -m hypergery_ubuntu.cli migrate status \
   --hub-url http://nas-or-hub-host:8765
 ```
 
-Remote flow:
+Remote flow (shared NAS mode):
 
 1. Source runs preflight and records `preflight`.
 2. Source exports package into NAS staging and records `packaging` then `uploaded`.
@@ -109,6 +110,57 @@ Remote flow:
 4. Target agent picks up the command and records `importing`.
 5. Target import defines the VM, rewrites identity/media paths, and records `defining_vm` then `done`.
 6. Any exception records `failed` with a clear error.
+
+## Hub Transfer (v0.7)
+
+Shared NAS mode requires every host to see the package at the **same absolute
+path** (e.g. `/mnt/hypergery-nas` mounted everywhere). Hub Transfer removes
+that requirement: the package travels through the Hub over HTTP, so hosts only
+need the Hub URL.
+
+```bash
+python -m hypergery_ubuntu.cli migrate remote hg-demo \
+  --transfer hub \
+  --source-host-id source-host \
+  --target-host-id target-host \
+  --target-vm-name hg-demo-target \
+  --hub-url http://nas-or-hub-host:8765
+```
+
+Hub Transfer flow:
+
+1. Source runs preflight (`preflight`) against a local scratch directory
+   (`<data_dir>/hub-transfer/outgoing`), no NAS path needed.
+2. Source exports the package locally (`packaging`), uploads every file to the
+   Hub staging area, deletes its local temporary copy, and records `uploaded`
+   with `package_path = hub://<migration_id>`.
+3. Hub queues `import_vm_package` with `transfer: hub` (`waiting_target`).
+4. Target agent downloads the package from the Hub into
+   `<data_dir>/hub-transfer/incoming/<migration_id>` and records `importing`.
+5. Target validates checksums and imports as usual (`defining_vm`, `done`).
+6. After a successful import the target deletes its downloaded copy **and the
+   Hub staging copy** (`hub_package_deleted: true` in the result). The source
+   VM and its disks are never touched in either mode.
+
+Hub staging details:
+
+- Staging endpoints: `PUT/GET /packages/<migration_id>/<relative_path>`,
+  `GET /packages/<migration_id>` (listing), `DELETE /packages/<migration_id>`.
+- Files stream in 1 MiB chunks in both directions; uploads require
+  `Content-Length` and paths are validated against traversal.
+- The staging directory defaults to `<db_dir>/staging` and can be overridden
+  with `HYPERGERY_HUB_STAGING` (the Docker compose sets `/hypergery/staging`,
+  which lands on the NAS storage).
+- A failed migration may leave its package staged on the Hub for inspection;
+  nothing deletes it automatically. Remove it manually with
+  `DELETE /packages/<migration_id>` once diagnosed.
+
+Choosing a mode:
+
+- `--transfer hub` (wizard default): zero host requirements; data flows
+  source → Hub → target.
+- `--transfer nas`: one copy instead of upload+download when a fast shared
+  mount already exists on both hosts.
 
 ## Agent Commands
 

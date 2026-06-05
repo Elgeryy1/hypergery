@@ -104,7 +104,7 @@ class AppSettingsDialog(QDialog):
         )))
         self.pages.addWidget(self._section_page((
             self._callout("The agent only runs allowlisted commands and rejects package paths outside the NAS staging root.", "calloutInfo"),
-            self._callout("The agent reuses the Hub, Host identity, and NAS settings from the other sections. Extra agent options are planned for v0.7.x.", "calloutInfo"),
+            self._callout("The agent reuses the Hub, Host identity, and NAS settings from the other sections. Extra agent options are planned for v0.8.", "calloutInfo"),
         )))
         test_nas = QPushButton("Test NAS Write")
         test_nas.clicked.connect(self.test_nas)
@@ -120,10 +120,10 @@ class AppSettingsDialog(QDialog):
         )))
         self.pages.addWidget(self._section_page((
             self._callout("Host Key to release console input: Right Ctrl. SPICE VMs always use the external viewer.", "calloutInfo"),
-            self._callout("Console preferences (Scale to Fit default, viewer command) are planned for v0.7.x.", "calloutInfo"),
+            self._callout("Console preferences (Scale to Fit default, viewer command) are planned for v0.8.", "calloutInfo"),
         )))
         self.pages.addWidget(self._section_page((
-            self._callout("Dark is the v0.7 theme. Accent and density options are planned for v0.7.x.", "calloutInfo"),
+            self._callout("Dark is the v0.7 theme. Accent and density options are planned for v0.8.", "calloutInfo"),
         )))
         config_file = QLineEdit(str(config_path()))
         config_file.setReadOnly(True)

@@ -609,7 +609,7 @@ class QtUiTests(unittest.TestCase):
             window.sidebar_nav.setCurrentRow(sections.index("Labs"))
             self.assertEqual(window.main_tabs.currentIndex(), 0)
             self.assertEqual(window.vm_page_title.text(), "Labs")
-            self.assertIn("v0.7.x", window.labs_mode_banner.text())
+            self.assertIn("v0.8", window.labs_mode_banner.text())
             window.sidebar_nav.setCurrentRow(sections.index("Virtual Machines"))
             self.assertEqual(window.vm_page_title.text(), "Virtual Machines")
             self.assertFalse(window.labs_mode_banner.isVisible())

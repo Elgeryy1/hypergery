@@ -13,7 +13,9 @@ HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor,
 
 HyperGery v0.6.0 is the NAS Clone Migration release: a NAS-backed control plane, host agents, host discovery, VM package export/import, migration preflight, remote import orchestration, and a UI action named **Live Migration**. The implementation is intentionally conservative: when a true live RAM/disk migration is not safe, HyperGery performs a NAS Clone Migration strategy and keeps the source VM untouched.
 
-Current v0.6.0 status: final release. Tests, Docker Hub, Hub/Agent smoke, UI smoke, local NAS Clone Migration E2E, and a real two-physical-host NAS Clone Migration smoke have passed.
+HyperGery v0.7.0 (in development on `develop`) is the Visual Refresh & UX Stabilization release: a full PySide6/QSS UI refresh (app shell with sidebar navigation, dashboard health cards, remote host cards, tabbed settings with config-source chips, diagnostics panel, 6-step migration wizard with auto-polling, polished VM view and console window, real migrations history) plus **Hub Transfer** migrations: packages can now be uploaded through the Hub and downloaded by the target, with the temporary Hub copy deleted after import — no shared NAS mount required on the hosts. The Hub runs in Docker on the NAS.
+
+Current v0.7.0 status: feature-complete pre-release on `develop`, pending the final manual two-host smoke before tagging. v0.6.0 remains the latest published release.
 
 ## Screenshots
 
@@ -294,7 +296,7 @@ System Python (no PySide6 — Qt tests are skipped cleanly):
 cd hypergery-ubuntu && python3 -m unittest discover -s tests
 ```
 
-Full suite inside the venv (all 201 tests pass including Qt tests):
+Full suite inside the venv (all 249 tests pass including Qt tests):
 
 ```bash
 cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
@@ -317,8 +319,9 @@ The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime fo
 - v0.3.0 — Lab Manager + Templates Manager ✓
 - v0.4.0 — Lab Automation (instantiation wizard, rollback, template editing, VM clone in duplicate) ✓
 - v0.5.0 — Lab Topology view, planned VM editor, ISO reuse, resource overview, CLI update/instantiate ✓
-- v0.6.0 — NAS Live Migration: registry, agents, host discovery, NAS staging, migration package export/import, UI action, CLI helpers
-- v0.7.0 — topology export/polish, zoom/pan, role badges, additional UX refinement
+- v0.6.0 — NAS Live Migration: registry, agents, host discovery, NAS staging, migration package export/import, UI action, CLI helpers ✓
+- v0.7.0 — Visual Refresh & UX Stabilization: PySide6/QSS UI redesign, Hub on the NAS, Hub Transfer migrations, migrations history, agent user service (pre-release on develop)
+- v0.8.0 — Lab visual workspace, extra Settings sections (agent options, console preferences, appearance), further UX
 - v1.0.0 — stable classroom-ready release
 
 ## License

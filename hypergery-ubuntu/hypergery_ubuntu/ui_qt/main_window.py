@@ -305,7 +305,7 @@ class MainWindow(QMainWindow):
         header.addWidget(self.vm_count_label)
         layout.addLayout(header)
         self.labs_mode_banner = QLabel(
-            "Labs share this view for now — a lab-specific visual workspace arrives later in v0.7.x. "
+            "Labs share this view for now — a lab-specific visual workspace arrives in v0.8. "
             "Use the Labs table and lab actions below."
         )
         self.labs_mode_banner.setObjectName("calloutInfo")
