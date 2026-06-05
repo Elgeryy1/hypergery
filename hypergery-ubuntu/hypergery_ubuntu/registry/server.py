@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from ..backend import HyperGeryError
 from .store import MIGRATION_STATUSES, RegistryStore
@@ -358,6 +358,25 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
                 return
             if len(path) == 2 and path[0] == "vms":
                 self._send_json(200, {"host_id": path[1], "vms": self.server.store.list_vms(path[1])})
+                return
+            if path == ["commands"]:
+                query = parse_qs(urlparse(self.path).query)
+
+                def first(key: str) -> str | None:
+                    values = query.get(key) or []
+                    return values[0] if values else None
+
+                self._send_json(
+                    200,
+                    {
+                        "commands": self.server.store.list_commands(
+                            target_host_id=first("target_host_id"),
+                            status=first("status"),
+                            command_type=first("command_type"),
+                            limit=first("limit") or 100,
+                        )
+                    },
+                )
                 return
             if len(path) == 3 and path[0] == "commands" and path[1] == "id":
                 self._send_json(200, self.server.store.get_command(path[2]))

@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from ..backend import HyperGeryError
@@ -84,6 +84,28 @@ class RegistryClient:
 
     def pending_commands(self, host_id: str) -> list[dict[str, Any]]:
         return self.request("GET", f"/commands/{host_id}").get("commands", [])
+
+    def list_commands(
+        self,
+        *,
+        target_host_id: str | None = None,
+        status: str | None = None,
+        command_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read-only command queue listing, newest first, with optional filters."""
+        params = {
+            key: value
+            for key, value in (
+                ("target_host_id", target_host_id),
+                ("status", status),
+                ("command_type", command_type),
+                ("limit", limit),
+            )
+            if value
+        }
+        path = "/commands" + (f"?{urlencode(params)}" if params else "")
+        return self.request("GET", path).get("commands", [])
 
     def command(self, command_id: str) -> dict[str, Any]:
         return self.request("GET", f"/commands/id/{command_id}")

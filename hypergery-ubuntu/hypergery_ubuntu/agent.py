@@ -7,6 +7,7 @@ import shutil
 import socket
 import sys
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,28 @@ def read_cpu_model() -> str:
     return ""
 
 
+def vm_interfaces_from_xml(xml: str) -> tuple[list[str], list[str]]:
+    """Extract (networks, MAC addresses) from a libvirt domain XML, best effort."""
+    networks: list[str] = []
+    macs: list[str] = []
+    if not xml:
+        return networks, macs
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return networks, macs
+    for interface in root.findall("./devices/interface"):
+        source = interface.find("source")
+        if source is not None:
+            network = source.attrib.get("network") or source.attrib.get("bridge") or ""
+            if network:
+                networks.append(network)
+        mac = interface.find("mac")
+        if mac is not None and mac.attrib.get("address"):
+            macs.append(mac.attrib["address"])
+    return networks, macs
+
+
 def disk_free_mib(path: str) -> int:
     candidate = Path(path).expanduser()
     check_path = candidate if candidate.exists() else candidate.parent
@@ -176,6 +199,9 @@ class HyperGeryAgent:
             iso_paths = []
             if getattr(vm, "iso_path", ""):
                 iso_paths.append(vm.iso_path)
+            networks, macs = vm_interfaces_from_xml(getattr(vm, "xml", ""))
+            if not networks and getattr(vm, "network", ""):
+                networks = [vm.network]
             vms.append(
                 {
                     "vm_name": vm.name,
@@ -186,6 +212,8 @@ class HyperGeryAgent:
                     "vcpus": vm.vcpus,
                     "disk_paths": disk_paths,
                     "iso_paths": iso_paths,
+                    "networks": networks,
+                    "macs": macs,
                 }
             )
         return {"host_id": self.config.host_id, "vms": vms}

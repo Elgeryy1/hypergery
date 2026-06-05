@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from hypergery_ubuntu import cli
-from hypergery_ubuntu.agent import AgentConfig, HyperGeryAgent
+from hypergery_ubuntu.agent import AgentConfig, HyperGeryAgent, vm_interfaces_from_xml
 from hypergery_ubuntu.backend import HyperGeryError, PreflightItem, VmSummary
 from hypergery_ubuntu.migration import export_vm_package
 from hypergery_ubuntu.registry import RegistryServer, RegistryStore
@@ -212,6 +212,59 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(client.reported_vms["host_id"], "local")
         self.assertEqual(client.reported_vms["vms"][0]["vm_name"], "running-vm")
         self.assertEqual(client.reported_vms["vms"][0]["display"], "unknown")
+
+    def test_vm_interfaces_from_xml_extracts_networks_and_macs(self):
+        xml = """
+        <domain>
+          <devices>
+            <interface type='network'>
+              <mac address='52:54:00:aa:bb:cc'/>
+              <source network='hg-net-lab1'/>
+            </interface>
+            <interface type='bridge'>
+              <mac address='52:54:00:dd:ee:ff'/>
+              <source bridge='hgbr1234567'/>
+            </interface>
+          </devices>
+        </domain>
+        """
+        networks, macs = vm_interfaces_from_xml(xml)
+        self.assertEqual(networks, ["hg-net-lab1", "hgbr1234567"])
+        self.assertEqual(macs, ["52:54:00:aa:bb:cc", "52:54:00:dd:ee:ff"])
+        # Malformed or empty XML degrades to empty lists, never raises.
+        self.assertEqual(vm_interfaces_from_xml("<broken"), ([], []))
+        self.assertEqual(vm_interfaces_from_xml(""), ([], []))
+
+    def test_vm_inventory_payload_includes_networks_and_macs(self):
+        class XmlBackend(FakeBackend):
+            def list_vms(self):
+                return [
+                    VmSummary(
+                        name="net-vm",
+                        state="running",
+                        lab_id="lab1",
+                        ram_mib=1024,
+                        vcpus=1,
+                        disk_path="/tmp/a.qcow2",
+                        network="hg-net-lab1",
+                        xml=(
+                            "<domain><devices><interface type='network'>"
+                            "<mac address='52:54:00:aa:bb:cc'/>"
+                            "<source network='hg-net-lab1'/>"
+                            "</interface></devices></domain>"
+                        ),
+                    ),
+                    VmSummary(name="bare-vm", state="shut off", lab_id="lab1", network="hg-net-lab1"),
+                ]
+
+        agent = HyperGeryAgent(AgentConfig(host_id="local", name="Local"), backend=XmlBackend(), client=FakeClient())
+        payload = agent.vm_inventory_payload()
+        by_name = {vm["vm_name"]: vm for vm in payload["vms"]}
+        self.assertEqual(by_name["net-vm"]["networks"], ["hg-net-lab1"])
+        self.assertEqual(by_name["net-vm"]["macs"], ["52:54:00:aa:bb:cc"])
+        # Without XML the single VmSummary.network field is used as fallback.
+        self.assertEqual(by_name["bare-vm"]["networks"], ["hg-net-lab1"])
+        self.assertEqual(by_name["bare-vm"]["macs"], [])
 
     def test_config_reads_hub_environment_before_registry_fallback(self):
         with patch.dict(

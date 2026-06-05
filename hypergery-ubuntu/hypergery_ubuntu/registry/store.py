@@ -126,11 +126,15 @@ class RegistryStore:
                     vcpus INTEGER NOT NULL,
                     disk_paths_json TEXT NOT NULL,
                     iso_paths_json TEXT NOT NULL,
+                    networks_json TEXT NOT NULL DEFAULT '',
+                    macs_json TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(host_id, vm_name)
                 )
                 """
             )
+            self._ensure_column(conn, "host_vms", "networks_json", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "host_vms", "macs_json", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS commands (
@@ -299,6 +303,8 @@ class RegistryStore:
                     "vcpus": int(item.get("vcpus") or 0),
                     "disk_paths_json": _json_dump(item.get("disk_paths") or ([] if not item.get("disk_path") else [item.get("disk_path")])),
                     "iso_paths_json": _json_dump(item.get("iso_paths") or ([] if not item.get("iso_path") else [item.get("iso_path")])),
+                    "networks_json": _json_dump(item.get("networks") or ([] if not item.get("network") else [item.get("network")])),
+                    "macs_json": _json_dump(item.get("macs") or item.get("mac_addresses") or []),
                     "updated_at": timestamp,
                 }
             )
@@ -308,10 +314,12 @@ class RegistryStore:
                 """
                 INSERT INTO host_vms (
                     host_id, vm_name, state, lab_id, display, ram_mib, vcpus,
-                    disk_paths_json, iso_paths_json, updated_at
+                    disk_paths_json, iso_paths_json, networks_json, macs_json,
+                    updated_at
                 ) VALUES (
                     :host_id, :vm_name, :state, :lab_id, :display, :ram_mib, :vcpus,
-                    :disk_paths_json, :iso_paths_json, :updated_at
+                    :disk_paths_json, :iso_paths_json, :networks_json, :macs_json,
+                    :updated_at
                 )
                 """,
                 rows,
@@ -326,6 +334,8 @@ class RegistryStore:
         vm = dict(row)
         vm["disk_paths"] = _json_load(vm.pop("disk_paths_json", ""), [])
         vm["iso_paths"] = _json_load(vm.pop("iso_paths_json", ""), [])
+        vm["networks"] = _json_load(vm.pop("networks_json", ""), [])
+        vm["macs"] = _json_load(vm.pop("macs_json", ""), [])
         return vm
 
     def list_vms(self, host_id: str | None = None) -> list[dict[str, Any]]:
@@ -383,6 +393,45 @@ class RegistryStore:
         if row is None:
             raise HyperGeryError(f"Command does not exist: {command_id}")
         return self._command_from_row(row)
+
+    COMMAND_LIST_STATUSES = {"pending", "running", "done", "failed"}
+
+    def list_commands(
+        self,
+        *,
+        target_host_id: str | None = None,
+        status: str | None = None,
+        command_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read-only command queue listing, newest first, with optional filters."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if target_host_id:
+            clauses.append("target_host_id = ?")
+            params.append(_host_id(target_host_id))
+        if status:
+            if status not in self.COMMAND_LIST_STATUSES:
+                raise HyperGeryError(f"Unsupported command status filter: {status}")
+            clauses.append("status = ?")
+            params.append(status)
+        if command_type:
+            if command_type not in ALLOWED_COMMAND_TYPES:
+                raise HyperGeryError(f"Unsupported command_type filter: {command_type}")
+            clauses.append("command_type = ?")
+            params.append(command_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        try:
+            clamped_limit = max(1, min(int(limit or 100), 500))
+        except (TypeError, ValueError) as exc:
+            raise HyperGeryError(f"limit must be a number, got: {limit!r}") from exc
+        params.append(clamped_limit)
+        with closing(self.connect()) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM commands {where} ORDER BY created_at DESC, command_id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [self._command_from_row(row) for row in rows]
 
     def pending_commands_for_host(self, host_id: str) -> list[dict[str, Any]]:
         with closing(self.connect()) as conn:

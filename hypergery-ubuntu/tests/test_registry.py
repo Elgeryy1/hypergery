@@ -95,6 +95,63 @@ class RegistryStoreTests(unittest.TestCase):
         self.assertEqual(vms[0]["display"], "vnc")
         self.assertEqual(vms[0]["disk_paths"], ["/mnt/hypergery-nas/hypergery/vms/hg-test.qcow2"])
 
+    def test_vm_inventory_reports_networks_and_macs(self):
+        self.store.register_host({"host_id": "local", "hostname": "localhost"})
+        self.store.report_vms(
+            {
+                "host_id": "local",
+                "vms": [
+                    {
+                        "vm_name": "hg-net",
+                        "state": "running",
+                        "networks": ["hg-net-lab1", "default"],
+                        "macs": ["52:54:00:aa:bb:cc"],
+                    },
+                    {"vm_name": "hg-legacy", "state": "running"},
+                ],
+            }
+        )
+        vms = {vm["vm_name"]: vm for vm in self.store.list_vms("local")}
+        self.assertEqual(vms["hg-net"]["networks"], ["hg-net-lab1", "default"])
+        self.assertEqual(vms["hg-net"]["macs"], ["52:54:00:aa:bb:cc"])
+        # Old agents that do not report the new fields still work.
+        self.assertEqual(vms["hg-legacy"]["networks"], [])
+        self.assertEqual(vms["hg-legacy"]["macs"], [])
+
+    def test_list_commands_filters_and_limit(self):
+        self.store.register_host({"host_id": "host-a", "hostname": "a"})
+        self.store.register_host({"host_id": "host-b", "hostname": "b"})
+        first = self.store.create_command({"target_host_id": "host-a", "command_type": "ping", "payload": {}})
+        second = self.store.create_command({"target_host_id": "host-a", "command_type": "vm_start", "payload": {"vm_name": "vm1"}})
+        third = self.store.create_command({"target_host_id": "host-b", "command_type": "vm_shutdown", "payload": {"vm_name": "vm2"}})
+        self.store.set_command_result(second["command_id"], {"status": "done", "result": {"message": "started"}})
+
+        everything = self.store.list_commands()
+        self.assertEqual(len(everything), 3)
+
+        host_a = self.store.list_commands(target_host_id="host-a")
+        self.assertEqual({item["command_id"] for item in host_a}, {first["command_id"], second["command_id"]})
+
+        done = self.store.list_commands(status="done")
+        self.assertEqual([item["command_id"] for item in done], [second["command_id"]])
+        self.assertEqual(done[0]["result"], {"message": "started"})
+
+        starts = self.store.list_commands(command_type="vm_start")
+        self.assertEqual([item["command_id"] for item in starts], [second["command_id"]])
+
+        limited = self.store.list_commands(limit=1)
+        self.assertEqual(len(limited), 1)
+
+        combo = self.store.list_commands(target_host_id="host-b", status="pending")
+        self.assertEqual([item["command_id"] for item in combo], [third["command_id"]])
+
+        with self.assertRaises(HyperGeryError):
+            self.store.list_commands(status="exploded")
+        with self.assertRaises(HyperGeryError):
+            self.store.list_commands(command_type="shell")
+        with self.assertRaises(HyperGeryError):
+            self.store.list_commands(limit="lots")
+
     def test_events_lifecycle(self):
         event = self.store.create_event({"kind": "hub", "message": "started", "payload": {"port": 8765}})
         self.assertEqual(event["kind"], "hub")
@@ -209,6 +266,31 @@ class RegistryHttpTests(unittest.TestCase):
         status, event = self.request_json("POST", "/events", {"kind": "test", "message": "ok"})
         self.assertEqual(status, 201)
         self.assertEqual(event["kind"], "test")
+
+    def test_list_commands_endpoint_with_filters(self):
+        from hypergery_ubuntu.registry import RegistryClient
+
+        self.request_json("POST", "/hosts/register", {"host_id": "local", "hostname": "localhost"})
+        client = RegistryClient(self.base_url)
+        ping = client.create_command("local", "ping", {})
+        start = client.create_command("local", "vm_start", {"vm_name": "vm1"})
+        client.set_command_result(start["command_id"], "failed", {"error": "boom"})
+
+        commands = client.list_commands()
+        self.assertEqual({item["command_id"] for item in commands}, {ping["command_id"], start["command_id"]})
+
+        failed = client.list_commands(status="failed")
+        self.assertEqual([item["command_id"] for item in failed], [start["command_id"]])
+        self.assertEqual(failed[0]["result"], {"error": "boom"})
+
+        typed = client.list_commands(command_type="ping", target_host_id="local")
+        self.assertEqual([item["command_id"] for item in typed], [ping["command_id"]])
+
+        limited = client.list_commands(limit=1)
+        self.assertEqual(len(limited), 1)
+
+        with self.assertRaises(HyperGeryError):
+            client.list_commands(status="weird")
 
     def test_vm_power_command_helpers_queue_allowed_commands(self):
         from hypergery_ubuntu.registry import RegistryClient
