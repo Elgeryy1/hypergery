@@ -694,7 +694,7 @@ class MainWindow(QMainWindow):
         actions.setSpacing(8)
         test_button = self._button("Test Host", lambda checked=False, hid=host_id: self._queue_host_test(hid))
         test_button.setEnabled(not offline)
-        view_button = self._button("View VMs", self._dashboard_go_vms)
+        view_button = self._button("View VMs", lambda checked=False, hid=host_id: self._view_host_vms(hid))
         target_button = self._button("Use as Migration Target", lambda checked=False, hid=host_id: self._hint_migration_target(hid))
         target_button.setEnabled(not offline)
         actions.addWidget(test_button)
@@ -707,6 +707,83 @@ class MainWindow(QMainWindow):
     def _hint_migration_target(self, host_id: str) -> None:
         self._dashboard_go_vms()
         self.status.showMessage(f"Select a VM and use Live Migration with target host {host_id}", 8000)
+
+    def _view_host_vms(self, host_id: str) -> None:
+        local_host_id = effective_config()["host_id"].value
+        if host_id == local_host_id:
+            self._dashboard_go_vms()
+            return
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return {"vms": RegistryClient(url).list_vms(host_id)}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            f"Loading VM inventory for {host_id}",
+            fetch,
+            on_success=lambda result: self._show_remote_vms_dialog(host_id, result),
+            refresh_after=False,
+            busy=False,
+        )
+
+    def _show_remote_vms_dialog(self, host_id: str, result: dict[str, Any]) -> None:
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.show_error(f"Cannot load VM inventory for {host_id}: {error}")
+            return
+        vms = list((result or {}).get("vms") or [])
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"VMs on {host_id}")
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        title = QLabel(f"VM inventory · {host_id}")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        note = QLabel(
+            "Read-only inventory reported by that host's agent. Manage these VMs from HyperGery on that "
+            "host; remote VM control arrives in v0.8. Use Live Migration to move VMs between hosts."
+        )
+        note.setObjectName("calloutInfo")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        table = QTableWidget(len(vms), 5)
+        table.setObjectName("remoteVmsTable")
+        table.setHorizontalHeaderLabels(["Name", "State", "Lab", "RAM (MiB)", "vCPUs"])
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        for row, vm in enumerate(vms):
+            state = str(vm.get("state") or "unknown")
+            cells = (
+                str(vm.get("name") or ""),
+                state.upper(),
+                str(vm.get("lab_id") or ""),
+                str(vm.get("ram_mib") or ""),
+                str(vm.get("vcpus") or ""),
+            )
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if column == 1:
+                    item.setForeground(QColor(STATE_COLORS.get(state.replace(" ", ""), "#94A3B8")))
+                table.setItem(row, column, item)
+        layout.addWidget(table, 1)
+        if not vms:
+            empty = QLabel("No VM inventory reported for this host yet (the agent reports it on each heartbeat).")
+            empty.setObjectName("mutedLabel")
+            empty.setWordWrap(True)
+            layout.addWidget(empty)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        dialog.resize(640, 420)
+        dialog.show()
+        self._remote_vms_dialog = dialog
 
     def _render_host_cards(self, hosts: list[dict[str, Any]]) -> None:
         self._clear_remote_cards()

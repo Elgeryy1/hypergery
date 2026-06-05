@@ -643,6 +643,52 @@ class QtUiTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_host_view_vms_shows_remote_inventory(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel, QTableWidget
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+
+            # Remote inventory renders in a read-only dialog with the host's VMs.
+            window._show_remote_vms_dialog(
+                "gery-lenovo",
+                {
+                    "vms": [
+                        {"name": "ubuntu-migrated", "state": "running", "lab_id": "default-lab", "ram_mib": 4096, "vcpus": 2},
+                        {"name": "ubuntu-hub-e2e", "state": "shut off", "lab_id": "default-lab", "ram_mib": 2048, "vcpus": 1},
+                    ]
+                },
+            )
+            dialog = window._remote_vms_dialog
+            self.assertIn("gery-lenovo", dialog.windowTitle())
+            table = dialog.findChild(QTableWidget, "remoteVmsTable")
+            self.assertEqual(table.rowCount(), 2)
+            self.assertEqual(table.item(0, 0).text(), "ubuntu-migrated")
+            self.assertEqual(table.item(0, 1).text(), "RUNNING")
+            texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+            self.assertIn("Read-only inventory", texts)
+            self.assertIn("v0.8", texts)
+            dialog.close()
+
+            # Hub error surfaces instead of silently showing local VMs.
+            with patch.object(window, "show_error") as show_error:
+                window._show_remote_vms_dialog("gery-lenovo", {"error": "connection refused"})
+                show_error.assert_called_once()
+                self.assertIn("gery-lenovo", show_error.call_args[0][0])
+
+            # Viewing the local host keeps the existing navigation behavior.
+            with patch.object(window, "_dashboard_go_vms") as go_vms, \
+                 patch("hypergery_ubuntu.ui_qt.main_window.effective_config") as config:
+                config.return_value = {"host_id": type("V", (), {"value": "local-host"})()}
+                window._view_host_vms("local-host")
+                go_vms.assert_called_once()
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_migrations_history_renders_records_and_copies(self, backend_cls):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.main_window import MainWindow
