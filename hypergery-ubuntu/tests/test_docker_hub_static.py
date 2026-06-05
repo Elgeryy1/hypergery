@@ -17,8 +17,10 @@ class DockerHubStaticTests(unittest.TestCase):
     def test_compose_exposes_hub_without_secrets(self):
         compose = (ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("${HYPERGERY_HUB_PORT:-8765}:8765", compose)
+        self.assertIn("hypergery-hub-data:/data", compose)
         self.assertIn("${HYPERGERY_NAS_ROOT:-/share/CACHEDEV2_DATA/Gerard/hypergery}:/hypergery", compose)
         self.assertIn("HYPERGERY_HUB_DB=/data/hypergery-hub.sqlite", compose)
+        self.assertNotIn("./data:/data", compose)
         self.assertNotIn("password", compose.lower())
         self.assertNotIn("ssh_key", compose.lower())
         self.assertNotIn("Y:\\", compose)

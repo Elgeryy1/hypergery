@@ -7,7 +7,7 @@ services:
     ports:
       - "${HYPERGERY_HUB_PORT:-8765}:8765"
     volumes:
-      - ./data:/data
+      - hypergery-hub-data:/data
       - ${HYPERGERY_NAS_ROOT:-/share/CACHEDEV2_DATA/Gerard/hypergery}:/hypergery
     environment:
       - HYPERGERY_HUB_DB=/data/hypergery-hub.sqlite
@@ -15,3 +15,6 @@ services:
       - HYPERGERY_HUB_HOST=0.0.0.0
       - HYPERGERY_HUB_PORT=8765
     restart: unless-stopped
+
+volumes:
+  hypergery-hub-data:

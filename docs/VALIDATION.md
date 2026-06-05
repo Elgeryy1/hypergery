@@ -29,6 +29,24 @@ python -m hypergery_ubuntu.cli host list --hub-url http://192.168.1.150:8765
 python -m hypergery_ubuntu.cli hub vms --hub-url http://192.168.1.150:8765
 ```
 
+Docker/Hub/Agent smoke on prepared host (2026-06-05):
+
+- [x] `docker compose config` passed.
+- [x] Initial Docker smoke exposed a real deployment issue: SQLite DB on `./data` can lock when the repo is on a NAS/shared mount.
+- [x] Docker Compose now persists `/data` in the Docker volume `hypergery-hub-data`; `/hypergery` remains the NAS data bind mount.
+- [x] `docker compose build` completed.
+- [x] `docker compose up -d --force-recreate` started `hypergery-hub`.
+- [x] `curl http://127.0.0.1:8765/health` returned `{"ok": true}`.
+- [x] `curl http://127.0.0.1:8765/hosts` returned an empty host list before agent registration.
+- [x] `curl http://127.0.0.1:8765/vms` returned an empty VM list before agent inventory.
+- [x] `agent once` registered `ubuntu-hyperv` with KVM/libvirt OK.
+- [x] `host list` showed `ubuntu-hyperv` online.
+- [x] `hub vms` returned the current VM inventory from the agent.
+- [x] `host test ubuntu-hyperv` queued a ping command, and a second `agent once` completed it with `pong=true`.
+- [x] Qt Remote Hosts offscreen smoke loaded `ubuntu-hyperv` from the real local Hub.
+- [x] Qt Live Migration dialog offscreen smoke listed `ubuntu-hyperv` from the real local Hub and kept Start Migration disabled until preflight.
+- [x] `timeout 8s ./scripts/dev-run.sh --no-install` reached preflight OK without traceback; timeout was controlled because the GUI remains open.
+
 ## v0.6.0 — NAS Live Migration Validation Plan
 
 v0.6.0 is not a release yet. Validation must prove NAS Clone Migration behavior without deleting the source VM or original disks.

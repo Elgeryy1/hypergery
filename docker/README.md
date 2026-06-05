@@ -20,7 +20,7 @@ HYPERGERY_NAS_ROOT=/mnt/hypergery-nas/hypergery
 Notes:
 
 - No passwords, SSH keys, or SMB credentials are stored by this compose file.
-- The Hub SQLite DB is persisted in `docker/data`.
+- The Hub SQLite DB is persisted in the Docker volume `hypergery-hub-data`, not on the NAS share.
 - VM migration packages are stored under `HYPERGERY_NAS_ROOT/migrations`.
 - The container sees migration packages under `/hypergery/migrations`.
 - The Hub API listens on port `8765`.
