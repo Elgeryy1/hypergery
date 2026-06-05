@@ -26,6 +26,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _safe_segment(value: str, kind: str) -> str:
+    """Reject anything that is not a single safe path component.
+
+    NAS commit/restore use lab ids and commit ids as directory names; a value
+    like '../../x' must never be allowed to escape the NAS root.
+    """
+    clean = str(value or "").strip()
+    if not clean:
+        raise HyperGeryError(f"{kind} cannot be empty.")
+    if clean in {".", ".."} or "/" in clean or "\\" in clean or "\x00" in clean:
+        raise HyperGeryError(f"Unsafe {kind} (path traversal not allowed): {value!r}")
+    return clean
+
+
 class NasService:
     """Lab commit/restore on the NAS with checksums and dry-run by default.
 
@@ -140,11 +154,20 @@ class NasService:
             dry_run = self.settings.dry_run_default
         log = get_logger()
         operation_id = new_operation_id("nas-commit")
+        lab_id = _safe_segment(lab_id, "lab_id")
         if lab is None:
             if self.lab_store is None:
                 raise HyperGeryError("commit_lab needs a lab manifest or a lab_store.")
             lab = self.lab_store.get_lab(lab_id)
         require_valid_lab(lab, existing_labs=existing_labs or [])
+        # The on-disk directory must match the validated manifest, not an
+        # arbitrary argument — prevents writing one lab's package under
+        # another lab's (or an escaped) path.
+        manifest_lab_id = _safe_segment(str(lab.get("lab_id") or ""), "lab_id")
+        if manifest_lab_id != lab_id:
+            raise HyperGeryError(
+                f"lab_id argument ({lab_id!r}) does not match the manifest lab_id ({manifest_lab_id!r})."
+            )
         plan = self._package_plan(lab, vms_info=vms_info, include_disks=include_disks)
         total_bytes = 0
         files: list[dict[str, Any]] = []
@@ -202,6 +225,9 @@ class NasService:
         verification = self.verify_commit(lab_id, commit_id)
         result["verified"] = verification["ok"]
         if not verification["ok"]:
+            # Don't leave a corrupt package that list_commits()/health() would
+            # later report as a successful commit.
+            shutil.rmtree(target, ignore_errors=True)
             log.error("nas", f"NAS commit verification failed for {lab_id}/{commit_id}",
                       lab_id=lab_id, operation_id=operation_id, details=verification)
             raise HyperGeryError(f"NAS commit verification failed: {verification['errors']}")
@@ -214,7 +240,7 @@ class NasService:
         commits: list[dict[str, Any]] = []
         if not self.commits_root.is_dir():
             return commits
-        lab_dirs = [self.commits_root / lab_id] if lab_id else sorted(self.commits_root.iterdir())
+        lab_dirs = [self.commits_root / _safe_segment(lab_id, "lab_id")] if lab_id else sorted(self.commits_root.iterdir())
         for lab_dir in lab_dirs:
             if not lab_dir.is_dir():
                 continue
@@ -229,6 +255,8 @@ class NasService:
         return sorted(commits, key=lambda item: str(item.get("created_at", "")))
 
     def verify_commit(self, lab_id: str, commit_id: str) -> dict[str, Any]:
+        lab_id = _safe_segment(lab_id, "lab_id")
+        commit_id = _safe_segment(commit_id, "commit_id")
         commit_dir = self.commits_root / lab_id / commit_id
         checksums = commit_dir / CHECKSUMS_FILENAME
         if not checksums.is_file():
@@ -265,6 +293,8 @@ class NasService:
             dry_run = self.settings.dry_run_default
         log = get_logger()
         operation_id = new_operation_id("nas-restore")
+        lab_id = _safe_segment(lab_id, "lab_id")
+        commit_id = _safe_segment(commit_id, "commit_id")
         commit_dir = self.commits_root / lab_id / commit_id
         if not commit_dir.is_dir():
             raise HyperGeryError(f"Commit not found on the NAS: {lab_id}/{commit_id}")

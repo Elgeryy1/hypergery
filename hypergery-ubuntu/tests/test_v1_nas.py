@@ -100,6 +100,19 @@ class NasServiceTests(unittest.TestCase):
         plan = service.commit_lab("asr-lab", lab=lab_manifest(), dry_run=True)
         self.assertTrue(plan["dry_run"])
 
+    def test_failed_verification_removes_the_commit(self):
+        from unittest.mock import patch
+
+        # Force verify_commit to fail right after the package is written.
+        with patch.object(NasService, "verify_commit", return_value={"ok": False, "errors": ["boom"]}):
+            with self.assertRaises(HyperGeryError):
+                self.service.commit_lab("asr-lab", lab=lab_manifest(), vms_info=self.vms_info(), dry_run=False)
+        # The corrupt package must not linger and must not appear in listings.
+        self.assertEqual(self.service.list_commits("asr-lab"), [])
+        self.assertIsNone(self.service.health()["last_commit"])
+        lab_dir = self.root / "labs-commits" / "asr-lab"
+        self.assertTrue(not lab_dir.exists() or list(lab_dir.iterdir()) == [])
+
     def test_verify_detects_corruption(self):
         result = self.service.commit_lab("asr-lab", lab=lab_manifest(), vms_info=self.vms_info(), dry_run=False)
         commit_dir = self.root / "labs-commits" / "asr-lab" / result["commit_id"]
@@ -133,6 +146,31 @@ class NasServiceTests(unittest.TestCase):
     def test_restore_missing_commit_raises(self):
         with self.assertRaises(HyperGeryError):
             self.service.restore_commit("asr-lab", "commit-ghost", Path(self.tmp.name) / "x")
+
+    def test_commit_lab_id_traversal_is_blocked(self):
+        victim = Path(self.tmp.name) / "victim"
+        victim.mkdir()
+        for evil in ("../../victim/pwned", "..", "a/b", "with/slash", "back\\slash"):
+            with self.assertRaises(HyperGeryError, msg=evil):
+                self.service.commit_lab(evil, lab=lab_manifest(), dry_run=False)
+        # Nothing was written outside the NAS root.
+        self.assertEqual(list(victim.iterdir()), [])
+
+    def test_commit_lab_id_must_match_manifest(self):
+        # A valid-looking but mismatched lab_id must not write under it.
+        with self.assertRaises(HyperGeryError):
+            self.service.commit_lab("other-lab", lab=lab_manifest(lab_id="asr-lab"), dry_run=False)
+
+    def test_verify_and_restore_reject_commit_id_traversal(self):
+        result = self.service.commit_lab("asr-lab", lab=lab_manifest(), dry_run=False)
+        self.assertTrue(result["verified"])
+        for evil in ("../../../etc", "..", "a/b"):
+            with self.assertRaises(HyperGeryError):
+                self.service.verify_commit("asr-lab", evil)
+            with self.assertRaises(HyperGeryError):
+                self.service.restore_commit("asr-lab", evil, Path(self.tmp.name) / "out")
+            with self.assertRaises(HyperGeryError):
+                self.service.list_commits(evil)
 
 
 if __name__ == "__main__":
