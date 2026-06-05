@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.0 - Unreleased / Planned
+
+Initial plan (subject to change, nothing implemented yet):
+
+- Remote VM power control from Remote Hosts (new allowlisted agent commands: start, ACPI shutdown, force off).
+- Lab-specific visual workspace.
+- Advanced Settings sections: Host Agent options, Console preferences, Appearance accent/density.
+- Topology view improvements.
+- Hub staging retention/cleanup policy for failed or orphaned packages.
+- Optional real-time migration updates beyond the current auto-poll.
+- Research only, still not committed: true live RAM migration / HG-MEMDIFF.
+
 ## v0.7.0 - Visual Refresh & Hub Transfer (2026-06-05)
 
 Visual Refresh & UX Stabilization plus Hub Transfer migrations. Validated with
