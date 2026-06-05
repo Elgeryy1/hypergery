@@ -1,7 +1,16 @@
 import unittest
 
-from hypergery_ubuntu.backend import VmSummary
-from hypergery_ubuntu.ui_qt.lab_helpers import build_lab_preview, build_lab_topology, filter_vms_for_lab, topology_to_json, vm_count_for_lab
+from hypergery_ubuntu.backend import HyperGeryError, VmSummary
+from hypergery_ubuntu.ui_qt.lab_helpers import (
+    build_lab_preview,
+    build_lab_topology,
+    filter_vms_for_lab,
+    lab_status_summary,
+    plan_lab_power_action,
+    topology_to_json,
+    unify_lab_vms,
+    vm_count_for_lab,
+)
 
 
 class QtLabHelperTests(unittest.TestCase):
@@ -105,6 +114,74 @@ class LabTopologyTests(unittest.TestCase):
         loaded = json.loads(dumped)
         self.assertEqual(loaded["lab_id"], "asr-lab")
         self.assertEqual(len(loaded["vms"]), 1)
+
+
+class LabWorkspaceHelperTests(unittest.TestCase):
+    LAB = {
+        "lab_id": "asr-lab",
+        "name": "ASR Lab",
+        "vms": ["alpha", "ghost"],
+        "vm_roles": {"alpha": "server", "remote-db": "db"},
+    }
+    LOCAL_VMS = [
+        VmSummary(name="alpha", state="shut off", lab_id="asr-lab", ram_mib=2048, vcpus=2),
+        VmSummary(name="other", state="running", lab_id="par-lab"),
+    ]
+    REMOTE_VMS = [
+        {"host_id": "lenovo", "vm_name": "remote-db", "state": "running", "lab_id": "asr-lab", "ram_mib": 4096, "vcpus": 4},
+        {"host_id": "lenovo", "vm_name": "remote-other", "state": "running", "lab_id": "par-lab"},
+        # The local host's own inventory must be skipped (duplicates local VMs).
+        {"host_id": "local-host", "vm_name": "alpha", "state": "shut off", "lab_id": "asr-lab"},
+    ]
+
+    def unified(self):
+        return unify_lab_vms(self.LAB, self.LOCAL_VMS, self.REMOTE_VMS, "local-host")
+
+    def test_unify_combines_local_remote_and_manifest_vms(self):
+        unified = self.unified()
+        by_name = {vm["name"]: vm for vm in unified}
+        self.assertEqual(set(by_name), {"alpha", "ghost", "remote-db"})
+        self.assertFalse(by_name["alpha"]["remote"])
+        self.assertEqual(by_name["alpha"]["host_id"], "local-host")
+        self.assertEqual(by_name["alpha"]["role"], "server")
+        self.assertTrue(by_name["remote-db"]["remote"])
+        self.assertEqual(by_name["remote-db"]["host_id"], "lenovo")
+        self.assertEqual(by_name["remote-db"]["role"], "db")
+        self.assertEqual(by_name["ghost"]["state"], "not created")
+
+    def test_unify_normalizes_shutoff_state(self):
+        unified = unify_lab_vms(
+            {"lab_id": "asr-lab", "vms": []},
+            [],
+            [{"host_id": "lenovo", "vm_name": "vm1", "state": "shutoff", "lab_id": "asr-lab"}],
+            "local-host",
+        )
+        self.assertEqual(unified[0]["state"], "shut off")
+
+    def test_status_summary_counts_and_host_distribution(self):
+        summary = lab_status_summary(self.unified())
+        self.assertEqual(summary["counts"]["total"], 3)
+        self.assertEqual(summary["counts"]["running"], 1)
+        self.assertEqual(summary["counts"]["shut_off"], 1)
+        self.assertEqual(summary["counts"]["not_created"], 1)
+        self.assertEqual(summary["hosts"], {"local-host": ["alpha"], "lenovo": ["remote-db"]})
+
+    def test_plan_start_targets_only_shut_off_vms(self):
+        plan = plan_lab_power_action(self.unified(), "start")
+        self.assertEqual([vm["name"] for vm in plan["targets"]], ["alpha"])
+        self.assertEqual(plan["host_count"], 1)
+        skipped_names = {item["name"] for item in plan["skipped"]}
+        self.assertEqual(skipped_names, {"ghost", "remote-db"})
+
+    def test_plan_shutdown_targets_only_running_vms(self):
+        plan = plan_lab_power_action(self.unified(), "shutdown")
+        self.assertEqual([vm["name"] for vm in plan["targets"]], ["remote-db"])
+        self.assertTrue(plan["targets"][0]["remote"])
+
+    def test_plan_rejects_unknown_actions(self):
+        for action in ("force_off", "delete", "destroy"):
+            with self.assertRaises(HyperGeryError):
+                plan_lab_power_action(self.unified(), action)
 
 
 if __name__ == "__main__":

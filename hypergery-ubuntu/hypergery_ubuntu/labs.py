@@ -12,6 +12,10 @@ from .backend import HyperGeryError, now_iso, validate_vm_name, xdg_data_home
 LAB_SCHEMA_VERSION = 2
 RESERVED_LAB_IDS = {"default", "root", "system", "libvirt", "qemu", "admin"}
 
+# Optional per-VM roles inside a lab (v0.8 Labs workspace). Purely
+# descriptive metadata; "" means no role assigned.
+LAB_VM_ROLES = ("router", "firewall", "dns", "ad", "server", "db", "web", "client")
+
 
 def normalize_lab_id(name: str) -> str:
     value = name.strip().lower()
@@ -118,6 +122,7 @@ class LabStore:
             "subnet": subnet,
             "bridge_name": generate_lab_bridge_name(lab_id),
             "vms": [],
+            "vm_roles": {},
             "templates_used": [],
             "notes": "",
             "disks": [],
@@ -148,6 +153,12 @@ class LabStore:
         migrated["subnet"] = migrated.get("subnet") or allocate_lab_subnet(lab_id, self.existing_subnets(exclude_lab_id=lab_id))
         migrated["vms"] = list(dict.fromkeys(migrated.get("vms", [])))
         migrated["templates_used"] = list(dict.fromkeys(migrated.get("templates_used", [])))
+        roles = migrated.get("vm_roles")
+        migrated["vm_roles"] = {
+            str(vm_name): str(role)
+            for vm_name, role in (roles.items() if isinstance(roles, dict) else ())
+            if str(role) in LAB_VM_ROLES
+        }
         return migrated
 
     def read_manifest(self, path: Path) -> dict:
@@ -187,6 +198,24 @@ class LabStore:
         if not path.exists():
             raise HyperGeryError(f"Lab does not exist: {lab_id}")
         return self.read_manifest(path)
+
+    def set_vm_role(self, lab_id: str, vm_name: str, role: str) -> dict:
+        """Assign (or clear with role='') a descriptive role to one lab VM."""
+        clean_role = str(role or "").strip()
+        if clean_role and clean_role not in LAB_VM_ROLES:
+            allowed = ", ".join(LAB_VM_ROLES)
+            raise HyperGeryError(f"Unsupported VM role: {clean_role}. Allowed: {allowed}.")
+        manifest = self.get_lab(lab_id)
+        clean_name = validate_vm_name(vm_name)
+        roles = dict(manifest.get("vm_roles") or {})
+        if clean_role:
+            roles[clean_name] = clean_role
+        else:
+            roles.pop(clean_name, None)
+        manifest["vm_roles"] = roles
+        manifest["updated_at"] = now_iso()
+        self.write_lab(manifest)
+        return self.get_lab(lab_id)
 
     def rename_lab(self, lab_id: str, new_name: str) -> dict:
         manifest = self.get_lab(lab_id)
