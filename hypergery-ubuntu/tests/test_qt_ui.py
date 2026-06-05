@@ -616,6 +616,28 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_migrations_page_polish(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            page = window.main_tabs.widget(window.migrations_page_index)
+            texts = [label.text() for label in page.findChildren(QLabel)]
+            self.assertIn("Migrations", texts)
+            self.assertIn("NAS package history and migration status", texts)
+            self.assertTrue(any("v0.7.x" in text for text in texts))
+            self.assertIn("Open Live Migration", texts)
+            # Quick action without a selected VM navigates instead of crashing.
+            window.selected_vm = None
+            window._open_live_migration_from_page()
+            self.assertEqual(window.sidebar_nav.currentItem().text(), "Virtual Machines")
+            window.close()
+        self.assertIsNotNone(app)
+
     def test_console_window_status_bar_and_spice_card(self):
         app = QApplication.instance() or QApplication([])
         from unittest.mock import MagicMock

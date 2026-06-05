@@ -483,10 +483,7 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self._build_remote_hosts_page(), "Remote Hosts")
 
         self.dashboard_page_index = self.main_tabs.addTab(self._build_dashboard_page(), "Dashboard")
-        self.migrations_page_index = self.main_tabs.addTab(
-            self._placeholder_page("Migrations", "NAS Clone Migration history and status view arrives in a later v0.7 phase. Use the Live Migration action on a VM meanwhile."),
-            "Migrations",
-        )
+        self.migrations_page_index = self.main_tabs.addTab(self._build_migrations_page(), "Migrations")
         self.diagnostics_page_index = self.main_tabs.addTab(self._build_diagnostics_page(), "Diagnostics")
         self.main_tabs.tabBar().hide()
 
@@ -1148,6 +1145,43 @@ class MainWindow(QMainWindow):
         status = str(last.get("status") or "unknown")
         vm_name = str(last.get("vm_name") or last.get("source_vm_name") or "?")
         self.dash_migration_label.setText(f"{migration_id}\n{vm_name} · status: {status}")
+
+    def _build_migrations_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 26)
+        layout.setSpacing(12)
+        title = QLabel("Migrations")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("NAS package history and migration status")
+        subtitle.setObjectName("mutedLabel")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        callout = QLabel(
+            "Detailed history arrives in v0.7.x. Meanwhile, the last migration is shown on the Dashboard and you can "
+            "poll any migration with `migrate status --migration-id <id>`."
+        )
+        callout.setObjectName("calloutInfo")
+        callout.setWordWrap(True)
+        layout.addWidget(callout)
+        layout.addWidget(
+            self._quick_card(
+                "Open Live Migration",
+                "Select a VM and start a NAS Clone Migration — the source VM stays untouched.",
+                self._open_live_migration_from_page,
+                primary=True,
+            ),
+            alignment=Qt.AlignmentFlag.AlignLeft,
+        )
+        layout.addStretch()
+        return page
+
+    def _open_live_migration_from_page(self) -> None:
+        if self.selected_vm is not None:
+            self.live_migration_vm()
+            return
+        self._dashboard_go_vms()
+        self.status.showMessage("Select a VM, then use Live Migration", 6000)
 
     def _placeholder_page(self, title: str, subtitle: str) -> QWidget:
         page = QWidget()
