@@ -6,6 +6,7 @@ from hypergery_ubuntu.ui_qt.lab_helpers import (
     build_lab_topology,
     filter_vms_for_lab,
     lab_status_summary,
+    order_lab_vms_for_action,
     plan_lab_power_action,
     topology_to_json,
     unify_lab_vms,
@@ -182,6 +183,39 @@ class LabWorkspaceHelperTests(unittest.TestCase):
         for action in ("force_off", "delete", "destroy"):
             with self.assertRaises(HyperGeryError):
                 plan_lab_power_action(self.unified(), action)
+
+    @staticmethod
+    def _role_vm(name, role, state="shut off"):
+        return {"name": name, "state": state, "host_id": "h", "ram_mib": 0, "vcpus": 0, "remote": False, "role": role}
+
+    def role_fleet(self, state):
+        return [
+            self._role_vm("zz-client", "client", state),
+            self._role_vm("a-noro", "", state),
+            self._role_vm("web1", "web", state),
+            self._role_vm("dc1", "ad", state),
+            self._role_vm("edge", "router", state),
+            self._role_vm("fw", "firewall", state),
+            self._role_vm("db1", "db", state),
+            self._role_vm("dns1", "dns", state),
+        ]
+
+    def test_start_order_boots_infrastructure_first(self):
+        plan = plan_lab_power_action(self.role_fleet("shut off"), "start")
+        names = [vm["name"] for vm in plan["targets"]]
+        self.assertEqual(names, ["edge", "fw", "dc1", "dns1", "db1", "web1", "zz-client", "a-noro"])
+
+    def test_shutdown_order_stops_clients_first(self):
+        plan = plan_lab_power_action(self.role_fleet("running"), "shutdown")
+        names = [vm["name"] for vm in plan["targets"]]
+        self.assertEqual(names, ["a-noro", "zz-client", "db1", "web1", "dc1", "dns1", "edge", "fw"])
+
+    def test_order_without_roles_is_alphabetical(self):
+        vms = [self._role_vm(name, "") for name in ("charlie", "alpha", "bravo")]
+        ordered = order_lab_vms_for_action(vms, "start")
+        self.assertEqual([vm["name"] for vm in ordered], ["alpha", "bravo", "charlie"])
+        ordered = order_lab_vms_for_action(vms, "shutdown")
+        self.assertEqual([vm["name"] for vm in ordered], ["alpha", "bravo", "charlie"])
 
 
 if __name__ == "__main__":

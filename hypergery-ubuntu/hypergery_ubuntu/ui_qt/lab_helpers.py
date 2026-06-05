@@ -187,11 +187,39 @@ def lab_status_summary(unified_vms: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return {"counts": counts, "hosts": hosts}
 
 
-def plan_lab_power_action(unified_vms: Iterable[dict[str, Any]], action: str) -> dict[str, Any]:
-    """Decide which lab VMs a start/shutdown action targets.
+# Role-aware boot order: infrastructure first on start, clients first on
+# shutdown. Unassigned roles ("") go last on start / first on shutdown,
+# alphabetically within each tier.
+ROLE_START_TIERS = {
+    "router": 0,
+    "firewall": 0,
+    "dns": 1,
+    "ad": 1,
+    "server": 2,
+    "db": 2,
+    "web": 2,
+    "client": 3,
+    "": 4,
+}
 
-    start targets shut off VMs; shutdown targets running VMs (ACPI). VMs in
-    other states are reported as skipped with a reason — never forced.
+
+def order_lab_vms_for_action(vms: Iterable[dict[str, Any]], action: str) -> list[dict[str, Any]]:
+    """Order VMs by role tier: start boots infrastructure first; shutdown reverses."""
+    fallback_tier = max(ROLE_START_TIERS.values())
+
+    def tier(vm: dict[str, Any]) -> int:
+        value = ROLE_START_TIERS.get(str(vm.get("role") or ""), fallback_tier)
+        return value if action == "start" else fallback_tier - value
+
+    return sorted(vms, key=lambda vm: (tier(vm), vm["name"]))
+
+
+def plan_lab_power_action(unified_vms: Iterable[dict[str, Any]], action: str) -> dict[str, Any]:
+    """Decide which lab VMs a start/shutdown action targets, in role order.
+
+    start targets shut off VMs (routers/firewalls → dns/ad → servers →
+    clients); shutdown targets running VMs (ACPI) in the reverse order. VMs
+    in other states are reported as skipped with a reason — never forced.
     """
     if action == "start":
         eligible = {"shut off"}
@@ -206,5 +234,6 @@ def plan_lab_power_action(unified_vms: Iterable[dict[str, Any]], action: str) ->
             targets.append(vm)
         else:
             skipped.append({"name": vm["name"], "reason": f"state is '{vm['state']}'"})
+    targets = order_lab_vms_for_action(targets, action)
     host_ids = {vm["host_id"] for vm in targets if vm["host_id"]}
     return {"action": action, "targets": targets, "skipped": skipped, "host_count": len(host_ids)}
