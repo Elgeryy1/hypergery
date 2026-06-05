@@ -732,12 +732,24 @@ class MainWindow(QMainWindow):
             refresh_after=False,
         )
 
-    def _load_remote_hosts(self) -> list[dict[str, Any]]:
+    def _load_remote_hosts(self) -> dict[str, Any]:
         from ..registry import RegistryClient
 
-        return RegistryClient(self.registry_url()).list_hosts()
+        client = RegistryClient(self.registry_url())
+        hosts = client.list_hosts()
+        try:
+            vm_count: int | None = len(client.list_vms())
+        except Exception:
+            vm_count = None
+        return {"hosts": hosts, "vm_count": vm_count}
 
-    def render_remote_hosts(self, hosts: list[dict[str, Any]]) -> None:
+    def render_remote_hosts(self, result: dict[str, Any] | list[dict[str, Any]]) -> None:
+        if isinstance(result, dict):
+            hosts = result.get("hosts", [])
+            vm_count = result.get("vm_count")
+        else:
+            hosts = result
+            vm_count = None
         self.remote_hosts = hosts
         self.remote_host_table.setRowCount(0)
         for host in hosts:
@@ -764,26 +776,21 @@ class MainWindow(QMainWindow):
             self.remote_detail.setPlainText(
                 "Hub is reachable but has no hosts. Start a HyperGery agent on each participating host."
             )
-        self.render_hub_status(hosts, reachable=True)
+        self.render_hub_status(hosts, reachable=True, vm_count=vm_count)
         self.update_actions()
 
-    def render_hub_status(self, hosts: list[dict[str, Any]], *, reachable: bool) -> None:
+    def render_hub_status(self, hosts: list[dict[str, Any]], *, reachable: bool, vm_count: int | None = None) -> None:
         config = effective_config()
         nas_path = os.path.expanduser(config["nas_staging_path"].value)
         nas_label = f"{nas_path} writable={os.path.isdir(nas_path) and os.access(nas_path, os.W_OK)}"
-        vm_count = "unknown"
+        vm_count_label = "unknown"
         if reachable:
-            try:
-                from ..registry import RegistryClient
-
-                vm_count = str(len(RegistryClient(self.registry_url()).list_vms()))
-            except Exception:
-                vm_count = "unavailable"
+            vm_count_label = str(vm_count) if vm_count is not None else "unavailable"
         self.hub_url_label.setText(self.registry_url())
         self.hub_status_label.setText("online" if reachable else "offline")
         self.hub_last_check_label.setText(now_iso())
         self.hub_hosts_online_label.setText(str(sum(1 for host in hosts if host.get("status") == "online")))
-        self.hub_vm_count_label.setText(vm_count)
+        self.hub_vm_count_label.setText(vm_count_label)
         self.hub_nas_label.setText(nas_label)
 
     def test_selected_remote_host(self) -> None:

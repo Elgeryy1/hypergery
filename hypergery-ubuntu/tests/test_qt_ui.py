@@ -135,6 +135,50 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_hosts_render_updates_vm_count_from_worker_result(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_remote_hosts({"hosts": [FAKE_ONLINE_HOST], "vm_count": 3})
+
+            self.assertEqual(window.hub_vm_count_label.text(), "3")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_render_hub_status_does_not_fetch_vm_inventory(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=4)
+
+            registry_cls.assert_not_called()
+            self.assertEqual(window.hub_vm_count_label.text(), "4")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_render_hub_status_marks_missing_inventory_unavailable(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=None)
+
+            self.assertEqual(window.hub_vm_count_label.text(), "unavailable")
+            window.close()
+        self.assertIsNotNone(app)
+
     def test_live_migration_dialog_uses_config_defaults(self):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.config import HyperGeryConfig
