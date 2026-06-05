@@ -657,8 +657,9 @@ class QtUiTests(unittest.TestCase):
                 "gery-lenovo",
                 {
                     "vms": [
-                        {"name": "ubuntu-migrated", "state": "running", "lab_id": "default-lab", "ram_mib": 4096, "vcpus": 2},
-                        {"name": "ubuntu-hub-e2e", "state": "shut off", "lab_id": "default-lab", "ram_mib": 2048, "vcpus": 1},
+                        # The Hub returns "vm_name" (host_vms table), not "name".
+                        {"vm_name": "ubuntu-migrated", "state": "running", "lab_id": "default-lab", "ram_mib": 4096, "vcpus": 2},
+                        {"vm_name": "ubuntu-hub-e2e", "state": "shut off", "lab_id": "default-lab", "ram_mib": 2048, "vcpus": 1},
                     ]
                 },
             )

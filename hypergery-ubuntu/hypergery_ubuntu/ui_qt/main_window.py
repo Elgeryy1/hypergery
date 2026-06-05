@@ -761,7 +761,7 @@ class MainWindow(QMainWindow):
         for row, vm in enumerate(vms):
             state = str(vm.get("state") or "unknown")
             cells = (
-                str(vm.get("name") or ""),
+                str(vm.get("vm_name") or vm.get("name") or ""),
                 state.upper(),
                 str(vm.get("lab_id") or ""),
                 str(vm.get("ram_mib") or ""),
