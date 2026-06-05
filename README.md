@@ -287,7 +287,7 @@ System Python (no PySide6 — Qt tests are skipped cleanly):
 cd hypergery-ubuntu && python3 -m unittest discover -s tests
 ```
 
-Full suite inside the venv (all 131 tests pass including Qt tests):
+Full suite inside the venv (all 192 tests pass including Qt tests):
 
 ```bash
 cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
