@@ -85,6 +85,20 @@ export HYPERGERY_NAS_STAGING_PATH=/mnt/hypergery-nas/hypergery
 python -m hypergery_ubuntu.cli agent run
 ```
 
+Saved app settings live at:
+
+```bash
+~/.config/hypergery/config.json
+```
+
+Environment variables have priority over saved settings. The compatible `HYPERGERY_REGISTRY_URL` fallback remains available for older scripts.
+
+Run non-destructive diagnostics:
+
+```bash
+python -m hypergery_ubuntu.cli doctor
+```
+
 No passwords, SSH keys, SMB credentials, or other secrets are stored by the Hub.
 
 ## Not Included

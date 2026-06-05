@@ -75,14 +75,18 @@ NAS Clone Migration local E2E smoke on prepared host (2026-06-05):
 v0.6.0 close-out check on prepared host (2026-06-05):
 
 - [x] `develop` was synchronized with `origin/develop`.
-- [x] `QT_QPA_PLATFORM=offscreen /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests` ran 192 tests OK.
-- [x] `python3 -m unittest discover -s tests` ran 192 tests OK, skipped 6 Qt tests without PySide6.
+- [x] `QT_QPA_PLATFORM=offscreen /home/gerard/.venvs/hypergery/bin/python -m unittest discover -s tests` ran 201 tests OK.
+- [x] `python3 -m unittest discover -s tests` ran 201 tests OK, skipped 8 Qt tests without PySide6.
 - [x] `python3 -m compileall hypergery-ubuntu` passed.
 - [x] `bash -n` passed for all deployment/acceptance scripts.
 - [x] `docker compose config`, `docker compose build`, and `docker compose up -d` passed.
 - [x] `curl http://127.0.0.1:8765/health` returned `{"ok": true}`.
 - [x] `agent once` refreshed `ubuntu-hyperv-source` and `ubuntu-hyperv-target`.
 - [x] `host test ubuntu-hyperv-source` was processed by the source agent with `pong=true`.
+- [x] App settings added for Hub URL, host identity, NAS staging path, and default VM creation values.
+- [x] `doctor` diagnostics added and smoke-tested against the local Hub.
+- [x] Remote Hosts Hub status summary added.
+- [x] `docs/QUICK_START_V06.md` added.
 - [x] No release, tag, or `main` merge was created.
 - [ ] v0.6.0 final release remains blocked on a real two-physical-host NAS Clone Migration smoke.
 

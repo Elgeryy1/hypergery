@@ -38,10 +38,14 @@ Implemented in development so far:
 - HyperGery Console now auto-connects running VNC VMs and uses Scale to Fit rendering with a centered framebuffer and real-size scrollbars.
 - Toolbar split between integrated **Console** and **External Console** so `virt-viewer` / `remote-viewer` remain available for SPICE and fallback.
 - HyperGery Hub Docker backend added for NAS deployment, with Hub CLI aliases, VM inventory, command queue, migrations, events, Docker Compose setup, Docker healthcheck, and local Docker volume persistence for the SQLite DB.
+- App-level settings for Hub URL, host identity, NAS staging path, default display, default ISO folder, and default VM storage path in `~/.config/hypergery/config.json`, with environment variables as overrides.
+- CLI `doctor` command for non-destructive diagnostics of Python, KVM, libvirt, tools, Hub reachability, NAS staging, Docker Compose, and Hub VM inventory.
+- Remote Hosts Hub status summary showing Hub URL, online/offline state, last check, online host count, VM record count, and NAS staging writability.
+- v0.6 quick start guide at `docs/QUICK_START_V06.md`.
 
 Validation status before RC:
 
-- Automated tests pass: 192 tests OK in the Qt/offscreen venv and 192 tests OK with 6 skipped on system Python.
+- Automated tests pass: 201 tests OK in the Qt/offscreen venv and 201 tests OK with 8 skipped on system Python.
 - Docker Hub smoke passed: `docker compose config`, `build`, `up`, `/health`, `/hosts`, and `/vms`.
 - Hub/Agent smoke passed: agent registration, host list, VM inventory, and queued host test with `pong=true`.
 - Local NAS Clone Migration E2E passed with two logical agents on one libvirt host: package created on NAS staging, source VM/disk preserved, target imported, UUID/MAC regenerated, target started, and target cleanup completed.

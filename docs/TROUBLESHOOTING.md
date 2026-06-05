@@ -19,6 +19,41 @@ docker compose logs -f
 
 Do not put passwords, SSH keys, or SMB credentials in `.env`.
 
+## Docker Container Unhealthy
+
+Check the Hub container health and logs:
+
+```bash
+cd /share/CACHEDEV2_DATA/Gerard/proyectos_hacen_bulto_en_CV/miversiondevirtualbox/docker
+docker compose ps
+docker inspect --format '{{.State.Health.Status}}' hypergery-hub
+docker compose logs --tail=100
+curl http://127.0.0.1:8765/health
+```
+
+If the healthcheck fails, confirm port `8765` is not already occupied and rebuild the image:
+
+```bash
+docker compose config
+docker compose build
+docker compose up -d --force-recreate
+```
+
+Do not run `docker compose down -v` unless you intentionally want to remove the Hub DB volume.
+
+## SQLite DB Locked or Corrupted
+
+The Hub SQLite DB must live in Docker volume `hypergery-hub-data`, not on the NAS/SMB share. If logs show `sqlite3.OperationalError: database is locked`, confirm Compose maps `/data` to a Docker volume:
+
+```bash
+cd docker
+docker compose config | grep -A4 /data
+```
+
+Expected: `/data` is a volume. The NAS bind mount should appear only as `/hypergery`.
+
+If the old `docker/data/hypergery-hub.sqlite` file exists from a failed smoke, stop the container and move that local repo artifact aside. Do not delete NAS migration packages.
+
 ## First Run on a Fresh Ubuntu Laptop
 
 Use the first-run launcher:
@@ -196,6 +231,63 @@ python -m hypergery_ubuntu.cli preflight
 ```
 
 Fix `/dev/kvm`, `libvirt` group membership, or libvirt service issues before starting migration.
+
+## Agent Not Showing
+
+Verify the effective Hub URL, host ID, host name, and NAS staging path:
+
+```bash
+python -m hypergery_ubuntu.cli agent config show
+python -m hypergery_ubuntu.cli doctor
+```
+
+Then send one heartbeat:
+
+```bash
+export HYPERGERY_HUB_URL=http://192.168.1.150:8765
+export HYPERGERY_HOST_ID=<stable-host-id>
+export HYPERGERY_HOST_NAME="<readable host name>"
+export HYPERGERY_NAS_STAGING_PATH=/mnt/hypergery-nas/hypergery
+python -m hypergery_ubuntu.cli agent once
+python -m hypergery_ubuntu.cli host list
+```
+
+Host IDs must be stable and unique per physical host.
+
+## NAS Staging Not Writable
+
+Confirm the path exists on every participating host and is writable by the current user:
+
+```bash
+mkdir -p /mnt/hypergery-nas/hypergery/migrations
+touch /mnt/hypergery-nas/hypergery/migrations/write-test
+rm /mnt/hypergery-nas/hypergery/migrations/write-test
+```
+
+Do not use Windows paths. Use the same Linux NAS mount path on source and target when possible.
+
+## Live Migration Blocked Because VM Is Running
+
+v0.6.0 does not implement true live RAM migration or HG-MEMDIFF. Running VM copy is blocked by design. Shut down the source VM before NAS Clone Migration:
+
+```bash
+python -m hypergery_ubuntu.cli validate-vm <vm-name>
+python -m hypergery_ubuntu.cli shutdown <vm-name>
+python -m hypergery_ubuntu.cli wait-state <vm-name> "shut off" --timeout 120
+```
+
+Use Force Off only for disposable test VMs when ACPI shutdown does not respond.
+
+## Target Name Already Exists
+
+Migration preflight blocks target name conflicts. Pick a new target name or clean up only the test target VM you created:
+
+```bash
+virsh --connect qemu:///system dominfo <target-name>
+python -m hypergery_ubuntu.cli migrate preflight <source-vm> \
+  --target-vm-name <new-target-name> \
+  --nas-path /mnt/hypergery-nas/hypergery
+```
 
 ## Target Agent Cannot Import Package
 

@@ -110,7 +110,9 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - On the Ubuntu VM/app, use `HYPERGERY_HUB_URL=http://192.168.1.150:8765`.
 - The Hub DB is stored in the Docker volume `hypergery-hub-data`; migration packages stay under the NAS data folder.
 - The container has a `/health` Docker healthcheck.
-- See [docs/HYPERGERY_HUB.md](docs/HYPERGERY_HUB.md) and [docs/NAS_DEPLOYMENT.md](docs/NAS_DEPLOYMENT.md).
+- App-level settings live in `~/.config/hypergery/config.json`; environment variables remain overrides.
+- `python -m hypergery_ubuntu.cli doctor` checks Python, KVM, libvirt, Hub, NAS staging, Docker Compose, and Hub VM inventory without changing the system.
+- See [docs/HYPERGERY_HUB.md](docs/HYPERGERY_HUB.md), [docs/NAS_DEPLOYMENT.md](docs/NAS_DEPLOYMENT.md), and [docs/QUICK_START_V06.md](docs/QUICK_START_V06.md).
 
 ### NAS Live Migration (v0.6.0)
 
@@ -120,8 +122,9 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - VM package export/import for domain XML, qcow2 disks, attached ISO when requested, lab/network/template metadata, checksums, and migration logs.
 - Migration preflight checks for source VM state, disk/ISO availability, staging path, local name conflicts, host readiness, and running-VM safety.
 - Remote Hosts UI panel reads real hosts from the Hub and shows online/offline state, last seen, RAM/disk, KVM/libvirt readiness, and active VMs.
+- Remote Hosts also shows Hub URL, Hub status, last check, online host count, VM record count, and NAS staging writability.
 - **Live Migration** dialog lists real online target hosts, blocks offline/unready targets, runs local preflight, creates the source package in NAS staging, queues `import_vm_package` on the target host, and records migration status for polling.
-- Development CLI: hub, registry compatibility alias, agent, host, and migrate commands.
+- Development CLI: hub, registry compatibility alias, agent, host, doctor, and migrate commands.
 
 v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.
 
@@ -134,6 +137,7 @@ python -m hypergery_ubuntu.cli agent config show
 python -m hypergery_ubuntu.cli agent once
 python -m hypergery_ubuntu.cli host list
 python -m hypergery_ubuntu.cli host test <host_id>
+python -m hypergery_ubuntu.cli doctor
 
 # Safe offline package workflow
 python -m hypergery_ubuntu.cli migrate preflight <vm_name> --target-vm-name <target_name> --nas-path /mnt/hypergery-nas
@@ -287,7 +291,7 @@ System Python (no PySide6 — Qt tests are skipped cleanly):
 cd hypergery-ubuntu && python3 -m unittest discover -s tests
 ```
 
-Full suite inside the venv (all 192 tests pass including Qt tests):
+Full suite inside the venv (all 201 tests pass including Qt tests):
 
 ```bash
 cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
