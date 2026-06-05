@@ -177,6 +177,12 @@ class MainWindow(QMainWindow):
         }
         self.main_tabs.setCurrentIndex(page_map[section])
         self.right_panel.setVisible(section in {"Virtual Machines", "Labs"})
+        self.labs_mode_banner.setVisible(section == "Labs")
+        self.vm_page_title.setText("Labs" if section == "Labs" else "Virtual Machines")
+        self.vm_page_subtitle.setText(
+            "Isolated lab networks and their workloads" if section == "Labs"
+            else "Local KVM/libvirt machines and lab workloads"
+        )
 
     def _build_top_bar(self) -> QWidget:
         bar = QFrame()
@@ -278,22 +284,36 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
         
         header = QHBoxLayout()
-        title = QLabel("Virtual Machines")
-        title.setObjectName("sectionTitle")
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        self.vm_page_title = QLabel("Virtual Machines")
+        self.vm_page_title.setObjectName("pageTitle")
+        self.vm_page_subtitle = QLabel("Local KVM/libvirt machines and lab workloads")
+        self.vm_page_subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(self.vm_page_title)
+        head_col.addWidget(self.vm_page_subtitle)
         self.vm_count_label = QLabel("No VMs")
         self.vm_count_label.setObjectName("mutedLabel")
         self.vm_filter = QComboBox()
         self.vm_filter.addItems(["All VMs", "Selected Lab"])
         self.vm_filter.currentIndexChanged.connect(self.on_vm_filter_changed)
-        header.addWidget(title)
+        header.addLayout(head_col)
         header.addStretch()
         header.addWidget(self.vm_filter)
         header.addWidget(self.vm_count_label)
         layout.addLayout(header)
+        self.labs_mode_banner = QLabel(
+            "Labs share this view for now — a lab-specific visual workspace arrives later in v0.7.x. "
+            "Use the Labs table and lab actions below."
+        )
+        self.labs_mode_banner.setObjectName("calloutInfo")
+        self.labs_mode_banner.setWordWrap(True)
+        self.labs_mode_banner.setVisible(False)
+        layout.addWidget(self.labs_mode_banner)
         layout.addWidget(self._build_vm_actions_bar())
 
-        self.vm_table = QTableWidget(0, 5)
-        self.vm_table.setHorizontalHeaderLabels(["Name", "State", "Lab", "CPU", "RAM"])
+        self.vm_table = QTableWidget(0, 7)
+        self.vm_table.setHorizontalHeaderLabels(["Name", "State", "Lab", "CPU", "RAM", "Disk", "Display"])
         self.vm_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.vm_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.vm_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1152,7 +1172,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
         self.vm_empty_title = QLabel("No virtual machines yet")
         self.vm_empty_title.setObjectName("heroTitle")
-        self.vm_empty_subtitle = QLabel("Create a VM from an ISO to get started")
+        self.vm_empty_subtitle = QLabel("Create your first VM from an ISO.")
         self.vm_empty_subtitle.setObjectName("heroSubtitle")
         self.vm_empty_subtitle.setWordWrap(True)
         self.vm_empty_button = self._button("New VM", self.new_vm_from_empty, primary=True)
@@ -1291,7 +1311,7 @@ class MainWindow(QMainWindow):
     def _build_detail_tabs(self) -> QWidget:
         self.tabs = QTabWidget()
         self.detail_views: dict[str, QTextEdit] = {}
-        for name in ("General", "System", "Display", "Storage", "Network", "Snapshots", "Logs"):
+        for name in ("General", "System", "Console", "Storage", "Network", "Snapshots", "Logs"):
             text = QTextEdit()
             text.setReadOnly(True)
             text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
@@ -1655,6 +1675,8 @@ class MainWindow(QMainWindow):
             self._set_table_item(self.vm_table, row, 2, vm.lab_id or "unknown")
             self._set_table_item(self.vm_table, row, 3, str(vm.vcpus or "-"))
             self._set_table_item(self.vm_table, row, 4, format_mib(vm.ram_mib))
+            self._set_table_item(self.vm_table, row, 5, vm.disk_virtual or "—")
+            self._set_table_item(self.vm_table, row, 6, (vm.graphics or "—").upper() if vm.graphics else "—")
             if vm.name == current:
                 selected_row = row
         if selected_row < 0 and self.vms:
@@ -1717,7 +1739,7 @@ class MainWindow(QMainWindow):
             self.vm_empty_button.setText("New VM in Lab")
         else:
             self.vm_empty_title.setText("No virtual machines yet")
-            self.vm_empty_subtitle.setText("Create a VM from an ISO to get started")
+            self.vm_empty_subtitle.setText("Create your first VM from an ISO.")
             self.vm_empty_button.setText("New VM")
 
     def render_lab_details(self) -> None:
@@ -2027,11 +2049,11 @@ class MainWindow(QMainWindow):
             )
         )
         self.detail_views["System"].setPlainText(details_block(("RAM", format_mib(vm.ram_mib)), ("vCPUs", str(vm.vcpus or "unknown"))))
-        self.detail_views["Display"].setPlainText(
+        self.detail_views["Console"].setPlainText(
             details_block(
-                ("Graphics", vm.graphics or "unknown"),
-                ("HyperGery Console", "separate VNC console window" if vm.graphics == "vnc" else "use External Console or switch display to VNC"),
-                ("External console", "virt-viewer or remote-viewer"),
+                ("Display", (vm.graphics or "unknown").upper()),
+                ("Integrated console", "available (VNC)" if vm.graphics == "vnc" else "not available — requires VNC"),
+                ("External viewer", "virt-viewer or remote-viewer"),
                 ("Host Key", "Right Ctrl"),
                 ("Close behavior", "closing the console window does not stop the VM"),
             )

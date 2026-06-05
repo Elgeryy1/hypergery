@@ -556,6 +556,66 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_vm_page_header_chips_and_empty_state(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.backend import VmSummary
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            self.assertEqual(window.vm_page_title.text(), "Virtual Machines")
+            self.assertIn("KVM/libvirt", window.vm_page_subtitle.text())
+            self.assertEqual(window.vm_table.columnCount(), 7)
+
+            window.render_vms([])
+            self.assertEqual(window.vm_stack.currentIndex(), 1)
+            self.assertIn("Create your first VM from an ISO", window.vm_empty_subtitle.text())
+
+            window.render_vms([
+                VmSummary(name="dc01", state="running", lab_id="lab", ram_mib=4096, vcpus=2, graphics="vnc"),
+                VmSummary(name="cl01", state="shut off", lab_id="lab", ram_mib=2048, vcpus=1, graphics="spice"),
+                VmSummary(name="p01", state="paused", lab_id="lab", ram_mib=1024, vcpus=1),
+            ])
+            self.assertEqual(window.vm_table.rowCount(), 3)
+            states = [window.vm_table.item(row, 1).text() for row in range(3)]
+            self.assertEqual(states, ["RUNNING", "SHUTOFF", "PAUSED"])
+            self.assertEqual(window.vm_table.item(0, 6).text(), "VNC")
+
+            # Destructive actions keep the danger style; core attributes survive.
+            self.assertEqual(window.force_button.objectName(), "dangerButton")
+            self.assertEqual(window.delete_button.objectName(), "dangerButton")
+            for attr in ("start_button", "console_button", "external_console_button", "snapshots_button",
+                         "clone_button", "migrate_button", "settings_button"):
+                self.assertTrue(hasattr(window, attr))
+
+            # Console detail card shows console status and Host Key.
+            console_text = window.detail_views["Console"].toPlainText()
+            self.assertIn("Integrated console", console_text)
+            self.assertIn("Right Ctrl", console_text)
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_labs_sidebar_shows_banner_without_breaking_page(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
+            window.sidebar_nav.setCurrentRow(sections.index("Labs"))
+            self.assertEqual(window.main_tabs.currentIndex(), 0)
+            self.assertEqual(window.vm_page_title.text(), "Labs")
+            self.assertIn("v0.7.x", window.labs_mode_banner.text())
+            window.sidebar_nav.setCurrentRow(sections.index("Virtual Machines"))
+            self.assertEqual(window.vm_page_title.text(), "Virtual Machines")
+            self.assertFalse(window.labs_mode_banner.isVisible())
+            window.close()
+        self.assertIsNotNone(app)
+
     def test_migration_wizard_steps_and_microcopy(self):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QLabel
