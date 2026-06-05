@@ -2,7 +2,7 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v0.6.0-blue)
+![Version](https://img.shields.io/badge/version-v0.7.0-blue)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -13,7 +13,9 @@ HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor,
 
 HyperGery v0.6.0 is the NAS Clone Migration release: a NAS-backed control plane, host agents, host discovery, VM package export/import, migration preflight, remote import orchestration, and a UI action named **Live Migration**. The implementation is intentionally conservative: when a true live RAM/disk migration is not safe, HyperGery performs a NAS Clone Migration strategy and keeps the source VM untouched.
 
-Current v0.6.0 status: final release. Tests, Docker Hub, Hub/Agent smoke, UI smoke, local NAS Clone Migration E2E, and a real two-physical-host NAS Clone Migration smoke have passed.
+HyperGery v0.7.0 is the Visual Refresh & UX Stabilization release: a full PySide6/QSS UI refresh (app shell with sidebar navigation, dashboard health cards, remote host cards, tabbed settings with config-source chips, diagnostics panel, 6-step migration wizard with auto-polling, polished VM view and console window, real migrations history, read-only remote VM inventory) plus **Hub Transfer** migrations: packages are uploaded through the Hub and downloaded by the target, with the temporary Hub copy deleted after import — no shared NAS mount required on the hosts. Hub Transfer is the recommended default; shared-NAS mode remains available with `--transfer nas`. The Hub runs in Docker on the NAS and the app's default Hub URL points at it.
+
+Current v0.7.0 status: final release. Full test suite green on two interpreters, plus real two-host Hub Transfer E2E migrations (2.8 GiB ISO and ~5.8 GiB disk) with the source VM untouched and Hub staging cleaned after import. True live RAM migration remains out of scope.
 
 ## Screenshots
 
@@ -294,7 +296,7 @@ System Python (no PySide6 — Qt tests are skipped cleanly):
 cd hypergery-ubuntu && python3 -m unittest discover -s tests
 ```
 
-Full suite inside the venv (all 201 tests pass including Qt tests):
+Full suite inside the venv (all 249 tests pass including Qt tests):
 
 ```bash
 cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
@@ -317,8 +319,9 @@ The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime fo
 - v0.3.0 — Lab Manager + Templates Manager ✓
 - v0.4.0 — Lab Automation (instantiation wizard, rollback, template editing, VM clone in duplicate) ✓
 - v0.5.0 — Lab Topology view, planned VM editor, ISO reuse, resource overview, CLI update/instantiate ✓
-- v0.6.0 — NAS Live Migration: registry, agents, host discovery, NAS staging, migration package export/import, UI action, CLI helpers
-- v0.7.0 — topology export/polish, zoom/pan, role badges, additional UX refinement
+- v0.6.0 — NAS Live Migration: registry, agents, host discovery, NAS staging, migration package export/import, UI action, CLI helpers ✓
+- v0.7.0 — Visual Refresh & UX Stabilization: PySide6/QSS UI redesign, Hub on the NAS, Hub Transfer migrations, migrations history, agent user service ✓
+- v0.8.0 — Lab visual workspace, extra Settings sections (agent options, console preferences, appearance), further UX
 - v1.0.0 — stable classroom-ready release
 
 ## License

@@ -264,6 +264,7 @@ def hub_action(args: argparse.Namespace) -> int:
             args.port,
             db_path=args.db_path,
             offline_timeout_seconds=args.offline_timeout,
+            staging_dir=args.staging_dir or None,
         )
         return 0
     if args.hub_command == "init-db":
@@ -401,6 +402,7 @@ def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
                 include_iso=not args.no_iso,
                 include_snapshots=not args.no_snapshots,
                 start_after_import=args.start_after_import,
+                transfer=args.transfer,
             )
         )
     return 2
@@ -516,6 +518,7 @@ def main(argv: list[str] | None = None) -> int:
     hub_serve.add_argument("--port", type=int, default=int(os.environ.get("HYPERGERY_HUB_PORT", "8765")))
     hub_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
     hub_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_HUB_OFFLINE_TIMEOUT", os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90"))))
+    hub_serve.add_argument("--staging-dir", default=os.environ.get("HYPERGERY_HUB_STAGING", ""))
     hub_health = hub_sub.add_parser("health")
     hub_health.add_argument("--hub-url", default=default_hub_url())
     hub_init = hub_sub.add_parser("init-db")
@@ -576,7 +579,8 @@ def main(argv: list[str] | None = None) -> int:
     migrate_status.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
     migrate_remote = migrate_sub.add_parser("remote", help="Package a VM and queue target import through the registry.")
     migrate_remote.add_argument("vm_name")
-    migrate_remote.add_argument("--nas-path", required=True)
+    migrate_remote.add_argument("--transfer", choices=("nas", "hub"), default="nas", help="nas: shared NAS path visible on both hosts; hub: upload through the Hub, no shared mount needed.")
+    migrate_remote.add_argument("--nas-path", default="", help="Required for --transfer nas.")
     migrate_remote.add_argument("--source-host-id", required=True)
     migrate_remote.add_argument("--target-host-id", required=True)
     migrate_remote.add_argument("--target-vm-name", default="")

@@ -4,7 +4,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from hypergery_ubuntu.backend import CommandResult, PreflightItem, VmSummary
+from hypergery_ubuntu.backend import CommandResult, HyperGeryError, PreflightItem, VmSummary
 from hypergery_ubuntu.labs import LabStore
 from hypergery_ubuntu.migration import (
     create_remote_import_command,
@@ -155,6 +155,33 @@ class FakeRegistryClient:
     def command(self, command_id):
         return self.commands[command_id]
 
+    def upload_package(self, migration_id, package_dir):
+        package = Path(package_dir)
+        files = {}
+        for item in sorted(package.rglob("*")):
+            if item.is_file():
+                files[str(item.relative_to(package))] = item.read_bytes()
+        if not files:
+            raise AssertionError(f"empty package upload: {package}")
+        self.uploaded_packages = getattr(self, "uploaded_packages", {})
+        self.uploaded_packages[migration_id] = files
+        return {"migration_id": migration_id, "files": [{"path": path} for path in files]}
+
+    def download_package(self, migration_id, destination_dir):
+        files = getattr(self, "uploaded_packages", {})[migration_id]
+        destination = Path(destination_dir)
+        for rel_path, data in files.items():
+            target = destination / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        return destination
+
+    def delete_package(self, migration_id):
+        packages = getattr(self, "uploaded_packages", {})
+        existed = migration_id in packages
+        packages.pop(migration_id, None)
+        return {"migration_id": migration_id, "deleted": existed}
+
 
 class MigrationTests(unittest.TestCase):
     def test_preflight_blocks_running_vm(self):
@@ -271,6 +298,52 @@ class MigrationTests(unittest.TestCase):
             manifest = json.loads((Path(result["package_dir"]) / "manifest.json").read_text(encoding="utf-8"))
             self.assertFalse(manifest["source_will_be_deleted"])
             self.assertEqual(manifest["migration_id"], result["migration_id"])
+
+    def test_start_remote_migration_hub_transfer_uploads_and_removes_local_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = FakeBackend(root)
+            client = FakeRegistryClient()
+            result = start_remote_migration(
+                backend,
+                client,
+                "hg-source",
+                "",
+                source_host_id="source",
+                target_host_id="target",
+                target_vm_name="hg-target",
+                transfer="hub",
+            )
+            self.assertFalse(result["source_will_be_deleted"])
+            self.assertEqual(result["transfer"], "hub")
+            self.assertEqual(result["package_dir"], "hub://" + result["migration_id"])
+            # Package was uploaded with manifest + assets.
+            uploaded = client.uploaded_packages[result["migration_id"]]
+            self.assertIn("manifest.json", uploaded)
+            self.assertTrue(any(path.startswith("disks/") for path in uploaded))
+            # Local temporary copy is gone; source disk untouched.
+            outgoing = backend.data_dir / "hub-transfer" / "outgoing"
+            self.assertFalse(list(outgoing.rglob("manifest.json")) if outgoing.exists() else [])
+            self.assertTrue(backend.disk.is_file())
+            # Command and migration record use hub transfer.
+            command = client.created_commands[0]
+            self.assertEqual(command["payload"]["transfer"], "hub")
+            self.assertEqual(command["payload"]["package_dir"], "hub://" + result["migration_id"])
+            self.assertEqual(client.migrations[result["migration_id"]]["strategy"], "hub_transfer")
+
+    def test_start_remote_migration_nas_requires_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FakeBackend(Path(tmp))
+            client = FakeRegistryClient()
+            with self.assertRaises(HyperGeryError):
+                start_remote_migration(
+                    backend,
+                    client,
+                    "hg-source",
+                    "",
+                    source_host_id="source",
+                    target_host_id="target",
+                )
 
     def test_poll_remote_migration_status_maps_command_status(self):
         client = FakeRegistryClient()

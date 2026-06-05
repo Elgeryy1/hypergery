@@ -322,3 +322,49 @@ If libvirt reports `spice audio is not supported without spice graphics` or a lo
 If the integrated console says authentication is required, use **External Console**. The built-in client intentionally supports only local no-auth VNC because libvirt binds it to `127.0.0.1`.
 
 Click inside the console window to capture keyboard and mouse input only after a VNC connection is active. Press Right Ctrl to release input. Right Ctrl does not apply to SPICE fallback mode. Disconnecting or closing the console window does not stop the VM.
+
+## Hub Transfer Upload Fails
+
+Symptoms: the wizard fails during `packaging`/upload with `Package upload failed`.
+
+Checks:
+
+- Hub reachable: `curl http://192.168.1.150:8765/health`.
+- Free space on the Hub staging storage (NAS): packages need roughly the VM
+  disk size plus ISO size. The staging directory is `HYPERGERY_HUB_STAGING`
+  (`/hypergery/staging` in the Docker deployment).
+- Free space on the source host for the temporary local copy under
+  `~/.local/share/hypergery/hub-transfer/outgoing` (deleted automatically
+  after upload).
+- Very large files: each file upload streams with a 600 s timeout. On slow
+  Wi-Fi a >20 GB disk can exceed it; prefer a wired link or `--transfer nas`.
+
+## Hub Transfer Download or Import Fails on the Target
+
+Symptoms: migration reaches `waiting_target`/`importing` and then `failed`.
+
+Checks:
+
+- Target agent running and online (`host list`).
+- Free space on the target for the download
+  (`~/.local/share/hypergery/hub-transfer/incoming/<migration_id>`) plus the
+  imported disks under `~/.local/share/hypergery/vms/`.
+- Checksum errors mean the staged package is incomplete or was modified; the
+  import refuses it. Re-run the migration.
+- A failed migration leaves the package staged on the Hub for inspection.
+  After diagnosing, remove it manually:
+  `curl -X DELETE http://192.168.1.150:8765/packages/<migration_id>`.
+
+## Hub Transfer: Target VM Already Exists
+
+The import refuses to overwrite an existing VM: the migration fails with
+`Target VM already exists: <name>` (or `Target VM disk directory already
+exists`). Pick a different target VM name in the wizard, or delete the old
+test VM on the target first if you genuinely no longer need it.
+
+## Migrations History Empty or Hub Not Reachable
+
+The **Migrations** section reads history from the Hub. If it shows
+"Hub not reachable", check the Hub URL chip in the top bar and
+`curl http://192.168.1.150:8765/migrations`. History is stored in the Hub
+SQLite DB; the UI never deletes records or packages.

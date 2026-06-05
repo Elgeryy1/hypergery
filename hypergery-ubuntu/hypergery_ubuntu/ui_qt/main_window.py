@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
@@ -17,10 +18,12 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QInputDialog,
+    QScrollArea,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -109,33 +112,119 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_left_panel())
-        splitter.addWidget(self._build_right_panel())
+        self.right_panel = self._build_right_panel()
+        splitter.addWidget(self.right_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
-        root_layout.addWidget(splitter, 1)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._build_sidebar())
+        body.addWidget(splitter, 1)
+        root_layout.addLayout(body, 1)
         self.setCentralWidget(root)
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self.status.showMessage("Ready")
 
+    SIDEBAR_SECTIONS = (
+        "Dashboard",
+        "Virtual Machines",
+        "Labs",
+        "Templates",
+        "Remote Hosts",
+        "Migrations",
+        "Diagnostics",
+        "Settings",
+    )
+
+    def _build_sidebar(self) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("sidebar")
+        frame.setFixedWidth(196)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 10, 0, 10)
+        layout.setSpacing(0)
+        self.sidebar_nav = QListWidget()
+        self.sidebar_nav.setObjectName("sidebarNav")
+        self.sidebar_nav.addItems(list(self.SIDEBAR_SECTIONS))
+        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Virtual Machines"))
+        self.sidebar_nav.currentRowChanged.connect(self._on_sidebar_changed)
+        layout.addWidget(self.sidebar_nav, 1)
+        return frame
+
+    def _on_sidebar_changed(self, row: int) -> None:
+        if row < 0:
+            return
+        section = self.SIDEBAR_SECTIONS[row]
+        if section == "Settings":
+            previous = getattr(self, "_sidebar_previous_row", self.SIDEBAR_SECTIONS.index("Virtual Machines"))
+            self.sidebar_nav.blockSignals(True)
+            self.sidebar_nav.setCurrentRow(previous)
+            self.sidebar_nav.blockSignals(False)
+            self.app_settings()
+            return
+        self._sidebar_previous_row = row
+        page_map = {
+            "Dashboard": self.dashboard_page_index,
+            "Virtual Machines": 0,
+            "Labs": 0,
+            "Templates": 1,
+            "Remote Hosts": 2,
+            "Migrations": self.migrations_page_index,
+            "Diagnostics": self.diagnostics_page_index,
+        }
+        self.main_tabs.setCurrentIndex(page_map[section])
+        if section == "Migrations" and not getattr(self, "_migrations_loaded", False):
+            self.refresh_migrations()
+        self.right_panel.setVisible(section in {"Virtual Machines", "Labs"})
+        self.labs_mode_banner.setVisible(section == "Labs")
+        self.vm_page_title.setText("Labs" if section == "Labs" else "Virtual Machines")
+        self.vm_page_subtitle.setText(
+            "Isolated lab networks and their workloads" if section == "Labs"
+            else "Local KVM/libvirt machines and lab workloads"
+        )
+
     def _build_top_bar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("topBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 14, 20, 14)
-        layout.setSpacing(8)
+        layout.setContentsMargins(20, 12, 20, 12)
+        layout.setSpacing(10)
         brand = QVBoxLayout()
+        brand.setSpacing(0)
         title = QLabel("HyperGery")
         title.setObjectName("brandTitle")
-        subtitle = QLabel(f"v{APP_DISPLAY_VERSION}  KVM / QEMU / libvirt")
+        subtitle = QLabel(f"v{APP_DISPLAY_VERSION} · develop · KVM / QEMU / libvirt")
         subtitle.setObjectName("brandSubtle")
         brand.addWidget(title)
         brand.addWidget(subtitle)
         layout.addLayout(brand)
-        layout.addSpacing(18)
+        layout.addSpacing(14)
+
+        config = effective_config()
+        self.hub_chip = QLabel("Hub: not checked")
+        self.host_chip = QLabel(f"Host: {config['host_id'].value}")
+        self.nas_chip = QLabel("NAS: not checked")
+        for chip in (self.hub_chip, self.host_chip, self.nas_chip):
+            chip.setObjectName("statusChip")
+            layout.addWidget(chip)
+        layout.addStretch()
 
         self.new_button = self._button("New VM", self.new_vm, primary=True)
-        self.app_settings_button = self._button("App Settings", self.app_settings)
+        self.refresh_button = self._button("Refresh", self.refresh_all)
+        self.app_settings_button = self._button("Settings", self.app_settings)
+        layout.addWidget(self.new_button)
+        layout.addWidget(self.refresh_button)
+        layout.addWidget(self.app_settings_button)
+        return bar
+
+    def _build_vm_actions_bar(self) -> QWidget:
+        bar = QWidget()
+        layout = QVBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         self.settings_button = self._button("Settings", self.settings_vm)
         self.start_button = self._button("Start", self.start_vm)
         self.shutdown_button = self._button("ACPI Shutdown", self.shutdown_vm)
@@ -144,28 +233,34 @@ class MainWindow(QMainWindow):
         self.snapshots_button = self._button("Snapshots", self.snapshots_vm)
         self.clone_button = self._button("Clone", self.clone_vm)
         self.migrate_button = self._button("Live Migration", self.live_migration_vm)
-        self.refresh_button = self._button("Refresh", self.refresh_all)
         self.force_button = self._button("Force Off", self.force_off_vm, danger=True)
         self.delete_button = self._button("Delete", self.delete_vm, danger=True)
         self.overview_button = self._button("Resources…", self.show_cleanup_preview)
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
         for button in (
-            self.new_button,
-            self.app_settings_button,
-            self.settings_button,
             self.start_button,
             self.shutdown_button,
+            self.force_button,
             self.console_button,
             self.external_console_button,
+        ):
+            top_row.addWidget(button)
+        top_row.addStretch()
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(8)
+        for button in (
             self.snapshots_button,
             self.clone_button,
             self.migrate_button,
-            self.refresh_button,
+            self.settings_button,
+            self.overview_button,
         ):
-            layout.addWidget(button)
-        layout.addStretch()
-        layout.addWidget(self.overview_button)
-        layout.addWidget(self.force_button)
-        layout.addWidget(self.delete_button)
+            bottom_row.addWidget(button)
+        bottom_row.addStretch()
+        bottom_row.addWidget(self.delete_button)
+        layout.addLayout(top_row)
+        layout.addLayout(bottom_row)
         return bar
 
     def _button(self, text: str, callback: Callable[[], None], *, primary: bool = False, danger: bool = False) -> QPushButton:
@@ -191,21 +286,36 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
         
         header = QHBoxLayout()
-        title = QLabel("Virtual Machines")
-        title.setObjectName("sectionTitle")
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        self.vm_page_title = QLabel("Virtual Machines")
+        self.vm_page_title.setObjectName("pageTitle")
+        self.vm_page_subtitle = QLabel("Local KVM/libvirt machines and lab workloads")
+        self.vm_page_subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(self.vm_page_title)
+        head_col.addWidget(self.vm_page_subtitle)
         self.vm_count_label = QLabel("No VMs")
         self.vm_count_label.setObjectName("mutedLabel")
         self.vm_filter = QComboBox()
         self.vm_filter.addItems(["All VMs", "Selected Lab"])
         self.vm_filter.currentIndexChanged.connect(self.on_vm_filter_changed)
-        header.addWidget(title)
+        header.addLayout(head_col)
         header.addStretch()
         header.addWidget(self.vm_filter)
         header.addWidget(self.vm_count_label)
         layout.addLayout(header)
+        self.labs_mode_banner = QLabel(
+            "Labs share this view for now — a lab-specific visual workspace arrives in v0.8. "
+            "Use the Labs table and lab actions below."
+        )
+        self.labs_mode_banner.setObjectName("calloutInfo")
+        self.labs_mode_banner.setWordWrap(True)
+        self.labs_mode_banner.setVisible(False)
+        layout.addWidget(self.labs_mode_banner)
+        layout.addWidget(self._build_vm_actions_bar())
 
-        self.vm_table = QTableWidget(0, 5)
-        self.vm_table.setHorizontalHeaderLabels(["Name", "State", "Lab", "CPU", "RAM"])
+        self.vm_table = QTableWidget(0, 7)
+        self.vm_table.setHorizontalHeaderLabels(["Name", "State", "Lab", "CPU", "RAM", "Disk", "Display"])
         self.vm_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.vm_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.vm_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -372,75 +482,929 @@ class MainWindow(QMainWindow):
 
         self.main_tabs.addTab(templates_tab, "Templates")
 
-        remote_tab = QWidget()
-        remote_layout = QVBoxLayout(remote_tab)
-        remote_layout.setContentsMargins(18, 18, 12, 18)
-        remote_layout.setSpacing(12)
-        remote_header = QHBoxLayout()
-        remote_title = QLabel("Remote Hosts")
-        remote_title.setObjectName("sectionTitle")
+        self.main_tabs.addTab(self._build_remote_hosts_page(), "Remote Hosts")
+
+        self.dashboard_page_index = self.main_tabs.addTab(self._build_dashboard_page(), "Dashboard")
+        self.migrations_page_index = self.main_tabs.addTab(self._build_migrations_page(), "Migrations")
+        self.diagnostics_page_index = self.main_tabs.addTab(self._build_diagnostics_page(), "Diagnostics")
+        self.main_tabs.tabBar().hide()
+
+        return panel
+
+    def _build_remote_hosts_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        title = QLabel("Remote Hosts")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Hub-connected KVM hosts and VM inventory")
+        subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(title)
+        head_col.addWidget(subtitle)
+        header.addLayout(head_col)
+        header.addStretch()
         self.remote_status_label = QLabel("Hub not loaded")
         self.remote_status_label.setObjectName("mutedLabel")
         self.refresh_remote_button = self._button("Refresh", self.refresh_remote_hosts)
-        self.test_remote_button = self._button("Test", self.test_selected_remote_host)
-        remote_header.addWidget(remote_title)
-        remote_header.addStretch()
-        remote_header.addWidget(self.remote_status_label)
-        remote_header.addWidget(self.refresh_remote_button)
-        remote_header.addWidget(self.test_remote_button)
-        remote_layout.addLayout(remote_header)
-        hub_grid = QGridLayout()
-        self.hub_url_label = QLabel(self.registry_url())
+        self.test_remote_button = self._button("Test Selected Host", self.test_selected_remote_host)
+        remote_settings_button = self._button("Settings", self.app_settings)
+        header.addWidget(self.remote_status_label)
+        header.addWidget(self.refresh_remote_button)
+        header.addWidget(self.test_remote_button)
+        header.addWidget(remote_settings_button)
+        layout.addLayout(header)
+
+        self.hub_card = QFrame()
+        self.hub_card.setObjectName("hubCard")
+        hub_layout = QVBoxLayout(self.hub_card)
+        hub_layout.setContentsMargins(18, 14, 18, 14)
+        hub_layout.setSpacing(10)
+        hub_head = QHBoxLayout()
+        hub_title = QLabel("HyperGery Hub")
+        hub_title.setObjectName("sectionTitle")
         self.hub_status_label = QLabel("not checked")
-        self.hub_last_check_label = QLabel("")
+        self.hub_status_label.setObjectName("statusChip")
+        self.hub_url_label = QLabel(self.registry_url())
+        self.hub_url_label.setObjectName("mutedLabel")
+        hub_config_button = self._button("Config Hub", self.app_settings)
+        hub_head.addWidget(hub_title)
+        hub_head.addWidget(self.hub_status_label)
+        hub_head.addSpacing(8)
+        hub_head.addWidget(self.hub_url_label)
+        hub_head.addStretch()
+        hub_head.addWidget(hub_config_button)
+        hub_layout.addLayout(hub_head)
+
+        metrics = QHBoxLayout()
+        metrics.setSpacing(24)
+        self.hub_latency_label = QLabel("—")
         self.hub_hosts_online_label = QLabel("0")
         self.hub_vm_count_label = QLabel("0")
-        self.hub_nas_label = QLabel("")
-        for label in (
-            self.hub_url_label,
-            self.hub_status_label,
-            self.hub_last_check_label,
-            self.hub_hosts_online_label,
-            self.hub_vm_count_label,
-            self.hub_nas_label,
+        self.hub_nas_label = QLabel("not checked")
+        self.hub_last_check_label = QLabel("—")
+        for caption, value_label in (
+            ("LATENCY", self.hub_latency_label),
+            ("HOSTS ONLINE", self.hub_hosts_online_label),
+            ("VM INVENTORY", self.hub_vm_count_label),
+            ("NAS STAGING", self.hub_nas_label),
+            ("LAST CHECK", self.hub_last_check_label),
         ):
-            label.setObjectName("mutedLabel")
-        hub_grid.addWidget(QLabel("Hub URL"), 0, 0)
-        hub_grid.addWidget(self.hub_url_label, 0, 1)
-        hub_grid.addWidget(QLabel("Hub status"), 0, 2)
-        hub_grid.addWidget(self.hub_status_label, 0, 3)
-        hub_grid.addWidget(QLabel("Last check"), 1, 0)
-        hub_grid.addWidget(self.hub_last_check_label, 1, 1)
-        hub_grid.addWidget(QLabel("Hosts online"), 1, 2)
-        hub_grid.addWidget(self.hub_hosts_online_label, 1, 3)
-        hub_grid.addWidget(QLabel("VM records"), 2, 0)
-        hub_grid.addWidget(self.hub_vm_count_label, 2, 1)
-        hub_grid.addWidget(QLabel("NAS staging"), 2, 2)
-        hub_grid.addWidget(self.hub_nas_label, 2, 3)
-        remote_layout.addLayout(hub_grid)
-        self.remote_host_table = QTableWidget(0, 8)
-        self.remote_host_table.setHorizontalHeaderLabels(["Host", "Status", "Last seen", "RAM", "Disk free", "KVM", "libvirt", "Active VMs"])
-        self.remote_host_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.remote_host_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.remote_host_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.remote_host_table.setAlternatingRowColors(True)
-        self.remote_host_table.verticalHeader().setVisible(False)
-        self.remote_host_table.horizontalHeader().setStretchLastSection(True)
-        self.remote_host_table.setColumnWidth(0, 130)
-        self.remote_host_table.setColumnWidth(1, 80)
-        self.remote_host_table.setColumnWidth(2, 165)
-        self.remote_host_table.setColumnWidth(3, 120)
-        self.remote_host_table.setColumnWidth(4, 90)
-        self.remote_host_table.itemSelectionChanged.connect(self.update_actions)
-        remote_layout.addWidget(self.remote_host_table, 1)
+            cell = QVBoxLayout()
+            cell.setSpacing(3)
+            caption_label = QLabel(caption)
+            caption_label.setObjectName("metricLabel")
+            value_label.setObjectName("metricValue")
+            value_label.setWordWrap(True)
+            cell.addWidget(caption_label)
+            cell.addWidget(value_label)
+            metrics.addLayout(cell, 1)
+        hub_layout.addLayout(metrics)
+        layout.addWidget(self.hub_card)
+
+        self.remote_cards_scroll = QScrollArea()
+        self.remote_cards_scroll.setWidgetResizable(True)
+        self.remote_cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cards_body = QWidget()
+        self.remote_cards_layout = QGridLayout(cards_body)
+        self.remote_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.remote_cards_layout.setHorizontalSpacing(14)
+        self.remote_cards_layout.setVerticalSpacing(14)
+        self.remote_cards_scroll.setWidget(cards_body)
+        layout.addWidget(self.remote_cards_scroll, 1)
+        self._host_card_frames: list[QFrame] = []
+        self.selected_remote_host_index: int | None = None
+
         self.remote_detail = QTextEdit()
         self.remote_detail.setReadOnly(True)
-        self.remote_detail.setMaximumHeight(160)
+        self.remote_detail.setMaximumHeight(120)
         self.remote_detail.setPlaceholderText("Select Refresh to load hosts from the HyperGery Hub.")
-        remote_layout.addWidget(self.remote_detail)
-        self.main_tabs.addTab(remote_tab, "Remote Hosts")
-        
+        layout.addWidget(self.remote_detail)
+        return page
+
+    def _clear_remote_cards(self) -> None:
+        self._host_card_frames = []
+        self.selected_remote_host_index = None
+        while self.remote_cards_layout.count():
+            item = self.remote_cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _remote_message_panel(self, title: str, body: str, *, action: tuple[str, Callable[[], None]] | None = None) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("emptyPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(28, 26, 28, 26)
+        layout.setSpacing(8)
+        title_label = QLabel(title)
+        title_label.setObjectName("sectionTitle")
+        body_label = QLabel(body)
+        body_label.setObjectName("mutedLabel")
+        body_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(body_label)
+        if action is not None:
+            layout.addWidget(self._button(action[0], action[1]), alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch()
         return panel
+
+    def _select_host_card(self, index: int) -> None:
+        self.selected_remote_host_index = index
+        for frame_index, frame in enumerate(self._host_card_frames):
+            host = self.remote_hosts[frame_index] if frame_index < len(self.remote_hosts) else {}
+            offline = str(host.get("status") or "offline") != "online"
+            name = "hostCardSelected" if frame_index == index else ("hostCardOffline" if offline else "hostCard")
+            frame.setObjectName(name)
+            frame.style().unpolish(frame)
+            frame.style().polish(frame)
+        self.update_actions()
+
+    def _host_card(self, host: dict[str, Any], index: int) -> QFrame:
+        offline = str(host.get("status") or "offline") != "online"
+        card = QFrame()
+        card.setObjectName("hostCardOffline" if offline else "hostCard")
+        card.mousePressEvent = lambda event, idx=index: self._select_host_card(idx)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        head = QHBoxLayout()
+        host_id = str(host.get("host_id") or "?")
+        id_label = QLabel(host_id)
+        id_label.setObjectName("sectionTitle")
+        name = str(host.get("name") or host.get("hostname") or "")
+        cpu = str(host.get("cpu_model") or "")
+        if len(cpu) > 42:
+            cpu = cpu[:39] + "…"
+        meta = QLabel(" · ".join(part for part in (name, cpu) if part))
+        meta.setObjectName("mutedLabel")
+        status_chip = QLabel("OFFLINE" if offline else "ONLINE")
+        status_chip.setObjectName("statusChipBad" if offline else "statusChipOk")
+        head_col = QVBoxLayout()
+        head_col.setSpacing(1)
+        head_col.addWidget(id_label)
+        head_col.addWidget(meta)
+        head.addLayout(head_col)
+        head.addStretch()
+        head.addWidget(status_chip, alignment=Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(head)
+
+        if offline:
+            callout = QLabel(f"No heartbeat since {host.get('last_seen') or 'unknown'}. Not available as a migration target.")
+            callout.setObjectName("calloutDanger")
+            callout.setWordWrap(True)
+            layout.addWidget(callout)
+        else:
+            badges = QHBoxLayout()
+            badges.setSpacing(8)
+            for ok, text in ((host.get("kvm_ok"), "KVM"), (host.get("libvirt_ok"), "libvirt")):
+                badge = QLabel(f"{text} {'OK' if ok else 'FAIL'}")
+                badge.setObjectName("statusChipOk" if ok else "statusChipBad")
+                badges.addWidget(badge)
+            badges.addStretch()
+            active_vms = host.get("active_vms") or []
+            vm_count = QLabel(f"{len(active_vms)} active VM(s)")
+            vm_count.setObjectName("mutedLabel")
+            badges.addWidget(vm_count)
+            layout.addLayout(badges)
+
+            ram = QLabel(f"RAM {host.get('ram_free_mib', 0)} / {host.get('ram_total_mib', 0)} MiB free · Disk {host.get('disk_free_mib', 0)} MiB free")
+            ram.setObjectName("mutedLabel")
+            layout.addWidget(ram)
+
+            preview = ", ".join(str(vm) for vm in active_vms[:3])
+            if len(active_vms) > 3:
+                preview += f" +{len(active_vms) - 3} more"
+            inventory = QLabel(preview if preview else "No VM inventory reported")
+            inventory.setObjectName("mutedLabel")
+            inventory.setWordWrap(True)
+            layout.addWidget(inventory)
+
+        heartbeat = QLabel(f"last seen {host.get('last_seen') or 'unknown'}")
+        heartbeat.setObjectName("mutedLabel")
+        layout.addWidget(heartbeat)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        test_button = self._button("Test Host", lambda checked=False, hid=host_id: self._queue_host_test(hid))
+        test_button.setEnabled(not offline)
+        view_button = self._button("View VMs", lambda checked=False, hid=host_id: self._view_host_vms(hid))
+        target_button = self._button("Use as Migration Target", lambda checked=False, hid=host_id: self._hint_migration_target(hid))
+        target_button.setEnabled(not offline)
+        actions.addWidget(test_button)
+        actions.addWidget(view_button)
+        actions.addWidget(target_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        return card
+
+    def _hint_migration_target(self, host_id: str) -> None:
+        self._dashboard_go_vms()
+        self.status.showMessage(f"Select a VM and use Live Migration with target host {host_id}", 8000)
+
+    def _view_host_vms(self, host_id: str) -> None:
+        local_host_id = effective_config()["host_id"].value
+        if host_id == local_host_id:
+            self._dashboard_go_vms()
+            return
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return {"vms": RegistryClient(url).list_vms(host_id)}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            f"Loading VM inventory for {host_id}",
+            fetch,
+            on_success=lambda result: self._show_remote_vms_dialog(host_id, result),
+            refresh_after=False,
+            busy=False,
+        )
+
+    def _show_remote_vms_dialog(self, host_id: str, result: dict[str, Any]) -> None:
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.show_error(f"Cannot load VM inventory for {host_id}: {error}")
+            return
+        vms = list((result or {}).get("vms") or [])
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"VMs on {host_id}")
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        title = QLabel(f"VM inventory · {host_id}")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        note = QLabel(
+            "Read-only inventory reported by that host's agent. Manage these VMs from HyperGery on that "
+            "host; remote VM control arrives in v0.8. Use Live Migration to move VMs between hosts."
+        )
+        note.setObjectName("calloutInfo")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        table = QTableWidget(len(vms), 5)
+        table.setObjectName("remoteVmsTable")
+        table.setHorizontalHeaderLabels(["Name", "State", "Lab", "RAM (MiB)", "vCPUs"])
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        for row, vm in enumerate(vms):
+            state = str(vm.get("state") or "unknown")
+            cells = (
+                str(vm.get("vm_name") or vm.get("name") or ""),
+                state.upper(),
+                str(vm.get("lab_id") or ""),
+                str(vm.get("ram_mib") or ""),
+                str(vm.get("vcpus") or ""),
+            )
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if column == 1:
+                    item.setForeground(QColor(STATE_COLORS.get(state.replace(" ", ""), "#94A3B8")))
+                table.setItem(row, column, item)
+        layout.addWidget(table, 1)
+        if not vms:
+            empty = QLabel("No VM inventory reported for this host yet (the agent reports it on each heartbeat).")
+            empty.setObjectName("mutedLabel")
+            empty.setWordWrap(True)
+            layout.addWidget(empty)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        dialog.resize(640, 420)
+        dialog.show()
+        self._remote_vms_dialog = dialog
+
+    def _render_host_cards(self, hosts: list[dict[str, Any]]) -> None:
+        self._clear_remote_cards()
+        if not hosts:
+            self.remote_cards_layout.addWidget(
+                self._remote_message_panel(
+                    "No hosts registered yet",
+                    "Start a HyperGery Agent on another machine to register it with the Hub.",
+                ),
+                0,
+                0,
+            )
+            return
+        for index, host in enumerate(hosts):
+            card = self._host_card(host, index)
+            self._host_card_frames.append(card)
+            self.remote_cards_layout.addWidget(card, index // 2, index % 2)
+        self.remote_cards_layout.setRowStretch((len(hosts) - 1) // 2 + 1, 1)
+
+    def render_hub_offline(self, error: str) -> None:
+        self._clear_remote_cards()
+        self.remote_cards_layout.addWidget(
+            self._remote_message_panel(
+                "Hub not reachable",
+                "Start docker compose in docker/ or check HYPERGERY_HUB_URL.\n\n" + error,
+                action=("Open Settings", self.app_settings),
+            ),
+            0,
+            0,
+        )
+
+    def _queue_host_test(self, host_id: str) -> None:
+        def do_test() -> dict:
+            from ..registry import RegistryClient
+
+            return RegistryClient(self.registry_url()).create_command(host_id, "ping", {})
+
+        def on_done(result: dict) -> None:
+            self.remote_detail.setPlainText(
+                details_block(
+                    ("Hub", self.registry_url()),
+                    ("Host", host_id),
+                    ("Queued command", str(result.get("command_id", ""))),
+                    ("Status", str(result.get("status", ""))),
+                )
+            )
+            self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
+
+        self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
+
+    DOCTOR_GROUPS = (
+        ("Local Virtualization", ("/dev/kvm", "user groups", "libvirt")),
+        ("Tooling", ("python", "qemu-img", "virsh", "virt-viewer")),
+        ("Hub & Agent", ("hub url", "host id", "hub reachable")),
+        ("NAS", ("nas staging path",)),
+        ("Docker", ("docker folder", "docker compose")),
+        ("VM Inventory", ("hub vm inventory",)),
+    )
+
+    def _build_diagnostics_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        title = QLabel("Diagnostics")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Doctor checks for KVM, libvirt, Hub, NAS and tooling — read-only, nothing is changed.")
+        subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(title)
+        head_col.addWidget(subtitle)
+        header.addLayout(head_col)
+        header.addStretch()
+        self.copy_report_button = self._button("Copy Report", self.copy_doctor_report)
+        self.copy_report_button.setEnabled(False)
+        troubleshooting_button = self._button("Open Troubleshooting", self.open_troubleshooting)
+        self.run_doctor_button = self._button("Run Doctor", self.run_doctor, primary=True)
+        header.addWidget(self.copy_report_button)
+        header.addWidget(troubleshooting_button)
+        header.addWidget(self.run_doctor_button)
+        layout.addLayout(header)
+
+        summary = QHBoxLayout()
+        summary.setSpacing(8)
+        self.diag_ok_chip = QLabel("— OK")
+        self.diag_ok_chip.setObjectName("statusChip")
+        self.diag_warn_chip = QLabel("— WARN")
+        self.diag_warn_chip.setObjectName("statusChip")
+        self.diag_fail_chip = QLabel("— FAIL")
+        self.diag_fail_chip.setObjectName("statusChip")
+        self.diag_overall_label = QLabel("Doctor has not run yet.")
+        self.diag_overall_label.setObjectName("mutedLabel")
+        summary.addWidget(self.diag_ok_chip)
+        summary.addWidget(self.diag_warn_chip)
+        summary.addWidget(self.diag_fail_chip)
+        summary.addStretch()
+        summary.addWidget(self.diag_overall_label)
+        layout.addLayout(summary)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        self.diag_results_layout = QVBoxLayout(body)
+        self.diag_results_layout.setContentsMargins(0, 0, 0, 0)
+        self.diag_results_layout.setSpacing(12)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
+
+        self._doctor_items: list[Any] = []
+        self._diag_show_message(
+            "Run Doctor to check your environment",
+            "Doctor inspects /dev/kvm, user groups, libvirt, QEMU tooling, Hub reachability, NAS staging, and Docker Compose without changing the system.",
+        )
+        return page
+
+    def _clear_diag_results(self) -> None:
+        while self.diag_results_layout.count():
+            item = self.diag_results_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _diag_show_message(self, title: str, body: str) -> None:
+        self._clear_diag_results()
+        self.diag_results_layout.addWidget(self._remote_message_panel(title, body))
+        self.diag_results_layout.addStretch()
+
+    def run_doctor(self) -> None:
+        self.run_doctor_button.setEnabled(False)
+        self._diag_show_message("Running diagnostics…", "Checking KVM, libvirt, tooling, Hub, NAS, and Docker. This can take a few seconds if the Hub is unreachable.")
+
+        def collect() -> dict[str, Any]:
+            from ..doctor import collect_doctor_items, doctor_exit_code
+
+            try:
+                items = collect_doctor_items()
+                return {"items": items, "exit_code": doctor_exit_code(items)}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            "Running doctor diagnostics",
+            collect,
+            on_success=self.render_doctor_results,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def render_doctor_results(self, result: dict[str, Any]) -> None:
+        self.run_doctor_button.setEnabled(True)
+        if result.get("error"):
+            self._doctor_items = []
+            self.copy_report_button.setEnabled(False)
+            for chip, text in ((self.diag_ok_chip, "— OK"), (self.diag_warn_chip, "— WARN"), (self.diag_fail_chip, "— FAIL")):
+                chip.setText(text)
+                chip.setObjectName("statusChip")
+                chip.style().unpolish(chip)
+                chip.style().polish(chip)
+            self.diag_overall_label.setText("Doctor failed to run.")
+            self._clear_diag_results()
+            error_label = QLabel(f"Doctor failed to run: {result['error']}")
+            error_label.setObjectName("calloutDanger")
+            error_label.setWordWrap(True)
+            self.diag_results_layout.addWidget(error_label)
+            self.diag_results_layout.addStretch()
+            return
+        items = result.get("items") or []
+        self._doctor_items = items
+        self.copy_report_button.setEnabled(bool(items))
+        counts = {"OK": 0, "WARN": 0, "FAIL": 0}
+        for item in items:
+            counts[item.status] = counts.get(item.status, 0) + 1
+        for chip, key, tone in (
+            (self.diag_ok_chip, "OK", "statusChipOk"),
+            (self.diag_warn_chip, "WARN", "statusChipWarn"),
+            (self.diag_fail_chip, "FAIL", "statusChipBad"),
+        ):
+            chip.setText(f"{counts[key]} {key}")
+            chip.setObjectName(tone if counts[key] else "statusChip")
+            chip.style().unpolish(chip)
+            chip.style().polish(chip)
+        exit_code = result.get("exit_code", 0)
+        self.diag_overall_label.setText(
+            f"No critical failures · exit code 0 · {now_iso()}" if exit_code == 0
+            else f"Critical failures present · exit code 1 · {now_iso()}"
+        )
+
+        self._clear_diag_results()
+        remaining = list(items)
+        for group_title, names in self.DOCTOR_GROUPS:
+            group_items = [item for item in remaining if item.name in names]
+            if not group_items:
+                continue
+            remaining = [item for item in remaining if item not in group_items]
+            self.diag_results_layout.addWidget(self._doctor_group_card(group_title, group_items))
+        if remaining:
+            self.diag_results_layout.addWidget(self._doctor_group_card("Other", remaining))
+        self.diag_results_layout.addStretch()
+
+    def _doctor_group_card(self, title: str, items: list[Any]) -> QFrame:
+        card = QFrame()
+        card.setObjectName("panel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(8)
+        title_label = QLabel(title)
+        title_label.setObjectName("sectionTitle")
+        layout.addWidget(title_label)
+        chip_names = {"OK": "statusChipOk", "WARN": "statusChipWarn", "FAIL": "statusChipBad"}
+        for item in items:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            chip = QLabel(item.status)
+            chip.setObjectName(chip_names.get(item.status, "statusChip"))
+            chip.setFixedWidth(64)
+            chip.setMinimumHeight(26)
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name = QLabel(item.name + ("  · CRITICAL" if item.critical and item.status == "FAIL" else ""))
+            name.setMinimumWidth(170)
+            detail = QLabel(str(item.detail))
+            detail.setObjectName("mutedLabel")
+            detail.setWordWrap(True)
+            row.addWidget(chip)
+            row.addWidget(name)
+            row.addWidget(detail, 1)
+            layout.addLayout(row)
+        return card
+
+    def copy_doctor_report(self) -> None:
+        if not self._doctor_items:
+            self.status.showMessage("No diagnostics to copy yet. Run Doctor first.", 5000)
+            return
+        from ..doctor import doctor_exit_code, format_doctor_items
+
+        report = format_doctor_items(self._doctor_items)
+        report += f"\n\nexit code: {doctor_exit_code(self._doctor_items)} · generated {now_iso()}"
+        QApplication.clipboard().setText(report)
+        self.status.showMessage("Doctor report copied to clipboard", 5000)
+        self.log_activity("Copied doctor report to clipboard")
+
+    def open_troubleshooting(self) -> None:
+        path = Path(__file__).resolve().parents[3] / "docs" / "TROUBLESHOOTING.md"
+        if path.is_file():
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            self.status.showMessage(f"Opening {path}", 5000)
+        else:
+            self.status.showMessage(f"Troubleshooting guide not found at {path}", 8000)
+
+    def _stat_card(self, label: str) -> tuple[QFrame, QLabel, QLabel]:
+        card = QFrame()
+        card.setObjectName("panel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(6)
+        label_widget = QLabel(label)
+        label_widget.setObjectName("statLabel")
+        big = QLabel("—")
+        big.setObjectName("statBig")
+        sub = QLabel("")
+        sub.setObjectName("mutedLabel")
+        sub.setWordWrap(True)
+        layout.addWidget(label_widget)
+        layout.addWidget(big)
+        layout.addWidget(sub)
+        layout.addStretch()
+        return card, big, sub
+
+    def _set_stat_tone(self, label: QLabel, tone: str) -> None:
+        label.setObjectName({"ok": "statBigOk", "bad": "statBigBad"}.get(tone, "statBig"))
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+    def _build_dashboard_page(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 22, 24, 26)
+        layout.setSpacing(16)
+
+        title = QLabel("Dashboard")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Local host, HyperGery Hub on the NAS, and the remote lab hosts at a glance.")
+        subtitle.setObjectName("mutedLabel")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(14)
+        vm_card, self.dash_vm_big, self.dash_vm_sub = self._stat_card("VIRTUAL MACHINES")
+        hub_card, self.dash_hub_big, self.dash_hub_sub = self._stat_card("HYPERGERY HUB")
+        nas_card, self.dash_nas_big, self.dash_nas_sub = self._stat_card("NAS STAGING")
+        hosts_card, self.dash_hosts_big, self.dash_hosts_sub = self._stat_card("HOSTS ONLINE")
+        self.dash_hub_big.setText("Not checked")
+        self.dash_nas_big.setText("Not checked")
+        for card in (vm_card, hub_card, nas_card, hosts_card):
+            stats_row.addWidget(card, 1)
+        layout.addLayout(stats_row)
+
+        quick_title = QLabel("Quick actions")
+        quick_title.setObjectName("sectionTitle")
+        layout.addWidget(quick_title)
+        quick_grid = QGridLayout()
+        quick_grid.setHorizontalSpacing(14)
+        quick_grid.setVerticalSpacing(14)
+        actions = (
+            ("New VM", "Create from a local ISO", self.new_vm, True),
+            ("New Lab", "Isolated lab network", self.new_lab, False),
+            ("Open Console", "Integrated VNC console", self._dashboard_go_vms, False),
+            ("Live Migration", "NAS Clone Migration", self._dashboard_go_vms, False),
+            ("Run Doctor", "Host and Hub diagnostics", self._dashboard_go_diagnostics, False),
+            ("Settings", "Hub · NAS · VM defaults", self.app_settings, False),
+        )
+        for index, (name, sub, callback, primary) in enumerate(actions):
+            quick_grid.addWidget(self._quick_card(name, sub, callback, primary=primary), index // 3, index % 3)
+        layout.addLayout(quick_grid)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(14)
+
+        warnings_card = QFrame()
+        warnings_card.setObjectName("panel")
+        warnings_layout = QVBoxLayout(warnings_card)
+        warnings_layout.setContentsMargins(16, 14, 16, 14)
+        warnings_layout.setSpacing(8)
+        warnings_title = QLabel("Warnings")
+        warnings_title.setObjectName("sectionTitle")
+        warnings_layout.addWidget(warnings_title)
+        self.dash_warnings_layout = QVBoxLayout()
+        self.dash_warnings_layout.setSpacing(8)
+        warnings_layout.addLayout(self.dash_warnings_layout)
+        warnings_layout.addStretch()
+        initial = QLabel("Hub and NAS state not checked yet. Select Refresh to load it.")
+        initial.setObjectName("calloutInfo")
+        initial.setWordWrap(True)
+        self.dash_warnings_layout.addWidget(initial)
+
+        migration_card = QFrame()
+        migration_card.setObjectName("panel")
+        migration_layout = QVBoxLayout(migration_card)
+        migration_layout.setContentsMargins(16, 14, 16, 14)
+        migration_layout.setSpacing(8)
+        migration_title = QLabel("Last migration")
+        migration_title.setObjectName("sectionTitle")
+        self.dash_migration_label = QLabel("No migrations recorded yet.")
+        self.dash_migration_label.setObjectName("mutedLabel")
+        self.dash_migration_label.setWordWrap(True)
+        migration_note = QLabel("NAS Clone Migration keeps the source VM untouched; UUID and MAC are regenerated on the target.")
+        migration_note.setObjectName("mutedLabel")
+        migration_note.setWordWrap(True)
+        migration_layout.addWidget(migration_title)
+        migration_layout.addWidget(self.dash_migration_label)
+        migration_layout.addWidget(migration_note)
+        migration_layout.addStretch()
+
+        bottom_row.addWidget(warnings_card, 3)
+        bottom_row.addWidget(migration_card, 2)
+        layout.addLayout(bottom_row)
+        layout.addStretch()
+
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
+        return page
+
+    def _dashboard_go_vms(self) -> None:
+        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Virtual Machines"))
+
+    def _dashboard_go_diagnostics(self) -> None:
+        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Diagnostics"))
+
+    def update_dashboard_vms(self) -> None:
+        counts = {"running": 0, "shutoff": 0, "paused": 0, "unknown": 0}
+        for vm in self.all_vms:
+            counts[state_kind(vm.state)] += 1
+        self.dash_vm_big.setText(str(counts["running"]))
+        self._set_stat_tone(self.dash_vm_big, "ok" if counts["running"] else "")
+        self.dash_vm_sub.setText(
+            f"running · {counts['shutoff']} shutoff · {counts['paused']} paused · {len(self.all_vms)} total"
+        )
+
+    def update_dashboard_hub(self, hosts: list[dict[str, Any]], *, reachable: bool, vm_count: int | None, nas_writable: bool, nas_path: str) -> None:
+        self.dash_hub_big.setText("Online" if reachable else "Offline")
+        self._set_stat_tone(self.dash_hub_big, "ok" if reachable else "bad")
+        records = "unknown" if vm_count is None else f"{vm_count} VM record(s)"
+        self.dash_hub_sub.setText(f"{self.registry_url()} · {records}" if reachable else self.registry_url())
+        self.dash_nas_big.setText("Writable" if nas_writable else "Not writable")
+        self._set_stat_tone(self.dash_nas_big, "ok" if nas_writable else "bad")
+        self.dash_nas_sub.setText(nas_path)
+        online = sum(1 for host in hosts if host.get("status") == "online")
+        self.dash_hosts_big.setText(f"{online} / {len(hosts)}" if hosts else "0")
+        self._set_stat_tone(self.dash_hosts_big, "ok" if hosts and online == len(hosts) else "")
+        offline_ids = [str(host.get("host_id") or "?") for host in hosts if host.get("status") != "online"]
+        self.dash_hosts_sub.setText(
+            "all hosts operational" if hosts and not offline_ids
+            else (", ".join(offline_ids) + " offline" if offline_ids else "no hosts registered")
+        )
+        self._update_dashboard_warnings(reachable=reachable, nas_writable=nas_writable, offline_ids=offline_ids)
+
+    def _update_dashboard_warnings(self, *, reachable: bool, nas_writable: bool, offline_ids: list[str]) -> None:
+        while self.dash_warnings_layout.count():
+            item = self.dash_warnings_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        def callout(text: str, tone: str) -> None:
+            label = QLabel(text)
+            label.setObjectName(tone)
+            label.setWordWrap(True)
+            self.dash_warnings_layout.addWidget(label)
+        if not reachable:
+            callout("HyperGery Hub is not responding. Check HYPERGERY_HUB_URL and that the Docker container is healthy.", "calloutWarn")
+        if not nas_writable:
+            callout("NAS staging is not writable. Mount the NAS share before packaging migrations.", "calloutWarn")
+        for host_id in offline_ids:
+            callout(f"{host_id} is offline. It is not available as a migration target.", "calloutWarn")
+        if reachable and nas_writable and not offline_ids:
+            callout("No warnings. Hub and NAS staging are operational.", "calloutOk")
+
+    def update_dashboard_migration(self, migrations: list[dict[str, Any]]) -> None:
+        if not migrations:
+            self.dash_migration_label.setText("No migrations recorded yet.")
+            return
+        last = migrations[-1]
+        migration_id = str(last.get("migration_id") or "?")
+        status = str(last.get("status") or "unknown")
+        vm_name = str(last.get("vm_name") or last.get("source_vm_name") or "?")
+        self.dash_migration_label.setText(f"{migration_id}\n{vm_name} · status: {status}")
+
+    MIGRATIONS_TABLE_COLUMNS = ("Migration ID", "Source VM", "Target VM", "Source → Target", "Strategy", "Status", "Updated")
+
+    def _build_migrations_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 26)
+        layout.setSpacing(12)
+        header = QHBoxLayout()
+        title_block = QVBoxLayout()
+        title_block.setSpacing(2)
+        title = QLabel("Migrations")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("NAS package history and migration status")
+        subtitle.setObjectName("mutedLabel")
+        title_block.addWidget(title)
+        title_block.addWidget(subtitle)
+        header.addLayout(title_block)
+        header.addStretch()
+        self.migrations_refresh_button = QPushButton("Refresh")
+        self.migrations_refresh_button.clicked.connect(self.refresh_migrations)
+        open_migration = QPushButton("Open Live Migration")
+        open_migration.setObjectName("primaryButton")
+        open_migration.clicked.connect(self._open_live_migration_from_page)
+        header.addWidget(self.migrations_refresh_button)
+        header.addWidget(open_migration)
+        layout.addLayout(header)
+
+        self.migrations_status_label = QLabel("History not loaded yet — press Refresh or open this section again.")
+        self.migrations_status_label.setObjectName("mutedLabel")
+        self.migrations_status_label.setWordWrap(True)
+        layout.addWidget(self.migrations_status_label)
+
+        self.migrations_table = QTableWidget(0, len(self.MIGRATIONS_TABLE_COLUMNS))
+        self.migrations_table.setHorizontalHeaderLabels(list(self.MIGRATIONS_TABLE_COLUMNS))
+        self.migrations_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.migrations_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.migrations_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.migrations_table.verticalHeader().setVisible(False)
+        self.migrations_table.horizontalHeader().setStretchLastSection(True)
+        self.migrations_table.itemSelectionChanged.connect(self._update_migration_copy_buttons)
+        layout.addWidget(self.migrations_table, 1)
+
+        actions = QHBoxLayout()
+        self.copy_migration_id_button = QPushButton("Copy Migration ID")
+        self.copy_migration_id_button.setEnabled(False)
+        self.copy_migration_id_button.clicked.connect(self.copy_selected_migration_id)
+        self.copy_migration_summary_button = QPushButton("Copy Summary")
+        self.copy_migration_summary_button.setEnabled(False)
+        self.copy_migration_summary_button.clicked.connect(self.copy_selected_migration_summary)
+        actions.addWidget(self.copy_migration_id_button)
+        actions.addWidget(self.copy_migration_summary_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+
+        safety = QLabel(
+            "History is read-only: migration records and packages are never deleted from this page. "
+            "Source VMs are never touched by migrations."
+        )
+        safety.setObjectName("calloutInfo")
+        safety.setWordWrap(True)
+        layout.addWidget(safety)
+        self.migrations_history: list[dict[str, Any]] = []
+        self._migrations_loaded = False
+        return page
+
+    def refresh_migrations(self) -> None:
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return {"migrations": RegistryClient(url).list_migrations()}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            "Loading migration history",
+            fetch,
+            on_success=self.render_migrations,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def render_migrations(self, result: dict[str, Any]) -> None:
+        self._migrations_loaded = True
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.migrations_table.setRowCount(0)
+            self.migrations_history = []
+            self.migrations_status_label.setText(f"Hub not reachable: {error}")
+            self._update_migration_copy_buttons()
+            return
+        migrations = list((result or {}).get("migrations") or [])
+        self.migrations_history = migrations
+        self.migrations_table.setRowCount(len(migrations))
+        for row, record in enumerate(migrations):
+            status = str(record.get("status") or "unknown")
+            cells = (
+                str(record.get("migration_id") or ""),
+                str(record.get("source_vm_name") or ""),
+                str(record.get("target_vm_name") or ""),
+                f"{record.get('source_host_id') or '?'} → {record.get('target_host_id') or '?'}",
+                str(record.get("strategy") or ""),
+                status.upper(),
+                str(record.get("updated_at") or ""),
+            )
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if column == 5:
+                    status_colors = {"done": "#22C55E", "failed": "#EF4444"}
+                    item.setForeground(QColor(status_colors.get(status, "#F59E0B")))
+                self.migrations_table.setItem(row, column, item)
+        if migrations:
+            done = sum(1 for record in migrations if record.get("status") == "done")
+            failed = sum(1 for record in migrations if record.get("status") == "failed")
+            self.migrations_status_label.setText(
+                f"{len(migrations)} migration(s) on the Hub · {done} done · {failed} failed"
+            )
+        else:
+            self.migrations_status_label.setText("No migrations recorded on the Hub yet.")
+        self._update_migration_copy_buttons()
+
+    def _selected_migration(self) -> dict[str, Any] | None:
+        row = self.migrations_table.currentRow()
+        if row < 0 or row >= len(self.migrations_history):
+            return None
+        return self.migrations_history[row]
+
+    def _update_migration_copy_buttons(self) -> None:
+        enabled = self._selected_migration() is not None
+        self.copy_migration_id_button.setEnabled(enabled)
+        self.copy_migration_summary_button.setEnabled(enabled)
+
+    def copy_selected_migration_id(self) -> None:
+        record = self._selected_migration()
+        if not record:
+            return
+        QApplication.clipboard().setText(str(record.get("migration_id") or ""))
+        self.status.showMessage("Migration ID copied", 4000)
+
+    def copy_selected_migration_summary(self) -> None:
+        record = self._selected_migration()
+        if not record:
+            return
+        errors = record.get("errors") or []
+        lines = [
+            f"migration_id: {record.get('migration_id', '')}",
+            f"status: {record.get('status', '')}",
+            f"strategy: {record.get('strategy', '')}",
+            f"source: {record.get('source_host_id', '')} / {record.get('source_vm_name', '')}",
+            f"target: {record.get('target_host_id', '')} / {record.get('target_vm_name', '')}",
+            f"package: {record.get('package_path', '')}",
+            f"updated: {record.get('updated_at', '')}",
+            f"errors: {'; '.join(str(item) for item in errors) if errors else 'none'}",
+        ]
+        QApplication.clipboard().setText("\n".join(lines))
+        self.status.showMessage("Migration summary copied", 4000)
+
+    def _open_live_migration_from_page(self) -> None:
+        if self.selected_vm is not None:
+            self.live_migration_vm()
+            return
+        self._dashboard_go_vms()
+        self.status.showMessage("Select a VM, then use Live Migration", 6000)
+
+    def _placeholder_page(self, title: str, subtitle: str) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(10)
+        title_label = QLabel(title)
+        title_label.setObjectName("placeholderTitle")
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("mutedLabel")
+        subtitle_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addStretch()
+        return page
 
     def _build_vm_empty_state(self) -> QWidget:
         panel = QFrame()
@@ -450,7 +1414,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
         self.vm_empty_title = QLabel("No virtual machines yet")
         self.vm_empty_title.setObjectName("heroTitle")
-        self.vm_empty_subtitle = QLabel("Create a VM from an ISO to get started")
+        self.vm_empty_subtitle = QLabel("Create your first VM from an ISO.")
         self.vm_empty_subtitle.setObjectName("heroSubtitle")
         self.vm_empty_subtitle.setWordWrap(True)
         self.vm_empty_button = self._button("New VM", self.new_vm_from_empty, primary=True)
@@ -589,7 +1553,7 @@ class MainWindow(QMainWindow):
     def _build_detail_tabs(self) -> QWidget:
         self.tabs = QTabWidget()
         self.detail_views: dict[str, QTextEdit] = {}
-        for name in ("General", "System", "Display", "Storage", "Network", "Snapshots", "Logs"):
+        for name in ("General", "System", "Console", "Storage", "Network", "Snapshots", "Logs"):
             text = QTextEdit()
             text.setReadOnly(True)
             text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
@@ -719,7 +1683,7 @@ class MainWindow(QMainWindow):
         self.delete_lab_template_button.setEnabled(has_lab_tmpl)
         self.edit_lab_template_button.setEnabled(has_lab_tmpl)
         self.export_lab_template_button.setEnabled(has_lab_tmpl)
-        self.test_remote_button.setEnabled(bool(self.remote_host_table.selectionModel().selectedRows()))
+        self.test_remote_button.setEnabled(self.selected_remote_host_index is not None)
 
     def registry_url(self) -> str:
         return effective_value("hub_url")
@@ -735,40 +1699,39 @@ class MainWindow(QMainWindow):
     def _load_remote_hosts(self) -> dict[str, Any]:
         from ..registry import RegistryClient
 
+        import time
+
         client = RegistryClient(self.registry_url())
+        try:
+            started = time.perf_counter()
+            client.health()
+            latency_ms: int | None = int((time.perf_counter() - started) * 1000)
+        except Exception:
+            latency_ms = None
         hosts = client.list_hosts()
         try:
             vm_count: int | None = len(client.list_vms())
         except Exception:
             vm_count = None
-        return {"hosts": hosts, "vm_count": vm_count}
+        try:
+            migrations: list[dict[str, Any]] = client.list_migrations()
+        except Exception:
+            migrations = []
+        return {"hosts": hosts, "vm_count": vm_count, "migrations": migrations, "latency_ms": latency_ms}
 
     def render_remote_hosts(self, result: dict[str, Any] | list[dict[str, Any]]) -> None:
+        latency_ms: int | None = None
         if isinstance(result, dict):
             hosts = result.get("hosts", [])
             vm_count = result.get("vm_count")
+            latency_ms = result.get("latency_ms")
+            self.update_dashboard_migration(result.get("migrations") or [])
         else:
             hosts = result
             vm_count = None
         self.remote_hosts = hosts
-        self.remote_host_table.setRowCount(0)
-        for host in hosts:
-            row = self.remote_host_table.rowCount()
-            self.remote_host_table.insertRow(row)
-            active = ", ".join(host.get("active_vms") or [])
-            ram = f"{host.get('ram_free_mib', 0)}/{host.get('ram_total_mib', 0)} MiB"
-            values = [
-                str(host.get("host_id", "")),
-                str(host.get("status", "offline")),
-                str(host.get("last_seen", "")),
-                ram,
-                f"{host.get('disk_free_mib', 0)} MiB",
-                "OK" if host.get("kvm_ok") else "Blocked",
-                "OK" if host.get("libvirt_ok") else "Blocked",
-                active or "none",
-            ]
-            for col, value in enumerate(values):
-                self._set_table_item(self.remote_host_table, row, col, value)
+        self._render_host_cards(hosts)
+        self.hub_latency_label.setText(f"{latency_ms} ms" if latency_ms is not None else "—")
         self.remote_status_label.setText(f"{len(hosts)} host(s)")
         if hosts:
             self.remote_detail.setPlainText(details_block(("Hub", self.registry_url()), ("Status", "reachable")))
@@ -787,41 +1750,44 @@ class MainWindow(QMainWindow):
         if reachable:
             vm_count_label = str(vm_count) if vm_count is not None else "unavailable"
         self.hub_url_label.setText(self.registry_url())
-        self.hub_status_label.setText("online" if reachable else "offline")
+        self.hub_status_label.setText("ONLINE" if reachable else "OFFLINE")
+        self.hub_status_label.setObjectName("statusChipOk" if reachable else "statusChipBad")
+        self.hub_status_label.style().unpolish(self.hub_status_label)
+        self.hub_status_label.style().polish(self.hub_status_label)
+        self.hub_card.setObjectName("hubCard" if reachable else "hubCardOffline")
+        self.hub_card.style().unpolish(self.hub_card)
+        self.hub_card.style().polish(self.hub_card)
         self.hub_last_check_label.setText(now_iso())
         self.hub_hosts_online_label.setText(str(sum(1 for host in hosts if host.get("status") == "online")))
         self.hub_vm_count_label.setText(vm_count_label)
         self.hub_nas_label.setText(nas_label)
+        nas_writable = os.path.isdir(nas_path) and os.access(nas_path, os.W_OK)
+        self.hub_chip.setText(f"Hub: {'online' if reachable else 'offline'}")
+        self.hub_chip.setObjectName("statusChipOk" if reachable else "statusChipBad")
+        self.nas_chip.setText(f"NAS: {'writable' if nas_writable else 'not writable'}")
+        self.nas_chip.setObjectName("statusChipOk" if nas_writable else "statusChipBad")
+        self.host_chip.setText(f"Host: {config['host_id'].value}")
+        for chip in (self.hub_chip, self.nas_chip):
+            chip.style().unpolish(chip)
+            chip.style().polish(chip)
+        self.update_dashboard_hub(
+            hosts,
+            reachable=reachable,
+            vm_count=vm_count,
+            nas_writable=nas_writable,
+            nas_path=nas_path,
+        )
 
     def test_selected_remote_host(self) -> None:
-        indexes = self.remote_host_table.selectionModel().selectedRows()
-        if not indexes:
+        index = self.selected_remote_host_index
+        if index is None:
             self.show_error("Select a remote host first.")
             return
-        row = indexes[0].row()
-        host = self.remote_hosts[row] if 0 <= row < len(self.remote_hosts) else None
+        host = self.remote_hosts[index] if 0 <= index < len(self.remote_hosts) else None
         if not host:
             self.show_error("Selected host is no longer available.")
             return
-        host_id = str(host.get("host_id", ""))
-
-        def do_test() -> dict:
-            from ..registry import RegistryClient
-
-            return RegistryClient(self.registry_url()).create_command(host_id, "ping", {})
-
-        def on_done(result: dict) -> None:
-            self.remote_detail.setPlainText(
-                details_block(
-                    ("Hub", self.registry_url()),
-                    ("Host", host_id),
-                    ("Queued command", str(result.get("command_id", ""))),
-                    ("Status", str(result.get("status", ""))),
-                )
-            )
-            self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
-
-        self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
+        self._queue_host_test(str(host.get("host_id", "")))
 
     def refresh_all(self) -> None:
         self.status.showMessage("Loading host state...")
@@ -878,8 +1844,9 @@ class MainWindow(QMainWindow):
             self.render_remote_hosts(overview["remote_hosts"])
         elif "remote_hosts" in errors:
             self.remote_hosts = []
-            self.remote_host_table.setRowCount(0)
+            self.render_hub_offline(str(errors["remote_hosts"]))
             self.remote_status_label.setText("Hub unavailable")
+            self.hub_latency_label.setText("—")
             self.render_hub_status([], reachable=False)
             self.remote_detail.setPlainText(
                 "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
@@ -937,6 +1904,7 @@ class MainWindow(QMainWindow):
         if current is None:
             current = self.selected_vm.name if self.selected_vm else ""
         self.all_vms = vms
+        self.update_dashboard_vms()
         selected_lab_id = self.selected_lab_id()
         self.vms = filter_vms_for_lab(vms, selected_lab_id, self.vm_filter.currentText() == "Selected Lab")
         self.vm_table.setRowCount(0)
@@ -949,6 +1917,8 @@ class MainWindow(QMainWindow):
             self._set_table_item(self.vm_table, row, 2, vm.lab_id or "unknown")
             self._set_table_item(self.vm_table, row, 3, str(vm.vcpus or "-"))
             self._set_table_item(self.vm_table, row, 4, format_mib(vm.ram_mib))
+            self._set_table_item(self.vm_table, row, 5, vm.disk_virtual or "—")
+            self._set_table_item(self.vm_table, row, 6, (vm.graphics or "—").upper() if vm.graphics else "—")
             if vm.name == current:
                 selected_row = row
         if selected_row < 0 and self.vms:
@@ -1011,7 +1981,7 @@ class MainWindow(QMainWindow):
             self.vm_empty_button.setText("New VM in Lab")
         else:
             self.vm_empty_title.setText("No virtual machines yet")
-            self.vm_empty_subtitle.setText("Create a VM from an ISO to get started")
+            self.vm_empty_subtitle.setText("Create your first VM from an ISO.")
             self.vm_empty_button.setText("New VM")
 
     def render_lab_details(self) -> None:
@@ -1321,11 +2291,11 @@ class MainWindow(QMainWindow):
             )
         )
         self.detail_views["System"].setPlainText(details_block(("RAM", format_mib(vm.ram_mib)), ("vCPUs", str(vm.vcpus or "unknown"))))
-        self.detail_views["Display"].setPlainText(
+        self.detail_views["Console"].setPlainText(
             details_block(
-                ("Graphics", vm.graphics or "unknown"),
-                ("HyperGery Console", "separate VNC console window" if vm.graphics == "vnc" else "use External Console or switch display to VNC"),
-                ("External console", "virt-viewer or remote-viewer"),
+                ("Display", (vm.graphics or "unknown").upper()),
+                ("Integrated console", "available (VNC)" if vm.graphics == "vnc" else "not available — requires VNC"),
+                ("External viewer", "virt-viewer or remote-viewer"),
                 ("Host Key", "Right Ctrl"),
                 ("Close behavior", "closing the console window does not stop the VM"),
             )
@@ -1556,64 +2526,14 @@ class MainWindow(QMainWindow):
             self.show_error("Select a VM first.")
             return
         dialog = LiveMigrationDialog(self.backend, self.selected_vm, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        values = dialog.values()
-        if (
-            QMessageBox.question(
-                self,
-                "Start NAS Live Migration",
-                (
-                    f"Start NAS migration for {values['vm_name']}?\n\n"
-                    f"Source host: {values['source_host_id']}\n"
-                    f"Target host: {values['target_host_id']}\n"
-                    f"Target VM: {values['target_vm_name']}\n"
-                    f"NAS staging path: {values['nas_path']}\n\n"
-                    "HyperGery will package the source VM, queue an import command on the target agent, "
-                    "and leave the source VM and disks untouched."
-                ),
-            )
-            != QMessageBox.StandardButton.Yes
-        ):
-            return
-
-        def do_migration() -> dict:
-            from ..migration import start_remote_migration
-            from ..registry import RegistryClient
-
-            return start_remote_migration(
-                self.backend,
-                RegistryClient(values["registry_url"]),
-                values["vm_name"],
-                values["nas_path"],
-                source_host_id=values["source_host_id"],
-                target_host_id=values["target_host_id"],
-                target_vm_name=values["target_vm_name"],
-                allow_paused=values["allow_paused"],
-                include_iso=values["include_iso"],
-                include_snapshots=values["include_snapshots"],
-                start_after_import=values["start_after_import"],
-            )
-
-        def on_done(result: dict) -> None:
-            package_dir = result.get("package_dir", "")
-            migration_id = result.get("migration_id", "")
-            command_id = result.get("command_id", "")
+        dialog.exec()
+        if dialog.last_result:
             self.log_activity(
-                f"Remote migration queued: migration_id={migration_id} command_id={command_id} package={package_dir}"
+                "Remote migration queued: "
+                f"migration_id={dialog.last_result.get('migration_id', '')} "
+                f"command_id={dialog.last_result.get('command_id', '')} "
+                f"package={dialog.last_result.get('package_dir', '')}"
             )
-            QMessageBox.information(
-                self,
-                "Migration Queued",
-                (
-                    f"Migration: {migration_id}\n"
-                    f"Target command: {command_id}\n"
-                    f"Package: {package_dir}\n\n"
-                    "The target agent will import the package on its next run. Source VM remains untouched."
-                ),
-            )
-
-        self.run_operation(f"Starting migration for {values['vm_name']}", do_migration, on_success=on_done, refresh_after=False)
 
     def delete_vm(self) -> None:
         if self.selected_vm is None:

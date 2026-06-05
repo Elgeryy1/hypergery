@@ -1,6 +1,8 @@
 # NAS Deployment
 
-This is the v0.6.0 deployment shape for HyperGery Hub on the QNAP/NAS.
+This is the deployment shape for HyperGery Hub on the QNAP/NAS (v0.6.0, still current in v0.7.0).
+
+v0.7.0 additions: the Hub also serves temporary Hub Transfer package staging — set `HYPERGERY_HUB_STAGING=/hypergery/staging` in the compose environment so staged packages land on NAS storage. Staged packages are deleted automatically after a successful target import. The v0.7 app default Hub URL already points at the NAS Hub (`http://192.168.1.150:8765`).
 
 Final release status: Hub Docker, local Hub/Agent/NAS Clone Migration smoke, and a real two-physical-host NAS Clone Migration smoke passed for v0.6.0.
 

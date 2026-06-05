@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+import shutil
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from ..backend import HyperGeryError
+
+TRANSFER_CHUNK_BYTES = 1024 * 1024
+TRANSFER_TIMEOUT_SECONDS = 600
 
 
 def default_hub_url() -> str:
@@ -94,3 +100,73 @@ class RegistryClient:
 
     def create_event(self, kind: str, message: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.request("POST", "/events", {"kind": kind, "message": message, "payload": payload or {}})
+
+    def _package_url(self, migration_id: str, rel_path: str = "") -> str:
+        url = f"{self.base_url}/packages/{quote(migration_id, safe='')}"
+        if rel_path:
+            url += "/" + quote(rel_path)
+        return url
+
+    def list_package_files(self, migration_id: str) -> list[dict[str, Any]]:
+        return self.request("GET", f"/packages/{quote(migration_id, safe='')}").get("files", [])
+
+    def upload_package_file(self, migration_id: str, rel_path: str, file_path: str | Path) -> dict[str, Any]:
+        source = Path(file_path).expanduser()
+        url = self._package_url(migration_id, rel_path)
+        size = source.stat().st_size
+        with source.open("rb") as handle:
+            request = Request(url, data=handle, method="PUT")
+            request.add_header("Content-Type", "application/octet-stream")
+            request.add_header("Content-Length", str(size))
+            try:
+                with urlopen(request, timeout=TRANSFER_TIMEOUT_SECONDS) as response:
+                    body = response.read().decode("utf-8")
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise HyperGeryError(f"Package upload failed: {url}: HTTP {exc.code}: {detail}") from exc
+            except (OSError, URLError) as exc:
+                raise HyperGeryError(f"Package upload failed: {url}: {exc}") from exc
+        return json.loads(body) if body else {}
+
+    def upload_package(self, migration_id: str, package_dir: str | Path) -> dict[str, Any]:
+        package = Path(package_dir).expanduser().resolve()
+        if not package.is_dir():
+            raise HyperGeryError(f"Package directory not found: {package}")
+        uploaded: list[dict[str, Any]] = []
+        for item in sorted(package.rglob("*")):
+            if not item.is_file():
+                continue
+            rel_path = str(item.relative_to(package))
+            uploaded.append(self.upload_package_file(migration_id, rel_path, item))
+        if not uploaded:
+            raise HyperGeryError(f"Package directory is empty: {package}")
+        return {"migration_id": migration_id, "files": uploaded}
+
+    def download_package_file(self, migration_id: str, rel_path: str, destination: str | Path) -> Path:
+        target = Path(destination).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        url = self._package_url(migration_id, rel_path)
+        try:
+            with urlopen(Request(url), timeout=TRANSFER_TIMEOUT_SECONDS) as response, target.open("wb") as handle:
+                shutil.copyfileobj(response, handle, TRANSFER_CHUNK_BYTES)
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise HyperGeryError(f"Package download failed: {url}: HTTP {exc.code}: {detail}") from exc
+        except (OSError, URLError) as exc:
+            raise HyperGeryError(f"Package download failed: {url}: {exc}") from exc
+        return target
+
+    def download_package(self, migration_id: str, destination_dir: str | Path) -> Path:
+        files = self.list_package_files(migration_id)
+        if not files:
+            raise HyperGeryError(f"Package is not staged on the Hub: {migration_id}")
+        destination = Path(destination_dir).expanduser()
+        for entry in files:
+            rel_path = str(entry.get("path") or "")
+            if not rel_path:
+                continue
+            self.download_package_file(migration_id, rel_path, destination / rel_path)
+        return destination
+
+    def delete_package(self, migration_id: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/packages/{quote(migration_id, safe='')}")

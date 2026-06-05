@@ -42,7 +42,14 @@ python -m hypergery_ubuntu.cli registry health
 - `GET /events`
 - `POST /events`
 
-All endpoints return JSON. Unsupported commands and invalid payloads return JSON errors.
+Package staging (v0.7, Hub Transfer):
+
+- `PUT /packages/{migration_id}/{relative_path}` — upload one package file (streamed, requires `Content-Length`)
+- `GET /packages/{migration_id}` — list staged files with sizes
+- `GET /packages/{migration_id}/{relative_path}` — download one file (streamed)
+- `DELETE /packages/{migration_id}` — remove a staged package (whole package only)
+
+All endpoints return JSON except package file downloads (`application/octet-stream`). Unsupported commands and invalid payloads return JSON errors. Package paths are validated against directory traversal.
 
 ## Data Model
 
@@ -60,6 +67,28 @@ NAS storage is only for migration packages, disks, and ISO assets. In Docker the
 
 The Docker deployment persists `/data` in the Docker volume `hypergery-hub-data` so SQLite does not live on the NAS share.
 
+### Hub Transfer staging (v0.7)
+
+For `--transfer hub` migrations the Hub temporarily stores packages in a
+staging directory:
+
+- Default: `<db_dir>/staging`; override with `HYPERGERY_HUB_STAGING` or
+  `hub serve --staging-dir`.
+- The Docker compose sets `HYPERGERY_HUB_STAGING=/hypergery/staging` so large
+  packages land on NAS storage, not in the container layer.
+- Staged packages are **temporary by design**: after a successful target
+  import the target agent deletes the staged copy (`hub_package_deleted: true`
+  in the migration result). Failed migrations keep their staged package for
+  inspection; clean up manually with `DELETE /packages/{migration_id}`.
+
+### Running the Hub on the NAS (Container Station)
+
+The reference deployment runs the Hub in Docker on the NAS itself, so a single
+`IP:port` serves DB, coordination, and staging storage. Hosts only need
+`HYPERGERY_HUB_URL=http://<nas-ip>:8765` (the v0.7 app default already points
+at the NAS Hub). DB and staging live on NAS disks via bind mounts; nothing is
+stored on the participating hosts.
+
 ## Configuration
 
 App and agent URL resolution:
@@ -67,7 +96,7 @@ App and agent URL resolution:
 1. `HYPERGERY_HUB_URL`
 2. `HYPERGERY_REGISTRY_URL`
 3. local config if present
-4. `http://127.0.0.1:8765`
+4. `http://192.168.1.150:8765` (v0.7 default: the Hub on the NAS)
 
 For the NAS:
 

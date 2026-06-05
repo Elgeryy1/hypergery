@@ -281,8 +281,8 @@ class IntegratedConsoleWidget(QWidget):
             return
         self.mode_stack.setCurrentWidget(self.scroll_area)
         if "running" not in state and "paused" not in state:
-            self.set_status("VM is not running. Start the VM to open console.")
-            self.screen.setText("VM is not running. Start the VM to open console.")
+            self.set_status("VM is powered off.")
+            self.screen.setText("VM is powered off.\nStart the VM from HyperGery, then reconnect.")
             self.update_controls(False)
             return
         message = console_message_for_graphics(graphics)
@@ -339,6 +339,7 @@ class IntegratedConsoleWidget(QWidget):
         self.update_controls(True)
 
     def disconnect_console(self) -> None:
+        was_connected = self.is_connected()
         self.release_input()
         if self.socket:
             self.socket.disconnectFromHost()
@@ -346,6 +347,11 @@ class IntegratedConsoleWidget(QWidget):
             self.socket = None
         self.buffer.clear()
         self.state = "idle"
+        if was_connected:
+            self.framebuffer = None
+            self.screen.setText(f"Console disconnected. Click Connect to reconnect.\nHost Key: {HOST_KEY_NAME}")
+            self.screen.update()
+            self.set_status("Disconnected")
         self.update_controls(bool(self.vm_name) and console_mode_for_graphics(self.graphics) == "integrated-vnc")
 
     def reconnect_console(self) -> None:
@@ -643,10 +649,11 @@ class VmConsoleWindow(QMainWindow):
             self.connect_action,
             self.disconnect_action,
             self.reconnect_action,
-            self.cad_action,
-            self.release_action,
         ):
             toolbar.addAction(action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.cad_action)
+        toolbar.addAction(self.release_action)
         toolbar.addSeparator()
         toolbar.addAction(self.fullscreen_action)
         toolbar.addAction(self.scale_action)
@@ -658,9 +665,11 @@ class VmConsoleWindow(QMainWindow):
     def _build_status_bar(self) -> None:
         status = QStatusBar(self)
         self.state_label = QLabel("Input released")
+        self.display_label = QLabel("Display: —")
         self.host_key_label = QLabel(f"Host Key: {HOST_KEY_NAME}")
         self.close_note_label = QLabel("Closing this console does not stop the VM.")
         status.addWidget(self.state_label, 1)
+        status.addPermanentWidget(self.display_label)
         status.addPermanentWidget(self.close_note_label)
         status.addPermanentWidget(self.host_key_label)
         self.setStatusBar(status)
@@ -683,6 +692,10 @@ class VmConsoleWindow(QMainWindow):
         self.release_action.setEnabled(self.console.input_captured)
         self.external_action.setEnabled(bool(self.console.vm_name))
         self.switch_vnc_action.setEnabled(can_switch_display_to_vnc(self.console.graphics, self.console.vm_state))
+        display = (self.console.graphics or "—").upper() if self.console.graphics else "—"
+        if connected and self.console.fb_width and self.console.fb_height:
+            display += f" · {self.console.fb_width}x{self.console.fb_height}"
+        self.display_label.setText(f"Display: {display}")
 
     def toggle_fullscreen(self, enabled: bool) -> None:
         if enabled:

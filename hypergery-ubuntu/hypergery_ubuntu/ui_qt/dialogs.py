@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -26,16 +26,18 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
     QWizard,
     QWizardPage,
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
-from ..config import CONFIG_FIELDS, HyperGeryConfig, default_config_values, effective_config
+from ..config import CONFIG_FIELDS, HyperGeryConfig, config_path, default_config_values, effective_config
 from ..registry import RegistryClient
 from ..templates import normalize_template_id
 from .lab_helpers import build_lab_preview
@@ -49,6 +51,8 @@ FILE_DIALOG_OPTIONS = QFileDialog.Option.DontUseNativeDialog
 
 
 class AppSettingsDialog(QDialog):
+    SECTIONS = ("General", "Hub", "Host Agent", "NAS", "VM Defaults", "Console", "Appearance", "Advanced")
+
     def __init__(self, backend: HyperGeryBackend, parent=None) -> None:
         super().__init__(parent)
         self.backend = backend
@@ -71,49 +75,161 @@ class AppSettingsDialog(QDialog):
         self.default_vm_storage_path = QLineEdit(saved.default_vm_storage_path or effective["default_vm_storage_path"].value)
         self.status = QLabel("")
         self.status.setObjectName("mutedLabel")
+        self.status.setWordWrap(True)
 
-        form = QFormLayout()
-        for label, field, key in (
-            ("Hub URL", self.hub_url, "hub_url"),
-            ("Host ID", self.host_id, "host_id"),
-            ("Host name", self.host_name, "host_name"),
-            ("NAS staging path", self.nas_staging_path, "nas_staging_path"),
-            ("Default display", self.default_display, "default_display"),
-            ("Default ISO folder", self.default_iso_folder, "default_iso_folder"),
-            ("Default VM storage path", self.default_vm_storage_path, "default_vm_storage_path"),
-        ):
-            row = QHBoxLayout()
-            row.addWidget(field, 1)
-            source = QLabel(effective[key].source)
-            source.setObjectName("mutedLabel")
-            row.addWidget(source)
-            form.addRow(label, row)
+        title = QLabel("Settings")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel(
+            "Hub, agent, NAS, and VM defaults. Each field shows whether its value comes from environment, config, or default."
+        )
+        subtitle.setObjectName("mutedLabel")
+        subtitle.setWordWrap(True)
 
+        self.section_nav = QListWidget()
+        self.section_nav.setObjectName("sidebarNav")
+        self.section_nav.addItems(list(self.SECTIONS))
+        self.section_nav.setFixedWidth(168)
+        self.pages = QStackedWidget()
+        self.section_nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+
+        self.pages.addWidget(self._section_page((
+            self._field("Host ID", self.host_id, "host_id", "Stable, unique identifier for this host in the Hub."),
+            self._field("Host name", self.host_name, "host_name", "Readable name shown in Remote Hosts."),
+        )))
         test_hub = QPushButton("Test Hub")
         test_hub.clicked.connect(self.test_hub)
+        self.pages.addWidget(self._section_page((
+            self._field("Hub URL", self.hub_url, "hub_url", "HYPERGERY_HUB_URL overrides this saved value."),
+            self._button_row(test_hub),
+        )))
+        self.pages.addWidget(self._section_page((
+            self._callout("The agent only runs allowlisted commands and rejects package paths outside the NAS staging root.", "calloutInfo"),
+            self._callout("The agent reuses the Hub, Host identity, and NAS settings from the other sections. Extra agent options are planned for v0.8.", "calloutInfo"),
+        )))
         test_nas = QPushButton("Test NAS Write")
         test_nas.clicked.connect(self.test_nas)
+        self.pages.addWidget(self._section_page((
+            self._field("NAS staging path", self.nas_staging_path, "nas_staging_path", "Shared Linux mount for migration packages, e.g. /mnt/hypergery-nas/hypergery."),
+            self._button_row(test_nas),
+            self._callout("The Hub SQLite DB must never live on NAS/SMB — keep it in the Docker volume.", "calloutDanger"),
+        )))
+        self.pages.addWidget(self._section_page((
+            self._field("Default display", self.default_display, "default_display", "vnc enables the integrated console; spice uses the external viewer."),
+            self._field("Default ISO folder", self.default_iso_folder, "default_iso_folder", "Starting folder for ISO selection in the New VM wizard."),
+            self._field("Default VM storage path", self.default_vm_storage_path, "default_vm_storage_path", "Optional default disk directory for new VMs."),
+        )))
+        self.pages.addWidget(self._section_page((
+            self._callout("Host Key to release console input: Right Ctrl. SPICE VMs always use the external viewer.", "calloutInfo"),
+            self._callout("Console preferences (Scale to Fit default, viewer command) are planned for v0.8.", "calloutInfo"),
+        )))
+        self.pages.addWidget(self._section_page((
+            self._callout("Dark is the v0.7 theme. Accent and density options are planned for v0.8.", "calloutInfo"),
+        )))
+        config_file = QLineEdit(str(config_path()))
+        config_file.setReadOnly(True)
         test_libvirt = QPushButton("Test libvirt")
         test_libvirt.clicked.connect(self.test_libvirt)
+        self.pages.addWidget(self._section_page((
+            self._field("Config file", config_file, None, "Settings are stored as JSON. Environment variables always take priority."),
+            self._button_row(test_libvirt),
+            self._callout("Reset Defaults only fills the form; nothing changes until you Save. Environment variables keep priority.", "calloutWarn"),
+        )))
+        self.section_nav.setCurrentRow(0)
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        body.addWidget(self.section_nav)
+        pages_frame = QFrame()
+        pages_frame.setObjectName("panel")
+        pages_frame_layout = QVBoxLayout(pages_frame)
+        pages_frame_layout.setContentsMargins(18, 16, 18, 16)
+        pages_frame_layout.addWidget(self.pages)
+        body.addWidget(pages_frame, 1)
+
         reset = QPushButton("Reset Defaults")
         reset.clicked.connect(self.reset_defaults)
-        action_row = QHBoxLayout()
-        action_row.addWidget(test_hub)
-        action_row.addWidget(test_nas)
-        action_row.addWidget(test_libvirt)
-        action_row.addWidget(reset)
-        action_row.addStretch()
-
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
+        bottom = QHBoxLayout()
+        bottom.addWidget(reset)
+        bottom.addStretch()
+        bottom.addWidget(buttons)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addLayout(action_row)
+        layout.setSpacing(10)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addLayout(body, 1)
         layout.addWidget(self.status)
-        layout.addWidget(buttons)
-        self.resize(760, 380)
+        layout.addLayout(bottom)
+        self.resize(860, 500)
+
+    def _source_chip(self, key: str) -> QLabel:
+        source = self._effective[key].source
+        if source.startswith("env:"):
+            text, name = "ENV", "srcChipEnv"
+        elif source == "config":
+            text, name = "CONFIG", "srcChipConfig"
+        else:
+            text, name = "DEFAULT", "srcChipDefault"
+        chip = QLabel(text)
+        chip.setObjectName(name)
+        chip.setToolTip(source)
+        return chip
+
+    def _field(self, label: str, widget: QWidget, key: str | None, hint: str) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        label_widget = QLabel(label)
+        label_widget.setObjectName("statLabel")
+        head.addWidget(label_widget)
+        if key is not None:
+            head.addWidget(self._source_chip(key))
+        head.addStretch()
+        layout.addLayout(head)
+        layout.addWidget(widget)
+        hint_label = QLabel(hint)
+        hint_label.setObjectName("mutedLabel")
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+        return container
+
+    def _callout(self, text: str, tone: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName(tone)
+        label.setWordWrap(True)
+        return label
+
+    def _button_row(self, *buttons: QPushButton) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        for button in buttons:
+            layout.addWidget(button)
+        layout.addStretch()
+        return container
+
+    def _section_page(self, rows: tuple[QWidget, ...]) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(14)
+        for row in rows:
+            layout.addWidget(row)
+        layout.addStretch()
+        return page
+
+    def _set_status(self, text: str, tone: str) -> None:
+        self.status.setText(text)
+        self.status.setObjectName({"ok": "calloutOk", "fail": "calloutDanger"}.get(tone, "mutedLabel"))
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
 
     def values(self) -> dict[str, str]:
         current = {
@@ -134,38 +250,42 @@ class AppSettingsDialog(QDialog):
     def validate_and_accept(self) -> None:
         hub_url = self.hub_url.text().strip()
         if hub_url and not (hub_url.startswith("http://") or hub_url.startswith("https://")):
-            self.status.setText("Hub URL must start with http:// or https://")
+            self._set_status("Hub URL must start with http:// or https://", "fail")
+            self.section_nav.setCurrentRow(self.SECTIONS.index("Hub"))
             return
         self.accept()
 
     def test_hub(self) -> None:
         try:
             result = RegistryClient(self.hub_url.text().strip(), timeout=3).health()
-            self.status.setText(f"Hub OK: {result}")
+            self._set_status(f"Hub OK: {result}", "ok")
         except HyperGeryError as exc:
-            self.status.setText(f"Hub FAIL: {exc}")
+            self._set_status(f"Hub FAIL: {exc}", "fail")
 
     def test_nas(self) -> None:
         path = Path(self.nas_staging_path.text().strip()).expanduser()
         if not path.is_dir():
-            self.status.setText(f"NAS FAIL: path does not exist: {path}")
+            self._set_status(f"NAS FAIL: path does not exist: {path}", "fail")
             return
         try:
             with tempfile.NamedTemporaryFile(prefix=".hypergery-write-", dir=path, delete=True) as fh:
                 fh.write(b"ok")
                 fh.flush()
-            self.status.setText(f"NAS OK: writable {path}")
+            self._set_status(f"NAS OK: writable {path}", "ok")
         except OSError as exc:
-            self.status.setText(f"NAS FAIL: {exc}")
+            self._set_status(f"NAS FAIL: {exc}", "fail")
 
     def test_libvirt(self) -> None:
         try:
             items = self.backend.preflight()
         except Exception as exc:
-            self.status.setText(f"libvirt FAIL: {exc}")
+            self._set_status(f"libvirt FAIL: {exc}", "fail")
             return
         failures = [item for item in items if item.status == "Error" and item.name in {"libvirt connection", "virsh"}]
-        self.status.setText("libvirt OK" if not failures else "libvirt FAIL: " + "; ".join(item.detail for item in failures))
+        if not failures:
+            self._set_status("libvirt OK", "ok")
+        else:
+            self._set_status("libvirt FAIL: " + "; ".join(item.detail for item in failures), "fail")
 
     def reset_defaults(self) -> None:
         defaults = default_config_values()
@@ -176,7 +296,7 @@ class AppSettingsDialog(QDialog):
         self.default_display.setCurrentIndex(self.default_display.findText(defaults["default_display"]))
         self.default_iso_folder.setText(defaults["default_iso_folder"])
         self.default_vm_storage_path.setText(defaults["default_vm_storage_path"])
-        self.status.setText("Defaults loaded. Select Save to persist them.")
+        self._set_status("Defaults loaded into the form (non-destructive). Select Save to persist them.", "neutral")
 
 
 class IdentityPage(QWizardPage):
@@ -793,37 +913,37 @@ class DeleteConfirmationDialog(QDialog):
 
 
 class LiveMigrationDialog(QDialog):
+    """NAS Clone Migration wizard: stepper + stacked pages over the existing v0.6 flow."""
+
+    STEPS = ("Select VM", "Target Host", "Options", "Preflight", "Progress", "Result")
+    MIGRATION_STATES = ("created", "preflight", "packaging", "uploaded", "waiting_target", "importing", "defining_vm", "done")
+
     def __init__(self, backend: HyperGeryBackend, vm: VmSummary, parent=None) -> None:
         super().__init__(parent)
         self.backend = backend
         self.vm = vm
         self.preflight_result: dict | None = None
         self.hosts: list[dict] = []
-        self.setWindowTitle(f"Live Migration: {vm.name}")
-        title = QLabel(vm.name)
-        title.setObjectName("sectionTitle")
-        notice = QLabel(
-            "v0.6.0 uses a safe NAS Clone Migration package. The source VM and source disks are not deleted."
-        )
-        notice.setObjectName("mutedLabel")
-        notice.setWordWrap(True)
+        self.last_result: dict | None = None
+        self.last_status: dict | None = None
+        self._jobs: list = []
+        self._status_job_running = False
+        self.status_poll_timer = QTimer(self)
+        self.status_poll_timer.setInterval(4000)
+        self.status_poll_timer.timeout.connect(self.refresh_migration_status)
+        # Closing the dialog stops polling; it never touches the migration itself.
+        self.finished.connect(self.status_poll_timer.stop)
+        self.setWindowTitle(f"NAS Clone Migration: {vm.name}")
 
         app_config = effective_config()
         self.registry_url = QLineEdit(app_config["hub_url"].value)
         self.source_host_id = QLineEdit(app_config["host_id"].value)
         self.target_host = QComboBox()
-        refresh_hosts = QPushButton("Refresh Hosts")
-        refresh_hosts.clicked.connect(self.refresh_hosts)
-        host_row = QHBoxLayout()
-        host_row.addWidget(self.target_host, 1)
-        host_row.addWidget(refresh_hosts)
         self.target_name = QLineEdit(f"{vm.name}-migrated")
+        self.transfer_mode = QComboBox()
+        self.transfer_mode.addItem("Hub transfer — upload through the Hub, no shared NAS mount needed", "hub")
+        self.transfer_mode.addItem("Shared NAS path — same mount visible on both hosts", "nas")
         self.nas_path = QLineEdit(app_config["nas_staging_path"].value)
-        browse = QPushButton("Browse")
-        browse.clicked.connect(self.pick_nas_path)
-        path_row = QHBoxLayout()
-        path_row.addWidget(self.nas_path, 1)
-        path_row.addWidget(browse)
         self.include_iso = QCheckBox("Include attached ISO")
         self.include_iso.setChecked(True)
         self.include_snapshots = QCheckBox("Include snapshot file assets when detectable")
@@ -832,44 +952,340 @@ class LiveMigrationDialog(QDialog):
         self.start_after_import = QCheckBox("Start after import")
         self.result_view = QTextEdit()
         self.result_view.setReadOnly(True)
-        self.result_view.setMinimumHeight(190)
+        self.result_view.setMinimumHeight(170)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
+        self.error_label.setWordWrap(True)
 
-        form = QFormLayout()
-        form.addRow("Hub URL", self.registry_url)
-        form.addRow("Source host ID", self.source_host_id)
-        form.addRow("Target host", host_row)
-        form.addRow("Target VM name", self.target_name)
-        form.addRow("NAS staging path", path_row)
-        form.addRow("", self.include_iso)
-        form.addRow("", self.include_snapshots)
-        form.addRow("", self.allow_paused)
-        form.addRow("", self.start_after_import)
+        title = QLabel(f"NAS Clone Migration · {vm.name}")
+        title.setObjectName("pageTitle")
+        strategy_note = QLabel(
+            "This is NAS Clone Migration, not live RAM migration. The source VM and source disks remain untouched; "
+            "the target VM is imported from a NAS package with a regenerated UUID and MAC."
+        )
+        strategy_note.setObjectName("calloutInfo")
+        strategy_note.setWordWrap(True)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.preflight_button = buttons.addButton("Run Preflight", QDialogButtonBox.ButtonRole.ActionRole)
-        self.package_button = buttons.addButton("Start Migration", QDialogButtonBox.ButtonRole.AcceptRole)
+        self._step_labels: list[QLabel] = []
+        stepper = QVBoxLayout()
+        stepper.setSpacing(6)
+        for index, step in enumerate(self.STEPS):
+            label = QLabel(f"{index + 1} · {step}")
+            label.setObjectName("mutedLabel")
+            stepper.addWidget(label)
+            self._step_labels.append(label)
+        stepper.addStretch()
+        stepper_frame = QFrame()
+        stepper_frame.setObjectName("panel")
+        stepper_frame.setFixedWidth(170)
+        stepper_frame_layout = QVBoxLayout(stepper_frame)
+        stepper_frame_layout.setContentsMargins(14, 14, 14, 14)
+        stepper_frame_layout.addLayout(stepper)
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self._page_select_vm())
+        self.pages.addWidget(self._page_target_host())
+        self.pages.addWidget(self._page_options())
+        self.pages.addWidget(self._page_preflight())
+        self.pages.addWidget(self._page_progress())
+        self.pages.addWidget(self._page_result())
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        body.addWidget(stepper_frame)
+        body.addWidget(self.pages, 1)
+
+        self.back_button = QPushButton("Back")
+        self.back_button.clicked.connect(self.go_back)
+        self.next_button = QPushButton("Next")
+        self.next_button.clicked.connect(self.go_next)
+        self.preflight_button = QPushButton("Run Preflight")
+        self.preflight_button.clicked.connect(self.run_preflight)
+        self.package_button = QPushButton("Start Migration")
         self.package_button.setObjectName("primaryButton")
         self.package_button.setEnabled(False)
-        buttons.rejected.connect(self.reject)
-        self.preflight_button.clicked.connect(self.run_preflight)
-        self.package_button.clicked.connect(self.accept)
+        self.package_button.clicked.connect(self.start_migration)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.reject)
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.back_button)
+        bottom.addStretch()
+        bottom.addWidget(self.preflight_button)
+        bottom.addWidget(self.package_button)
+        bottom.addWidget(self.next_button)
+        bottom.addWidget(close_button)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.addWidget(title)
+        layout.addWidget(strategy_note)
+        layout.addLayout(body, 1)
+        layout.addWidget(self.error_label)
+        layout.addLayout(bottom)
+        self.resize(920, 620)
+
         for widget in (self.registry_url, self.source_host_id, self.target_name, self.nas_path):
             widget.textChanged.connect(self.invalidate_preflight)
         for widget in (self.include_iso, self.include_snapshots, self.allow_paused):
             widget.toggled.connect(self.invalidate_preflight)
         self.target_host.currentIndexChanged.connect(self.invalidate_preflight)
+        self.target_host.currentIndexChanged.connect(self._render_target_summary)
+        self.transfer_mode.currentIndexChanged.connect(self._on_transfer_mode_changed)
+        self._on_transfer_mode_changed()
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(title)
-        layout.addWidget(notice)
-        layout.addLayout(form)
-        layout.addWidget(self.result_view)
-        layout.addWidget(self.error_label)
-        layout.addWidget(buttons)
-        self.resize(760, 560)
+        self._set_step(0)
         self.refresh_hosts()
+
+    def _on_transfer_mode_changed(self, *_args) -> None:
+        nas_selected = str(self.transfer_mode.currentData() or "") == "nas"
+        self.nas_path.setEnabled(nas_selected)
+        if hasattr(self, "nas_browse_button"):
+            self.nas_browse_button.setEnabled(nas_selected)
+        self.invalidate_preflight()
+
+    # ---------- pages ----------
+
+    def _wizard_callout(self, text: str, tone: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName(tone)
+        label.setWordWrap(True)
+        return label
+
+    def _page_select_vm(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+        card = QFrame()
+        card.setObjectName("panel")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setSpacing(6)
+        head = QHBoxLayout()
+        name = QLabel(self.vm.name)
+        name.setObjectName("sectionTitle")
+        running = "running" in (self.vm.state or "").lower()
+        state_chip = QLabel(self.vm.state.upper() if self.vm.state else "UNKNOWN")
+        state_chip.setObjectName("statusChipBad" if running else "statusChipOk")
+        must_off = QLabel("Must be shut off")
+        must_off.setObjectName("statusChipWarn")
+        head.addWidget(name)
+        head.addWidget(state_chip)
+        head.addWidget(must_off)
+        head.addStretch()
+        card_layout.addLayout(head)
+        detail = QLabel(
+            f"Display: {getattr(self.vm, 'graphics', '') or 'unknown'} · "
+            f"RAM: {getattr(self.vm, 'ram_mib', 0) or '?'} MiB · vCPUs: {getattr(self.vm, 'vcpus', 0) or '?'} · "
+            f"Lab: {getattr(self.vm, 'lab_id', '') or '-'}"
+        )
+        detail.setObjectName("mutedLabel")
+        card_layout.addWidget(detail)
+        layout.addWidget(card)
+        if running:
+            layout.addWidget(self._wizard_callout(
+                "Running VM migration is blocked for NAS Clone Migration. Shut the VM down with ACPI Shutdown first.",
+                "calloutDanger",
+            ))
+        form = QFormLayout()
+        form.addRow("Hub URL", self.registry_url)
+        form.addRow("Source host ID", self.source_host_id)
+        layout.addLayout(form)
+        layout.addStretch()
+        return page
+
+    def _page_target_host(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+        refresh_hosts = QPushButton("Refresh Hosts")
+        refresh_hosts.clicked.connect(self.refresh_hosts)
+        host_row = QHBoxLayout()
+        host_row.addWidget(self.target_host, 1)
+        host_row.addWidget(refresh_hosts)
+        form = QFormLayout()
+        form.addRow("Target host", host_row)
+        layout.addLayout(form)
+        self.target_summary = QLabel("Select a target host from the Hub.")
+        self.target_summary.setObjectName("mutedLabel")
+        self.target_summary.setWordWrap(True)
+        summary_card = QFrame()
+        summary_card.setObjectName("panel")
+        summary_layout = QVBoxLayout(summary_card)
+        summary_layout.setContentsMargins(16, 14, 16, 14)
+        summary_layout.addWidget(self.target_summary)
+        layout.addWidget(summary_card)
+        layout.addStretch()
+        return page
+
+    def _page_options(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+        self.nas_browse_button = QPushButton("Browse")
+        self.nas_browse_button.clicked.connect(self.pick_nas_path)
+        path_row = QHBoxLayout()
+        path_row.addWidget(self.nas_path, 1)
+        path_row.addWidget(self.nas_browse_button)
+        form = QFormLayout()
+        form.addRow("Target VM name", self.target_name)
+        form.addRow("Transfer mode", self.transfer_mode)
+        form.addRow("NAS staging path", path_row)
+        form.addRow("", self.include_iso)
+        form.addRow("", self.include_snapshots)
+        form.addRow("", self.allow_paused)
+        form.addRow("", self.start_after_import)
+        layout.addLayout(form)
+        layout.addWidget(self._wizard_callout("Source VM and source disks will not be deleted.", "calloutOk"))
+        layout.addStretch()
+        return page
+
+    def _page_preflight(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+        hint = QLabel("Run Preflight to validate the source VM, target host, NAS staging, and target name before starting.")
+        hint.setObjectName("mutedLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.addWidget(self.result_view, 1)
+        return page
+
+    def _page_progress(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+        self.migration_id_label = QLabel("Migration not started yet.")
+        self.migration_id_label.setObjectName("sectionTitle")
+        layout.addWidget(self.migration_id_label)
+        self.progress_states_layout = QVBoxLayout()
+        self.progress_states_layout.setSpacing(4)
+        states_frame = QFrame()
+        states_frame.setObjectName("panel")
+        states_frame_layout = QVBoxLayout(states_frame)
+        states_frame_layout.setContentsMargins(14, 12, 14, 12)
+        states_frame_layout.addLayout(self.progress_states_layout)
+        layout.addWidget(states_frame)
+        self.progress_log = QTextEdit()
+        self.progress_log.setReadOnly(True)
+        layout.addWidget(self.progress_log, 1)
+        actions = QHBoxLayout()
+        self.refresh_status_button = QPushButton("Refresh Status")
+        self.refresh_status_button.clicked.connect(self.refresh_migration_status)
+        self.refresh_status_button.setEnabled(False)
+        copy_id = QPushButton("Copy Migration ID")
+        copy_id.clicked.connect(self.copy_migration_id)
+        copy_logs = QPushButton("Copy Logs")
+        copy_logs.clicked.connect(self.copy_progress_logs)
+        actions.addWidget(self.refresh_status_button)
+        actions.addWidget(copy_id)
+        actions.addWidget(copy_logs)
+        actions.addStretch()
+        layout.addLayout(actions)
+        return page
+
+    def _page_result(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+        self.result_card = QFrame()
+        self.result_card.setObjectName("panel")
+        result_card_layout = QVBoxLayout(self.result_card)
+        result_card_layout.setContentsMargins(16, 14, 16, 14)
+        self.result_title = QLabel("")
+        self.result_title.setObjectName("sectionTitle")
+        self.result_body = QLabel("")
+        self.result_body.setObjectName("mutedLabel")
+        self.result_body.setWordWrap(True)
+        result_card_layout.addWidget(self.result_title)
+        result_card_layout.addWidget(self.result_body)
+        layout.addWidget(self.result_card)
+        self.result_callout = QLabel("")
+        self.result_callout.setWordWrap(True)
+        layout.addWidget(self.result_callout)
+        actions = QHBoxLayout()
+        copy_summary = QPushButton("Copy Summary")
+        copy_summary.clicked.connect(self.copy_summary)
+        self.back_to_preflight_button = QPushButton("Back to Preflight")
+        self.back_to_preflight_button.clicked.connect(lambda: self._set_step(3))
+        actions.addWidget(copy_summary)
+        actions.addWidget(self.back_to_preflight_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        layout.addStretch()
+        return page
+
+    # ---------- navigation ----------
+
+    def _set_step(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        for step_index, label in enumerate(self._step_labels):
+            if step_index == index:
+                label.setObjectName("okLabel")
+                label.setText(f"{step_index + 1} · {self.STEPS[step_index]}  ◀")
+            else:
+                label.setObjectName("mutedLabel")
+                label.setText(f"{step_index + 1} · {self.STEPS[step_index]}")
+            label.style().unpolish(label)
+            label.style().polish(label)
+        self._update_buttons()
+
+    def current_step(self) -> int:
+        return self.pages.currentIndex()
+
+    def _vm_running(self) -> bool:
+        return "running" in (self.vm.state or "").lower()
+
+    def _selected_target(self) -> dict | None:
+        target_id = str(self.target_host.currentData() or "")
+        return next((host for host in self.hosts if host.get("host_id") == target_id), None)
+
+    def _target_ready(self) -> bool:
+        target = self._selected_target()
+        return bool(
+            target
+            and target.get("status") == "online"
+            and target.get("kvm_ok")
+            and target.get("libvirt_ok")
+            and str(target.get("host_id") or "") != self.source_host_id.text().strip()
+        )
+
+    def _update_buttons(self) -> None:
+        step = self.current_step()
+        self.back_button.setVisible(1 <= step <= 3)
+        self.next_button.setVisible(step <= 2)
+        self.preflight_button.setVisible(step == 3)
+        self.package_button.setVisible(step == 3)
+        self.back_to_preflight_button.setVisible(
+            step == 5 and bool(self.last_status) and str(self.last_status.get("status")) == "failed"
+        )
+        if step == 0:
+            self.next_button.setEnabled(not self._vm_running() and not self.allow_paused.isChecked() or self.allow_paused.isChecked() and not self._vm_running())
+            self.next_button.setEnabled(not self._vm_running())
+        elif step == 1:
+            self.next_button.setEnabled(self._target_ready())
+        elif step == 2:
+            nas_ok = str(self.transfer_mode.currentData() or "") != "nas" or bool(self.nas_path.text().strip())
+            self.next_button.setEnabled(bool(self.target_name.text().strip()) and nas_ok)
+
+    def go_next(self) -> None:
+        step = self.current_step()
+        if step == 0 and self._vm_running():
+            self.error_label.setText("Running VM migration is blocked for NAS Clone Migration.")
+            return
+        if step == 1 and not self._target_ready():
+            self.error_label.setText("Select an online, KVM/libvirt-ready target host that differs from the source host.")
+            return
+        if step < 3:
+            self.error_label.clear()
+            self._set_step(step + 1)
+
+    def go_back(self) -> None:
+        step = self.current_step()
+        if 1 <= step <= 3:
+            self.error_label.clear()
+            self._set_step(step - 1)
+
+    # ---------- hub/hosts ----------
 
     def refresh_hosts(self) -> None:
         from ..registry import RegistryClient
@@ -884,6 +1300,8 @@ class LiveMigrationDialog(QDialog):
                 "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
                 f"{exc}"
             )
+            if hasattr(self, "target_summary"):
+                self.target_summary.setText("Hub not reachable — no target hosts available.")
             self.invalidate_preflight()
             return
         self.hosts = hosts
@@ -900,7 +1318,28 @@ class LiveMigrationDialog(QDialog):
             self.result_view.setPlainText("Hub returned no hosts. Start agents on source and target hosts first.")
         else:
             self.result_view.setPlainText(self._format_hosts(hosts))
+        self._render_target_summary()
         self.invalidate_preflight()
+
+    def _render_target_summary(self) -> None:
+        if not hasattr(self, "target_summary"):
+            return
+        target = self._selected_target()
+        if not target:
+            self.target_summary.setText("Select a target host from the Hub.")
+            return
+        status = str(target.get("status") or "offline")
+        lines = [
+            f"Status: {status.upper()}" ,
+            f"KVM: {'OK' if target.get('kvm_ok') else 'FAIL'} · libvirt: {'OK' if target.get('libvirt_ok') else 'FAIL'}",
+            f"RAM free: {target.get('ram_free_mib', 0)} / {target.get('ram_total_mib', 0)} MiB · Disk free: {target.get('disk_free_mib', 0)} MiB",
+            f"Active VMs: {len(target.get('active_vms') or [])} · Last heartbeat: {target.get('last_seen') or 'unknown'}",
+        ]
+        if status != "online":
+            lines.append("Offline target hosts block the migration.")
+        if str(target.get("host_id") or "") == self.source_host_id.text().strip():
+            lines.append("Target host must differ from the source host.")
+        self.target_summary.setText("\n".join(lines))
 
     def pick_nas_path(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select NAS staging directory", self.nas_path.text(), FILE_DIALOG_OPTIONS)
@@ -910,6 +1349,7 @@ class LiveMigrationDialog(QDialog):
     def invalidate_preflight(self) -> None:
         self.preflight_result = None
         self.package_button.setEnabled(False)
+        self._update_buttons()
 
     def values(self) -> dict:
         return {
@@ -918,12 +1358,15 @@ class LiveMigrationDialog(QDialog):
             "source_host_id": self.source_host_id.text().strip(),
             "target_host_id": str(self.target_host.currentData() or ""),
             "target_vm_name": self.target_name.text().strip(),
+            "transfer": str(self.transfer_mode.currentData() or "nas"),
             "nas_path": self.nas_path.text().strip(),
             "include_iso": self.include_iso.isChecked(),
             "include_snapshots": self.include_snapshots.isChecked(),
             "allow_paused": self.allow_paused.isChecked(),
             "start_after_import": self.start_after_import.isChecked(),
         }
+
+    # ---------- preflight ----------
 
     def run_preflight(self) -> None:
         from ..migration import migration_preflight
@@ -939,10 +1382,14 @@ class LiveMigrationDialog(QDialog):
         if not values["target_host_id"]:
             self.error_label.setText("Select an online target host from the Hub.")
             return
-        if not values["nas_path"]:
-            self.error_label.setText("NAS staging path is required.")
+        if values["transfer"] == "nas" and not values["nas_path"]:
+            self.error_label.setText("NAS staging path is required for shared NAS transfer.")
             return
-        target = next((host for host in self.hosts if host.get("host_id") == values["target_host_id"]), None)
+        if values["target_host_id"] == values["source_host_id"]:
+            self.error_label.setText("Target host must differ from the source host.")
+            self.package_button.setEnabled(False)
+            return
+        target = self._selected_target()
         if not target or target.get("status") != "online":
             self.error_label.setText("Selected target host is offline.")
             self.package_button.setEnabled(False)
@@ -951,13 +1398,19 @@ class LiveMigrationDialog(QDialog):
             self.error_label.setText("Selected target host is not ready: KVM/libvirt check failed.")
             self.package_button.setEnabled(False)
             return
+        if values["transfer"] == "hub":
+            from ..migration import hub_transfer_staging_dir
+
+            staging_path = str(hub_transfer_staging_dir(self.backend) / "outgoing")
+        else:
+            staging_path = values["nas_path"]
         try:
             result = migration_preflight(
                 self.backend,
                 self.vm.name,
                 target_host=values["target_host_id"],
                 target_vm_name=values["target_vm_name"],
-                nas_path=values["nas_path"],
+                nas_path=staging_path,
                 allow_paused=values["allow_paused"],
                 include_iso=values["include_iso"],
                 include_snapshots=values["include_snapshots"],
@@ -974,10 +1427,18 @@ class LiveMigrationDialog(QDialog):
         errors = result.get("errors", [])
         warnings = result.get("warnings", [])
         assets = result.get("assets", [])
+        transfer = str(self.transfer_mode.currentData() or "nas")
+        transfer_line = (
+            "Transfer: hub (package uploaded through the Hub, removed from the Hub after import)"
+            if transfer == "hub"
+            else "Transfer: shared NAS path (must be visible at the same path on both hosts)"
+        )
         lines = [
             f"Status: {'OK' if result.get('ok') else 'Blocked'}",
-            f"Strategy: {result.get('strategy', 'offline-copy')}",
+            f"Strategy: {result.get('strategy', 'offline-copy')} (NAS Clone Migration)",
+            transfer_line,
             f"Source will be deleted: {result.get('source_will_be_deleted')}",
+            "Target identity: UUID and MAC will be regenerated on import.",
             f"Estimated package size: {result.get('estimated_size_bytes', 0)} bytes",
             "",
             "Errors:",
@@ -1011,11 +1472,195 @@ class LiveMigrationDialog(QDialog):
             )
         return "\n".join(lines)
 
-    def accept(self) -> None:
+    # ---------- migration ----------
+
+    def start_migration(self) -> None:
         if not self.preflight_result or not self.preflight_result.get("ok"):
             self.error_label.setText("Run a successful preflight before starting migration.")
             return
-        super().accept()
+        values = self.values()
+        self.error_label.clear()
+        self.package_button.setEnabled(False)
+        self._set_step(4)
+        self.migration_id_label.setText("Starting migration…")
+        if values["transfer"] == "hub":
+            progress_intro = (
+                f"Packaging {values['vm_name']} locally and uploading it through the Hub for {values['target_host_id']}.\n"
+                "The Hub copy is temporary and is removed after the target imports it.\n"
+                "The source VM and source disks remain untouched."
+            )
+        else:
+            progress_intro = (
+                f"Packaging {values['vm_name']} into NAS staging and queueing import on {values['target_host_id']}.\n"
+                "The source VM and source disks remain untouched."
+            )
+        self.progress_log.setPlainText(progress_intro)
+        self._render_progress_states("created")
+
+        def do_migration() -> dict:
+            from ..migration import start_remote_migration
+            from ..registry import RegistryClient
+
+            return start_remote_migration(
+                self.backend,
+                RegistryClient(values["registry_url"]),
+                values["vm_name"],
+                values["nas_path"],
+                source_host_id=values["source_host_id"],
+                target_host_id=values["target_host_id"],
+                target_vm_name=values["target_vm_name"],
+                allow_paused=values["allow_paused"],
+                include_iso=values["include_iso"],
+                include_snapshots=values["include_snapshots"],
+                start_after_import=values["start_after_import"],
+                transfer=values["transfer"],
+            )
+
+        from .workers import BackendJob
+
+        job = BackendJob("start migration", do_migration)
+        self._jobs.append(job)
+
+        def succeeded() -> None:
+            self.last_result = job.result or {}
+            migration_id = str(self.last_result.get("migration_id") or "")
+            self.migration_id_label.setText(f"Migration ID: {migration_id}")
+            self.progress_log.append(
+                f"\nMigration queued.\nmigration_id: {migration_id}\n"
+                f"package: {self.last_result.get('package_dir', '')}\n"
+                f"target command: {self.last_result.get('command_id', '')}\n"
+                "Waiting for the target agent to import (status refreshes automatically)."
+            )
+            self.refresh_status_button.setEnabled(True)
+            self._render_progress_states("uploaded")
+            self.status_poll_timer.start()
+
+        def failed() -> None:
+            self.last_status = {"status": "failed", "error": job.error_message}
+            self.progress_log.append(f"\nMigration failed to start: {job.error_message}")
+            self._render_progress_states("failed")
+            self._show_result_failure(job.error_message)
+
+        job.succeeded.connect(succeeded)
+        job.failed.connect(failed)
+        job.start()
+
+    def _render_progress_states(self, current: str) -> None:
+        while self.progress_states_layout.count():
+            item = self.progress_states_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        failed = current == "failed"
+        reached = True
+        for state in self.MIGRATION_STATES:
+            if failed:
+                marker, name = ("✗", "errorLabel") if state == "done" else ("·", "mutedLabel")
+            elif state == current:
+                marker, name = "▶", "okLabel"
+                reached = False
+            elif reached:
+                marker, name = "✓", "okLabel"
+            else:
+                marker, name = "·", "mutedLabel"
+            label = QLabel(f"{marker} {state}")
+            label.setObjectName(name)
+            self.progress_states_layout.addWidget(label)
+
+    def refresh_migration_status(self) -> None:
+        migration_id = str((self.last_result or {}).get("migration_id") or "")
+        if not migration_id:
+            self.error_label.setText("No migration started yet.")
+            return
+        if self._status_job_running:
+            return
+        url = self.registry_url.text().strip()
+
+        def fetch() -> dict:
+            from ..registry import RegistryClient
+
+            return RegistryClient(url).migration(migration_id)
+
+        from .workers import BackendJob
+
+        job = BackendJob("migration status", fetch)
+        self._jobs.append(job)
+        self._status_job_running = True
+
+        def succeeded() -> None:
+            self._status_job_running = False
+            record = job.result or {}
+            previous = str((self.last_status or {}).get("status") or "")
+            self.last_status = record
+            status = str(record.get("status") or "unknown")
+            if status != previous:
+                self.progress_log.append(f"status: {status}")
+            self._render_progress_states(status if status in self.MIGRATION_STATES or status == "failed" else "created")
+            if status == "done":
+                self.status_poll_timer.stop()
+                self._show_result_success(record)
+            elif status == "failed":
+                self.status_poll_timer.stop()
+                errors = record.get("errors") or []
+                self._show_result_failure("; ".join(str(item) for item in errors) or str(record.get("error") or "see migration log"))
+
+        def failed() -> None:
+            self._status_job_running = False
+            self.progress_log.append(f"status check failed: {job.error_message}")
+
+        job.succeeded.connect(succeeded)
+        job.failed.connect(failed)
+        job.start()
+
+    # ---------- result ----------
+
+    def _show_result_success(self, record: dict) -> None:
+        migration_id = str((self.last_result or {}).get("migration_id") or record.get("migration_id") or "")
+        package = str((self.last_result or {}).get("package_dir") or "")
+        self.result_title.setText("Migration completed")
+        self.result_body.setText(
+            f"Migration ID: {migration_id}\n"
+            f"Package path: {package or 'on NAS staging'} (conserved)\n"
+            f"Target VM: {self.target_name.text().strip()} imported with regenerated UUID and MAC.\n"
+            f"Target started: {'yes' if self.start_after_import.isChecked() else 'no'}"
+        )
+        self.result_callout.setText("Source VM remains untouched · UUID & MAC regenerated on target.")
+        self.result_callout.setObjectName("calloutOk")
+        self.result_callout.style().unpolish(self.result_callout)
+        self.result_callout.style().polish(self.result_callout)
+        self._set_step(5)
+
+    def _show_result_failure(self, error: str) -> None:
+        self.result_title.setText("Migration failed")
+        last = str((self.last_status or {}).get("status") or "failed")
+        self.result_body.setText(f"Last status: {last}\nError: {error}")
+        self.result_callout.setText("The source VM and source disks were not modified. Review the error and retry from Preflight.")
+        self.result_callout.setObjectName("calloutDanger")
+        self.result_callout.style().unpolish(self.result_callout)
+        self.result_callout.style().polish(self.result_callout)
+        self._set_step(5)
+
+    # ---------- clipboard ----------
+
+    def _copy_text(self, text: str, empty_message: str) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        if not text:
+            self.error_label.setText(empty_message)
+            return
+        QApplication.clipboard().setText(text)
+        self.error_label.clear()
+
+    def copy_migration_id(self) -> None:
+        self._copy_text(str((self.last_result or {}).get("migration_id") or ""), "No migration ID yet. Start a migration first.")
+
+    def copy_progress_logs(self) -> None:
+        self._copy_text(self.progress_log.toPlainText(), "No migration logs yet.")
+
+    def copy_summary(self) -> None:
+        summary = f"{self.result_title.text()}\n{self.result_body.text()}\n{self.result_callout.text()}".strip()
+        self._copy_text(summary if self.result_title.text() else "", "No result to copy yet.")
 
 
 class SnapshotDialog(QDialog):

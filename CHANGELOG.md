@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.7.0 - Visual Refresh & Hub Transfer (2026-06-05)
+
+Visual Refresh & UX Stabilization plus Hub Transfer migrations. Validated with
+248+ automated tests on two interpreters and real two-host Hub Transfer E2E
+migrations (including a 2.8 GiB ISO and a ~5.8 GiB disk), with the source VM
+untouched and Hub staging cleaned after import.
+
+### UI — Visual Refresh (PySide6/QSS, design tokens)
+
+- New app shell: sidebar navigation (Dashboard, Virtual Machines, Labs, Templates, Remote Hosts, Migrations, Diagnostics, Settings) and top bar with Hub/Host/NAS status chips.
+- Dashboard with health cards (VMs, Hub, NAS, hosts), warnings, and last migration summary.
+- Remote Hosts redesigned as a hub status card plus per-host cards with capability badges and per-host test action.
+- Settings dialog redesigned with sectioned navigation and ENV/CONFIG/DEFAULT source chips per field.
+- Diagnostics page running `doctor` checks in a background worker with grouped results and copyable report.
+- NAS Clone Migration wizard rebuilt as a 6-step flow (Select VM, Target Host, Options, Preflight, Progress, Result) with progress states and auto-polling status.
+- Virtual Machines view: page header with counters, 7-column table with state chips, modernized detail cards including Console status (Host Key: Right Ctrl).
+- Console window polish: grouped toolbar, status bar with display type/resolution, explicit disconnected/powered-off/SPICE states. Closing the console never stops the VM.
+- Migrations page with real read-only history from the Hub (`/migrations`): refresh on demand, status colors, copy ID/summary. Never deletes records or packages.
+- Remote Hosts "View VMs" opens the selected host's read-only VM inventory from the Hub (remote VM control arrives in v0.8).
+
+### Hub Transfer migrations (new in v0.7)
+
+- Hub package staging endpoints: `PUT/GET/DELETE /packages/<migration_id>/...` with chunked streaming and path-traversal protection. Staging directory configurable via `HYPERGERY_HUB_STAGING`.
+- New migration transfer mode `hub`: the source packages locally, uploads through the Hub, the target downloads, imports, and the Hub copy is deleted after a successful import. No shared NAS mount or identical paths required on hosts.
+- `migrate remote --transfer hub|nas` CLI flag; the wizard defaults to Hub transfer and keeps shared-NAS mode as fallback.
+- Source VM and source disks remain untouched in both transfer modes; target import still regenerates UUID and MAC and refuses existing target VM names.
+
+### Infrastructure
+
+- Default `hub_url` now points at the Hub running in Container Station on the NAS (`http://192.168.1.150:8765`); env and config overrides unchanged.
+- `scripts/start-second-host.sh`: one-command launcher for a secondary host (agent + app against the NAS Hub).
+- `scripts/install-agent-user-service.sh`: installs the agent as a systemd --user service (no sudo, no stored credentials; optional `loginctl enable-linger` for headless hosts).
+
+### Not included in v0.7.0
+
+- True live RAM migration / HG-MEMDIFF or any dirty-page transfer protocol.
+- AutoBoost, Android Hub, IsardVDI, P2P transfer.
+- Remote VM power control or remote console (inventory is read-only).
+- SPICE integrated console (external viewer fallback remains).
+
+### Deferred to v0.8
+
+- Lab-specific visual workspace.
+- Extra Settings sections (Host Agent options, Console preferences, Appearance accent/density).
+- Remote VM power control from Remote Hosts.
+
 ## v0.6.0 - NAS Clone Migration
 
 Release scope:
