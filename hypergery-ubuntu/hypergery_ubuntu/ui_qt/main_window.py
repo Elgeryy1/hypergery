@@ -147,6 +147,7 @@ class MainWindow(QMainWindow):
         "Remote Hosts",
         "Migrations",
         "Commands",
+        "Control Center",
         "Diagnostics",
         "Settings",
     )
@@ -186,6 +187,7 @@ class MainWindow(QMainWindow):
             "Remote Hosts": 2,
             "Migrations": self.migrations_page_index,
             "Commands": self.commands_page_index,
+            "Control Center": self.control_center_page_index,
             "Diagnostics": self.diagnostics_page_index,
         }
         self.main_tabs.setCurrentIndex(page_map[section])
@@ -194,6 +196,9 @@ class MainWindow(QMainWindow):
             self.refresh_hub_staging()
         if section == "Commands" and not getattr(self, "_commands_loaded", False):
             self.refresh_commands()
+        if section == "Control Center" and not getattr(self, "_v1_loaded", False):
+            self._v1_loaded = True
+            self.refresh_v1_all()
         if section == "Labs":
             self.render_labs_workspace()
         self.right_panel.setVisible(section == "Virtual Machines")
@@ -492,6 +497,7 @@ class MainWindow(QMainWindow):
         self.labs_page_index = self.main_tabs.addTab(self._build_labs_page(), "Labs")
         self.migrations_page_index = self.main_tabs.addTab(self._build_migrations_page(), "Migrations")
         self.commands_page_index = self.main_tabs.addTab(self._build_commands_page(), "Commands")
+        self.control_center_page_index = self.main_tabs.addTab(self._build_control_center_page(), "Control Center")
         self.diagnostics_page_index = self.main_tabs.addTab(self._build_diagnostics_page(), "Diagnostics")
         self.main_tabs.tabBar().hide()
 
@@ -1117,6 +1123,199 @@ class MainWindow(QMainWindow):
             self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
 
         self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
+
+    # ------------------------------------------------------------------ #
+    # Control Center (v0.9/v1 services)                                   #
+    # ------------------------------------------------------------------ #
+
+    V1_TAB_KEYS = ("Telemetry", "Orchestrator", "Battery", "NAS", "Network", "Guests", "External Nodes", "Logs")
+
+    def _build_control_center_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        title = QLabel("Control Center")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("v1 services: telemetry, orchestrator, battery, NAS commits, networks, guests, external nodes, logs")
+        subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(title)
+        head_col.addWidget(subtitle)
+        header.addLayout(head_col)
+        header.addStretch()
+        self.v1_refresh_all_button = self._button("Refresh All", self.refresh_v1_all, primary=True)
+        self.v1_export_button = self._button("Export Report", self.export_v1_report)
+        header.addWidget(self.v1_refresh_all_button)
+        header.addWidget(self.v1_export_button)
+        layout.addLayout(header)
+
+        note = QLabel(
+            "Everything here is read-only or dry-run: plans and recommendations are never executed from this page. "
+            "Use the CLI (python -m hypergery_ubuntu.cli v1 …) for NAS commits and teleports."
+        )
+        note.setObjectName("calloutInfo")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.v1_tabs = QTabWidget()
+        self.v1_views: dict[str, QTextEdit] = {}
+        for key in self.V1_TAB_KEYS:
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            tab_layout.setContentsMargins(8, 8, 8, 8)
+            tab_layout.setSpacing(8)
+            bar = QHBoxLayout()
+            refresh = self._button("Refresh", lambda checked=False, k=key: self.refresh_v1_tab(k))
+            bar.addWidget(refresh)
+            bar.addStretch()
+            tab_layout.addLayout(bar)
+            view = QTextEdit()
+            view.setReadOnly(True)
+            view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+            view.setPlaceholderText(f"Press Refresh to load {key} from the v1 services.")
+            tab_layout.addWidget(view, 1)
+            self.v1_views[key] = view
+            self.v1_tabs.addTab(tab, key)
+        layout.addWidget(self.v1_tabs, 1)
+        self._v1_loaded = False
+        return page
+
+    def _v1_collect(self, key: str) -> str:
+        """Collect one Control Center tab's data (runs in a worker thread)."""
+        import json as _json
+
+        from ..v1.settings import V1Settings
+
+        try:
+            settings = V1Settings.load()
+        except Exception:
+            settings = V1Settings()
+        url = self.registry_url()
+
+        def hub_client():
+            from ..registry import RegistryClient
+
+            return RegistryClient(url)
+
+        def dump(payload: Any) -> str:
+            return _json.dumps(payload, indent=2, sort_keys=True, default=str)
+
+        if key == "Telemetry":
+            from ..v1.telemetry import TelemetryService, evaluate_alerts
+
+            service = TelemetryService(settings=settings)
+            sample = service.sample_local()
+            service.record(sample)
+            return dump({"local": sample.to_dict(), "alerts": evaluate_alerts(local_sample=sample, settings=settings)})
+        if key == "Orchestrator":
+            from ..v1.battery import BatteryService
+            from ..v1.hosts import HostRegistry
+            from ..v1.orchestrator import OrchestratorService
+            from ..v1.providers import LocalProvider
+            from ..v1.telemetry import TelemetryService
+
+            registry = HostRegistry(settings=settings, telemetry=TelemetryService(settings=settings), hub_client=hub_client())
+            hosts = registry.list_hosts()
+            try:
+                vms = LocalProvider(self.backend).list_vms()
+            except Exception:
+                vms = []
+            plans = OrchestratorService(settings=settings).plan(
+                hosts=hosts,
+                vms=vms,
+                battery=BatteryService(settings=settings).read(),
+                local_host_id=hosts[0].id if hosts else None,
+            )
+            return dump({"plans": [plan.to_dict() for plan in plans], "dry_run": True})
+        if key == "Battery":
+            from ..v1.battery import BatteryService
+
+            service = BatteryService(settings=settings)
+            state = service.read()
+            return dump({"battery": state.to_dict(), "actions": service.recommended_actions(state)})
+        if key == "NAS":
+            from ..v1.nas import NasService
+
+            service = NasService(settings=settings, lab_store=self.lab_store())
+            return dump({"health": service.health(), "commits": service.list_commits()[-10:]})
+        if key == "Network":
+            from ..v1.networks import network_from_lab, validate_networks
+
+            labs = self.lab_store().list_labs()
+            networks = [network_from_lab(lab) for lab in labs]
+            result = validate_networks(networks)
+            return dump({"networks": [network.to_dict() for network in networks], "validation": result})
+        if key == "Guests":
+            from ..v1.rbac import UserStore
+
+            users = UserStore().list_users()
+            return dump(
+                {"users": [{**user.to_dict(), "effective_permissions": sorted(user.permissions())} for user in users]}
+            )
+        if key == "External Nodes":
+            from ..v1.external_nodes import ExternalNodeStore, health_check
+
+            nodes = ExternalNodeStore().list_nodes()
+            return dump({"nodes": [{**node.to_dict(), "health": health_check(node)} for node in nodes]})
+        if key == "Logs":
+            from ..v1.hglog import get_logger
+
+            events = get_logger().query(limit=100, from_file=True)
+            return dump({"events": events[-100:]})
+        return "{}"
+
+    def _set_v1_view(self, key: str, text: str) -> None:
+        view = self.v1_views.get(key)
+        if view is not None:
+            view.setPlainText(text)
+
+    def refresh_v1_tab(self, key: str) -> None:
+        def fetch() -> str:
+            try:
+                return self._v1_collect(key)
+            except Exception as exc:
+                return f"{key} unavailable: {exc}"
+
+        self.run_operation(
+            f"Loading v1 {key}",
+            fetch,
+            on_success=lambda text, k=key: self._set_v1_view(k, str(text)),
+            refresh_after=False,
+            busy=False,
+        )
+
+    def refresh_v1_all(self) -> None:
+        for key in self.V1_TAB_KEYS:
+            self.refresh_v1_tab(key)
+
+    def export_v1_report(self) -> None:
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Control Center Report",
+            "hypergery-v1-report.json",
+            "Report (*.json);;All files (*)",
+            "",
+            FILE_DIALOG_OPTIONS,
+        )
+        if not path:
+            return
+        report = {
+            "generated_at": now_iso(),
+            "sections": {key: self.v1_views[key].toPlainText() for key in self.V1_TAB_KEYS},
+        }
+        try:
+            import json as _json
+
+            Path(path).expanduser().write_text(_json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            self.show_error(f"Cannot export report: {exc}")
+            return
+        self.log_activity(f"Exported Control Center report to {path}")
+        self.status.showMessage(f"Report exported to {path}", 5000)
 
     DOCTOR_GROUPS = (
         ("Local Virtualization", ("/dev/kvm", "user groups", "libvirt")),
@@ -2731,6 +2930,8 @@ class MainWindow(QMainWindow):
             self.staging_dry_run_button,
             self.staging_cleanup_button,
             self.commands_refresh_button,
+            self.v1_refresh_all_button,
+            self.v1_export_button,
             self.lab_ws_new_button,
             self.lab_ws_refresh_button,
             self.lab_ws_start_button,

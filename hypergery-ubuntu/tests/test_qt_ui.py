@@ -140,6 +140,7 @@ class QtUiTests(unittest.TestCase):
                     "Remote Hosts",
                     "Migrations",
                     "Commands",
+                    "Control Center",
                     "Diagnostics",
                     "Settings",
                 ],
@@ -1760,6 +1761,114 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             window.lab_ws_vm_table.selectRow(2)
             self.assertFalse(window.lab_ws_open_vm_button.isEnabled())
             self.assertTrue(window.lab_ws_view_remote_button.isEnabled())
+            window.close()
+        self.assertIsNotNone(app)
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 not installed — run inside the project venv")
+class QtControlCenterTests(unittest.TestCase):
+    def make_window(self, backend_cls, tmp):
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+        return MainWindow()
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_control_center_page_has_all_module_tabs(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            tabs = [window.v1_tabs.tabText(i) for i in range(window.v1_tabs.count())]
+            self.assertEqual(
+                tabs,
+                ["Telemetry", "Orchestrator", "Battery", "NAS", "Network", "Guests", "External Nodes", "Logs"],
+            )
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_sidebar_navigation_triggers_refresh_once(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
+            with patch.object(window, "refresh_v1_all") as refresh:
+                window.sidebar_nav.setCurrentRow(sections.index("Control Center"))
+                refresh.assert_called_once()
+                window.sidebar_nav.setCurrentRow(sections.index("Dashboard"))
+                window.sidebar_nav.setCurrentRow(sections.index("Control Center"))
+                refresh.assert_called_once()  # only loads automatically the first time
+            self.assertEqual(window.main_tabs.currentIndex(), window.control_center_page_index)
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_views_render_fetched_text_and_errors_inline(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            window._set_v1_view("Battery", '{"battery": {"percent": 57}}')
+            self.assertIn("57", window.v1_views["Battery"].toPlainText())
+
+            def fake_run_operation(label, fn, *, on_success=None, **kwargs):
+                result = fn()
+                if on_success:
+                    on_success(result)
+
+            with (
+                patch.object(window, "run_operation", side_effect=fake_run_operation),
+                patch.object(window, "_v1_collect", side_effect=Exception("service exploded")),
+            ):
+                window.refresh_v1_tab("NAS")
+            self.assertIn("NAS unavailable: service exploded", window.v1_views["NAS"].toPlainText())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_collectors_work_against_real_services_offline(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "XDG_DATA_HOME": str(Path(tmp) / "data"),
+                "XDG_STATE_HOME": str(Path(tmp) / "state"),
+                "XDG_CONFIG_HOME": str(Path(tmp) / "config"),
+                "HYPERGERY_V1_OFFLINE_MODE": "true",
+                "HYPERGERY_NAS_STAGING_PATH": str(Path(tmp) / "nas"),
+            }
+            with patch.dict(os.environ, env):
+                window = self.make_window(backend_cls, tmp)
+                backend_cls.return_value.list_vms.side_effect = Exception("no libvirt in tests")
+                battery_text = window._v1_collect("Battery")
+                self.assertIn("battery", battery_text)
+                network_text = window._v1_collect("Network")
+                self.assertIn("hg-net-default-lab", network_text)
+                guests_text = window._v1_collect("Guests")
+                self.assertIn("users", guests_text)
+                orchestrator_text = window._v1_collect("Orchestrator")
+                self.assertIn("plans", orchestrator_text)
+                logs_text = window._v1_collect("Logs")
+                self.assertIn("events", logs_text)
+                window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_export_report_writes_json(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            window._set_v1_view("Battery", '{"battery": {"percent": 57}}')
+            target = Path(tmp) / "report.json"
+            with patch(
+                "hypergery_ubuntu.ui_qt.main_window.QFileDialog.getSaveFileName",
+                return_value=(str(target), ""),
+            ):
+                window.export_v1_report()
+            data = json.loads(target.read_text(encoding="utf-8"))
+            self.assertIn("Battery", data["sections"])
+            self.assertIn("57", data["sections"]["Battery"])
+            self.assertIn("Exported Control Center report", window.activity_log.toPlainText())
             window.close()
         self.assertIsNotNone(app)
 
