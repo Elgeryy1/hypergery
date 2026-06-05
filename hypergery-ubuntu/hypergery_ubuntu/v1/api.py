@@ -315,12 +315,37 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._fail(exc)
 
 
-def serve_api(context: ApiContext | None = None, *, host: str | None = None, port: int | None = None) -> None:
-    """Blocking API server (CLI entry point)."""
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def serve_api(
+    context: ApiContext | None = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    allow_remote: bool = False,
+) -> None:
+    """Blocking API server (CLI entry point).
+
+    The API has no authentication yet (see NEXT_STEPS_V12_SECURITY.md), and
+    /teleport/start can suspend a live VM. Binding to a non-loopback address
+    therefore requires an explicit opt-in so it cannot happen by passing a
+    single --host flag by mistake.
+    """
     context = context or ApiContext()
     bind_host = host or context.settings.api_host
     bind_port = port or context.settings.api_port
+    if bind_host not in LOOPBACK_HOSTS and not allow_remote:
+        raise HyperGeryError(
+            f"Refusing to bind the unauthenticated v1 API to a non-loopback address ({bind_host}). "
+            "It exposes host/VM inventory and /teleport/start to the network. "
+            "Pass allow_remote=True (CLI: --allow-remote) only on a trusted LAN."
+        )
     server = ApiServer((bind_host, bind_port), context)
+    if bind_host not in LOOPBACK_HOSTS:
+        get_logger().warning(
+            "api", f"v1 API bound to NON-LOOPBACK {bind_host}:{bind_port} with no authentication — trusted LAN only."
+        )
     get_logger().info("api", f"v1 API listening on http://{bind_host}:{bind_port}")
     try:
         server.serve_forever()

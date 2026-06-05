@@ -105,6 +105,11 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     api_serve = api_sub.add_parser("serve", help="Serve the v1 API (blocking).")
     api_serve.add_argument("--host", default="")
     api_serve.add_argument("--port", type=int, default=0)
+    api_serve.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow binding to a non-loopback address (unauthenticated API; trusted LAN only).",
+    )
 
 
 def v1_action(args: argparse.Namespace) -> int:
@@ -237,6 +242,6 @@ def v1_action(args: argparse.Namespace) -> int:
             local_vms=local_vms,
             teleport_engine=TeleportEngine(backend, settings=settings, hub_client=hub) if backend is not None else None,
         )
-        serve_api(context, host=args.host or None, port=args.port or None)
+        serve_api(context, host=args.host or None, port=args.port or None, allow_remote=args.allow_remote)
         return 0
     return 2

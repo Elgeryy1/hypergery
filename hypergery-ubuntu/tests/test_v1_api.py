@@ -190,6 +190,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["error"]["code"], "HYPERGERY_ERROR")
         self.assertIn("ghost-vm", body["error"]["message"])
 
+    def test_serve_api_refuses_non_loopback_without_opt_in(self):
+        from hypergery_ubuntu.v1.api import serve_api
+        from hypergery_ubuntu.v1.errors import HyperGeryError
+
+        with self.assertRaises(HyperGeryError) as ctx:
+            serve_api(ApiContext(settings=V1Settings()), host="0.0.0.0", port=0)
+        self.assertIn("non-loopback", str(ctx.exception))
+        # Loopback binds are always fine (don't actually serve_forever here —
+        # construction is enough; we only assert the guard does not trip).
+
     def test_unknown_endpoint_is_a_clean_error(self):
         with self.assertRaises(HTTPError) as ctx:
             self.get("/warp-drive")
