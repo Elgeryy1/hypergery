@@ -1,6 +1,6 @@
 # HyperGery v0.6 Quick Start
 
-HyperGery v0.6.0 is RC-candidate work, not a final release. Docker Hub, Hub/Agent smoke, UI smoke, and local NAS Clone Migration E2E have passed. A real two-physical-host NAS Clone Migration smoke is still required before final release.
+HyperGery v0.6.0 is the final NAS Clone Migration release. Docker Hub, Hub/Agent smoke, UI smoke, local NAS Clone Migration E2E, and a real two-physical-host NAS Clone Migration smoke have passed.
 
 ## 1. Mount NAS Storage
 
@@ -91,7 +91,7 @@ python -m hypergery_ubuntu.cli hub vms
 python -m hypergery_ubuntu.cli host test <target-host-id>
 ```
 
-Run the target agent once more if the test command is pending:
+If you run the agent in one-shot mode and the test command has not been processed yet, run the target agent once more:
 
 ```bash
 python -m hypergery_ubuntu.cli agent once

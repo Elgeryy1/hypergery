@@ -1,8 +1,8 @@
 # Changelog
 
-## v0.6.0 - NAS Live Migration
+## v0.6.0 - NAS Clone Migration
 
-Roadmap:
+Release scope:
 
 - NAS Control Plane.
 - HyperGery Agent.
@@ -16,18 +16,17 @@ Roadmap:
 - Migration progress/logs.
 - CLI migration commands.
 
-Planned strategy: v0.6.0 may present the UI action as "Live Migration", but the safe implementation target is NAS Clone Migration. Source VMs, disks, and metadata must remain untouched. Running VM migration must be blocked unless a real safe libvirt/QEMU strategy is available.
+Release strategy: v0.6.0 presents the UI action as "Live Migration", but the shipped safe implementation is NAS Clone Migration. Source VMs, disks, and metadata remain untouched. Running VM migration is blocked unless a real safe libvirt/QEMU strategy is available.
 
-Implemented in development so far:
+Released in v0.6.0:
 
-- HyperGery Hub / NAS control plane with host registration, heartbeat/offline tracking, safe command queue, VM inventory, events, and migration status records.
-- HyperGery Agent with config file support, capability heartbeat, safe command allowlist, and CLI `agent` commands.
-- Host discovery CLI: `host list`, `host show`, and `host test`.
+- HyperGery Hub Docker / NAS control plane with host registration, heartbeat/offline tracking, safe command queue, VM inventory, events, migration status records, Docker Compose setup, Docker healthcheck, and local Docker volume persistence for the SQLite DB.
+- HyperGery Agent with config file support, capability heartbeat, safe command allowlist, migration command execution, and CLI `agent` commands.
+- Remote Hosts support with CLI `host list`, `host show`, and `host test`.
 - First-run Ubuntu bootstrap in `scripts/dev-run.sh` and `scripts/bootstrap-ubuntu.sh`.
 - Migration package module with VM asset collection, offline preflight, package export, package validation, target identity regeneration, import rollback, and package listing.
 - CLI `migrate preflight`, `migrate package`, `migrate validate-package`, `migrate import`, `migrate list`, and `migrate status`.
-- Agent migration command execution for VM preflight, staged package validation, staged package import, and package status with NAS staging path restrictions.
-- Remote orchestration: source package creation in NAS staging, Hub `import_vm_package` command creation for the target host, target agent import, migration status polling helpers, and source VM preservation.
+- NAS Clone Migration remote orchestration: source package creation in NAS staging, Hub `import_vm_package` command creation for the target host, target agent import, migration status polling helpers, and source VM preservation.
 - Qt **Remote Hosts** panel with Hub host list, online/offline state, last seen, RAM/disk info, KVM/libvirt readiness, active VMs, Refresh, and Test command.
 - Qt **Live Migration** VM action with real target host selection, target VM name, include ISO/snapshots, start-after-import, preflight output, and Start Migration gated by successful preflight.
 - CLI `migrate remote` and `migrate status --migration-id` for registry-backed orchestration and polling.
@@ -37,15 +36,14 @@ Implemented in development so far:
 - Switching a shut off VM from SPICE to VNC now removes SPICE-only audio/channel XML so libvirt can redefine the domain.
 - HyperGery Console now auto-connects running VNC VMs and uses Scale to Fit rendering with a centered framebuffer and real-size scrollbars.
 - Toolbar split between integrated **Console** and **External Console** so `virt-viewer` / `remote-viewer` remain available for SPICE and fallback.
-- HyperGery Hub Docker backend added for NAS deployment, with Hub CLI aliases, VM inventory, command queue, migrations, events, Docker Compose setup, Docker healthcheck, and local Docker volume persistence for the SQLite DB.
 - App-level settings for Hub URL, host identity, NAS staging path, default display, default ISO folder, and default VM storage path in `~/.config/hypergery/config.json`, with environment variables as overrides.
 - CLI `doctor` command for non-destructive diagnostics of Python, KVM, libvirt, tools, Hub reachability, NAS staging, Docker Compose, and Hub VM inventory.
 - Remote Hosts Hub status summary showing Hub URL, online/offline state, last check, online host count, VM record count, and NAS staging writability.
 - v0.6 quick start guide at `docs/QUICK_START_V06.md`.
 
-Validation status before RC:
+Validation status for final release:
 
-- Automated tests pass: 201 tests OK in the Qt/offscreen venv and 201 tests OK with 8 skipped on system Python.
+- Automated tests pass: 214 tests OK in the Qt/offscreen venv and 214 tests OK with 15 skipped on system Python.
 - Docker Hub smoke passed: `docker compose config`, `build`, `up`, `/health`, `/hosts`, and `/vms`.
 - Hub/Agent smoke passed: agent registration, host list, VM inventory, and queued host test with `pong=true`.
 - Local NAS Clone Migration E2E passed with two logical agents on one libvirt host: package created on NAS staging, source VM/disk preserved, target imported, UUID/MAC regenerated, target started, and target cleanup completed.
@@ -55,6 +53,10 @@ Not included in v0.6.0:
 
 - True live RAM migration.
 - HG-MEMDIFF or any custom dirty-page transfer protocol.
+- AutoBoost.
+- Android Hub.
+- IsardVDI.
+- SPICE integrated console.
 
 Future topology polish:
 

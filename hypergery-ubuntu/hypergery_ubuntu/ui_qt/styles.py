@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-APP_DISPLAY_VERSION = "0.5.0-dev"
+APP_DISPLAY_VERSION = "0.6.0"
 
 STATE_COLORS = {
     "running": "#36d399",

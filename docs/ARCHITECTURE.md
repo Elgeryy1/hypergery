@@ -74,9 +74,9 @@ The backend is Python and wraps real host tools:
 
 Commands are executed with argument lists, not shell-concatenated strings. External command output is forced to locale `C` where possible so VM states remain stable even on localized desktops.
 
-## NAS Live Migration (v0.6.0 target)
+## NAS Clone Migration (v0.6.0)
 
-v0.6.0 development is focused on NAS-backed migration between HyperGery hosts. The user-facing action is named **Live Migration**, but the safe baseline strategy is NAS Clone Migration: package the VM on the source host, stage the package on shared NAS storage, and import it on the target host while leaving the source VM untouched.
+v0.6.0 ships NAS-backed migration between HyperGery hosts. The user-facing action is named **Live Migration**, but the safe release strategy is NAS Clone Migration: package the VM on the source host, stage the package on shared NAS storage, and import it on the target host while leaving the source VM untouched.
 
 The migration architecture has four parts:
 

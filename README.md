@@ -2,7 +2,7 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v0.6.0--dev-blue)
+![Version](https://img.shields.io/badge/version-v0.6.0-blue)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -11,9 +11,9 @@ HyperGery is a real desktop virtual machine manager for Ubuntu, functionally ins
 
 HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
 
-HyperGery v0.6.0 development is focused on NAS Live Migration: a NAS-backed control plane, host agents, host discovery, VM package export/import, migration preflight, remote import orchestration, and a UI action named **Live Migration**. The implementation is intentionally conservative: when a true live RAM/disk migration is not safe, HyperGery performs a NAS Clone Migration strategy and keeps the source VM untouched.
+HyperGery v0.6.0 is the NAS Clone Migration release: a NAS-backed control plane, host agents, host discovery, VM package export/import, migration preflight, remote import orchestration, and a UI action named **Live Migration**. The implementation is intentionally conservative: when a true live RAM/disk migration is not safe, HyperGery performs a NAS Clone Migration strategy and keeps the source VM untouched.
 
-Current v0.6.0 status: tests, Docker Hub, Hub/Agent smoke, UI smoke, local NAS Clone Migration E2E, and a real two-physical-host NAS Clone Migration smoke have passed on `develop`. v0.6.0 remains an RC until the release is intentionally cut; no tag, release, or `main` merge has been created.
+Current v0.6.0 status: final release. Tests, Docker Hub, Hub/Agent smoke, UI smoke, local NAS Clone Migration E2E, and a real two-physical-host NAS Clone Migration smoke have passed.
 
 ## Screenshots
 
@@ -124,12 +124,12 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - Remote Hosts UI panel reads real hosts from the Hub and shows online/offline state, last seen, RAM/disk, KVM/libvirt readiness, and active VMs.
 - Remote Hosts also shows Hub URL, Hub status, last check, online host count, VM record count, and NAS staging writability.
 - **Live Migration** dialog lists real online target hosts, blocks offline/unready targets, runs local preflight, creates the source package in NAS staging, queues `import_vm_package` on the target host, and records migration status for polling.
-- Development CLI: hub, registry compatibility alias, agent, host, doctor, and migrate commands.
+- v0.6.0 CLI: hub, registry compatibility alias, agent, host, doctor, and migrate commands.
 - Real two-host smoke validated `hg-source` -> `hg-target` through Hub `http://192.168.1.44:8765`, NAS package `hg-v06-2host-source-f67154f7803b`, source preservation, target UUID/MAC regeneration, target boot to `running`, target cleanup, and retained NAS package.
 
 v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.
 
-Current development CLI:
+v0.6.0 CLI:
 
 ```bash
 python -m hypergery_ubuntu.cli hub serve --host 127.0.0.1 --port 8765
@@ -162,11 +162,14 @@ See [docs/NAS_LIVE_MIGRATION.md](docs/NAS_LIVE_MIGRATION.md) for the package lay
 
 - True live RAM migration with custom dirty-page transfer.
 - HG-MEMDIFF or any custom RAM dirty-page transfer protocol.
-- Integrated SPICE renderer.
+- AutoBoost.
+- Android Hub.
+- IsardVDI.
+- SPICE integrated console.
 - Lab topology zoom/pan and PNG/SVG export.
 - VM role badges on topology nodes.
 - Per-VM progress during lab instantiation.
-- Android Hub, IsardVDI, P2P, GPU shadowing.
+- P2P and GPU shadowing.
 
 ## Requirements
 

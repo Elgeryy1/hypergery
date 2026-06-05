@@ -2,7 +2,7 @@
 
 HyperGery Hub is the v0.6.0 NAS control-plane service. It exposes an HTTP JSON API on port `8765` and coordinates hosts, agents, command queues, VM inventory, migration status, and basic events.
 
-Current validation status: Docker Hub, Hub/Agent smoke, UI smoke, and local NAS Clone Migration E2E have passed. A real two-physical-host NAS Clone Migration smoke is still pending before final release.
+Current validation status: v0.6.0 final validation passed. Docker Hub, Hub/Agent smoke, UI smoke, local NAS Clone Migration E2E, and a real two-physical-host NAS Clone Migration smoke passed. The final automated check ran 214 tests OK in the Qt/offscreen venv and 214 tests OK with 15 skipped on system Python.
 
 The existing `registry` module remains as the compatible implementation name. User-facing commands can use `hub`:
 
@@ -105,3 +105,7 @@ No passwords, SSH keys, SMB credentials, or other secrets are stored by the Hub.
 
 - True live RAM migration.
 - HG-MEMDIFF or any custom dirty-page transfer protocol.
+- AutoBoost.
+- Android Hub.
+- IsardVDI.
+- SPICE integrated console.

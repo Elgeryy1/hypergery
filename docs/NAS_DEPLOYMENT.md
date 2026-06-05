@@ -2,7 +2,7 @@
 
 This is the v0.6.0 deployment shape for HyperGery Hub on the QNAP/NAS.
 
-Status before final release: Hub Docker and local Hub/Agent/NAS Clone Migration smoke have passed. A real two-physical-host NAS Clone Migration smoke remains pending before v0.6.0 final release.
+Final release status: Hub Docker, local Hub/Agent/NAS Clone Migration smoke, and a real two-physical-host NAS Clone Migration smoke passed for v0.6.0.
 
 Real paths:
 
@@ -60,4 +60,4 @@ Remote Hosts and Live Migration use the Hub for host list, target selection, com
 
 Source VMs and source disks remain untouched during NAS clone migration.
 
-v0.6.0 does not include true live RAM migration or HG-MEMDIFF/custom dirty-page transfer.
+v0.6.0 does not include true live RAM migration, HG-MEMDIFF/custom dirty-page transfer, AutoBoost, Android Hub, IsardVDI, or a SPICE integrated console.

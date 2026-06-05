@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from .backend import HyperGeryBackend, HyperGeryError, VmSummary
 
 
-APP_DISPLAY_VERSION = "0.2.0-dev"
+APP_DISPLAY_VERSION = "0.6.0"
 TEXT_FONT = ("Monospace", 10)
 
 

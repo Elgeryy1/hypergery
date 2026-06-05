@@ -1,8 +1,8 @@
 # NAS Live Migration
 
-HyperGery v0.6.0 development uses the product label **Live Migration**, but the safe baseline implementation is NAS Clone Migration.
+HyperGery v0.6.0 uses the product label **Live Migration**, but the safe shipped implementation is NAS Clone Migration.
 
-Status before final release: local NAS Clone Migration E2E has passed with two logical agents on one libvirt host. A real two-physical-host NAS Clone Migration smoke is still pending before v0.6.0 can be treated as final release-ready.
+Final release status: local NAS Clone Migration E2E passed with two logical agents on one libvirt host, and a real two-physical-host NAS Clone Migration smoke passed with `hg-source` and `hg-target` through Hub `http://192.168.1.44:8765`.
 
 The source VM, source disks, source lab manifest, and source templates are not deleted or modified by migration packaging.
 
@@ -137,4 +137,8 @@ The UI now includes a **Remote Hosts** panel and a **Live Migration** dialog. Th
 
 - True live RAM migration.
 - HG-MEMDIFF or any custom dirty-page transfer protocol.
+- AutoBoost.
+- Android Hub.
+- IsardVDI.
+- SPICE integrated console.
 - Streaming byte-level progress from agent commands.

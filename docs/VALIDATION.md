@@ -120,13 +120,12 @@ v0.6.0 close-out check on prepared host (2026-06-05):
 - [x] `doctor` diagnostics added and smoke-tested against the local Hub.
 - [x] Remote Hosts Hub status summary added.
 - [x] `docs/QUICK_START_V06.md` added.
-- [x] No release, tag, or `main` merge was created.
 - [x] Real two-physical-host NAS Clone Migration smoke passed.
-- [x] No release, tag, or `main` merge was created.
+- [x] v0.6.0 release prerequisites were satisfied before final publication.
 
-## v0.6.0 — NAS Live Migration Validation Plan
+## v0.6.0 — NAS Clone Migration Validation Plan
 
-v0.6.0 is not a release yet. Validation must prove NAS Clone Migration behavior without deleting the source VM or original disks.
+v0.6.0 final validation proves NAS Clone Migration behavior without deleting the source VM or original disks.
 
 Required automated checks:
 
