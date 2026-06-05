@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
@@ -466,10 +467,7 @@ class MainWindow(QMainWindow):
             self._placeholder_page("Migrations", "NAS Clone Migration history and status view arrives in a later v0.7 phase. Use the Live Migration action on a VM meanwhile."),
             "Migrations",
         )
-        self.diagnostics_page_index = self.main_tabs.addTab(
-            self._placeholder_page("Diagnostics", "The doctor diagnostics panel arrives in a later v0.7 phase. Run `python -m hypergery_ubuntu.cli doctor` meanwhile."),
-            "Diagnostics",
-        )
+        self.diagnostics_page_index = self.main_tabs.addTab(self._build_diagnostics_page(), "Diagnostics")
         self.main_tabs.tabBar().hide()
 
         return panel
@@ -739,6 +737,212 @@ class MainWindow(QMainWindow):
             self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
 
         self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
+
+    DOCTOR_GROUPS = (
+        ("Local Virtualization", ("/dev/kvm", "user groups", "libvirt")),
+        ("Tooling", ("python", "qemu-img", "virsh", "virt-viewer")),
+        ("Hub & Agent", ("hub url", "host id", "hub reachable")),
+        ("NAS", ("nas staging path",)),
+        ("Docker", ("docker folder", "docker compose")),
+        ("VM Inventory", ("hub vm inventory",)),
+    )
+
+    def _build_diagnostics_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        title = QLabel("Diagnostics")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Doctor checks for KVM, libvirt, Hub, NAS and tooling — read-only, nothing is changed.")
+        subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(title)
+        head_col.addWidget(subtitle)
+        header.addLayout(head_col)
+        header.addStretch()
+        self.copy_report_button = self._button("Copy Report", self.copy_doctor_report)
+        self.copy_report_button.setEnabled(False)
+        troubleshooting_button = self._button("Open Troubleshooting", self.open_troubleshooting)
+        self.run_doctor_button = self._button("Run Doctor", self.run_doctor, primary=True)
+        header.addWidget(self.copy_report_button)
+        header.addWidget(troubleshooting_button)
+        header.addWidget(self.run_doctor_button)
+        layout.addLayout(header)
+
+        summary = QHBoxLayout()
+        summary.setSpacing(8)
+        self.diag_ok_chip = QLabel("— OK")
+        self.diag_ok_chip.setObjectName("statusChip")
+        self.diag_warn_chip = QLabel("— WARN")
+        self.diag_warn_chip.setObjectName("statusChip")
+        self.diag_fail_chip = QLabel("— FAIL")
+        self.diag_fail_chip.setObjectName("statusChip")
+        self.diag_overall_label = QLabel("Doctor has not run yet.")
+        self.diag_overall_label.setObjectName("mutedLabel")
+        summary.addWidget(self.diag_ok_chip)
+        summary.addWidget(self.diag_warn_chip)
+        summary.addWidget(self.diag_fail_chip)
+        summary.addStretch()
+        summary.addWidget(self.diag_overall_label)
+        layout.addLayout(summary)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        self.diag_results_layout = QVBoxLayout(body)
+        self.diag_results_layout.setContentsMargins(0, 0, 0, 0)
+        self.diag_results_layout.setSpacing(12)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
+
+        self._doctor_items: list[Any] = []
+        self._diag_show_message(
+            "Run Doctor to check your environment",
+            "Doctor inspects /dev/kvm, user groups, libvirt, QEMU tooling, Hub reachability, NAS staging, and Docker Compose without changing the system.",
+        )
+        return page
+
+    def _clear_diag_results(self) -> None:
+        while self.diag_results_layout.count():
+            item = self.diag_results_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _diag_show_message(self, title: str, body: str) -> None:
+        self._clear_diag_results()
+        self.diag_results_layout.addWidget(self._remote_message_panel(title, body))
+        self.diag_results_layout.addStretch()
+
+    def run_doctor(self) -> None:
+        self.run_doctor_button.setEnabled(False)
+        self._diag_show_message("Running diagnostics…", "Checking KVM, libvirt, tooling, Hub, NAS, and Docker. This can take a few seconds if the Hub is unreachable.")
+
+        def collect() -> dict[str, Any]:
+            from ..doctor import collect_doctor_items, doctor_exit_code
+
+            try:
+                items = collect_doctor_items()
+                return {"items": items, "exit_code": doctor_exit_code(items)}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            "Running doctor diagnostics",
+            collect,
+            on_success=self.render_doctor_results,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def render_doctor_results(self, result: dict[str, Any]) -> None:
+        self.run_doctor_button.setEnabled(True)
+        if result.get("error"):
+            self._doctor_items = []
+            self.copy_report_button.setEnabled(False)
+            for chip, text in ((self.diag_ok_chip, "— OK"), (self.diag_warn_chip, "— WARN"), (self.diag_fail_chip, "— FAIL")):
+                chip.setText(text)
+                chip.setObjectName("statusChip")
+                chip.style().unpolish(chip)
+                chip.style().polish(chip)
+            self.diag_overall_label.setText("Doctor failed to run.")
+            self._clear_diag_results()
+            error_label = QLabel(f"Doctor failed to run: {result['error']}")
+            error_label.setObjectName("calloutDanger")
+            error_label.setWordWrap(True)
+            self.diag_results_layout.addWidget(error_label)
+            self.diag_results_layout.addStretch()
+            return
+        items = result.get("items") or []
+        self._doctor_items = items
+        self.copy_report_button.setEnabled(bool(items))
+        counts = {"OK": 0, "WARN": 0, "FAIL": 0}
+        for item in items:
+            counts[item.status] = counts.get(item.status, 0) + 1
+        for chip, key, tone in (
+            (self.diag_ok_chip, "OK", "statusChipOk"),
+            (self.diag_warn_chip, "WARN", "statusChipWarn"),
+            (self.diag_fail_chip, "FAIL", "statusChipBad"),
+        ):
+            chip.setText(f"{counts[key]} {key}")
+            chip.setObjectName(tone if counts[key] else "statusChip")
+            chip.style().unpolish(chip)
+            chip.style().polish(chip)
+        exit_code = result.get("exit_code", 0)
+        self.diag_overall_label.setText(
+            f"No critical failures · exit code 0 · {now_iso()}" if exit_code == 0
+            else f"Critical failures present · exit code 1 · {now_iso()}"
+        )
+
+        self._clear_diag_results()
+        remaining = list(items)
+        for group_title, names in self.DOCTOR_GROUPS:
+            group_items = [item for item in remaining if item.name in names]
+            if not group_items:
+                continue
+            remaining = [item for item in remaining if item not in group_items]
+            self.diag_results_layout.addWidget(self._doctor_group_card(group_title, group_items))
+        if remaining:
+            self.diag_results_layout.addWidget(self._doctor_group_card("Other", remaining))
+        self.diag_results_layout.addStretch()
+
+    def _doctor_group_card(self, title: str, items: list[Any]) -> QFrame:
+        card = QFrame()
+        card.setObjectName("panel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(8)
+        title_label = QLabel(title)
+        title_label.setObjectName("sectionTitle")
+        layout.addWidget(title_label)
+        chip_names = {"OK": "statusChipOk", "WARN": "statusChipWarn", "FAIL": "statusChipBad"}
+        for item in items:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            chip = QLabel(item.status)
+            chip.setObjectName(chip_names.get(item.status, "statusChip"))
+            chip.setFixedWidth(64)
+            chip.setMinimumHeight(26)
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name = QLabel(item.name + ("  · CRITICAL" if item.critical and item.status == "FAIL" else ""))
+            name.setMinimumWidth(170)
+            detail = QLabel(str(item.detail))
+            detail.setObjectName("mutedLabel")
+            detail.setWordWrap(True)
+            row.addWidget(chip)
+            row.addWidget(name)
+            row.addWidget(detail, 1)
+            layout.addLayout(row)
+        return card
+
+    def copy_doctor_report(self) -> None:
+        if not self._doctor_items:
+            self.status.showMessage("No diagnostics to copy yet. Run Doctor first.", 5000)
+            return
+        from ..doctor import doctor_exit_code, format_doctor_items
+
+        report = format_doctor_items(self._doctor_items)
+        report += f"\n\nexit code: {doctor_exit_code(self._doctor_items)} · generated {now_iso()}"
+        QApplication.clipboard().setText(report)
+        self.status.showMessage("Doctor report copied to clipboard", 5000)
+        self.log_activity("Copied doctor report to clipboard")
+
+    def open_troubleshooting(self) -> None:
+        path = Path(__file__).resolve().parents[3] / "docs" / "TROUBLESHOOTING.md"
+        if path.is_file():
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            self.status.showMessage(f"Opening {path}", 5000)
+        else:
+            self.status.showMessage(f"Troubleshooting guide not found at {path}", 8000)
 
     def _stat_card(self, label: str) -> tuple[QFrame, QLabel, QLabel]:
         card = QFrame()

@@ -388,6 +388,81 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_diagnostics_page_has_header_and_run_doctor(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            self.assertTrue(hasattr(window, "run_doctor_button"))
+            self.assertEqual(window.run_doctor_button.text(), "Run Doctor")
+            self.assertFalse(window.copy_report_button.isEnabled())
+            page = window.main_tabs.widget(window.diagnostics_page_index)
+            texts = [label.text() for label in page.findChildren(QLabel)]
+            self.assertIn("Diagnostics", texts)
+            self.assertTrue(any("Run Doctor to check your environment" in text for text in texts))
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_diagnostics_renders_grouped_results_and_counts(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.doctor import DoctorItem
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            items = [
+                DoctorItem("OK", "/dev/kvm", "exists and accessible"),
+                DoctorItem("OK", "virsh", "/usr/bin/virsh"),
+                DoctorItem("WARN", "docker compose", "docker not found"),
+                DoctorItem("FAIL", "hub reachable", "connection refused", True),
+            ]
+            window.render_doctor_results({"items": items, "exit_code": 1})
+            self.assertEqual(window.diag_ok_chip.text(), "2 OK")
+            self.assertEqual(window.diag_warn_chip.text(), "1 WARN")
+            self.assertEqual(window.diag_fail_chip.text(), "1 FAIL")
+            self.assertIn("exit code 1", window.diag_overall_label.text())
+            self.assertTrue(window.copy_report_button.isEnabled())
+
+            page = window.main_tabs.widget(window.diagnostics_page_index)
+            texts = [label.text() for label in page.findChildren(QLabel)]
+            self.assertIn("Local Virtualization", texts)
+            self.assertIn("Tooling", texts)
+            self.assertIn("Docker", texts)
+            self.assertTrue(any("CRITICAL" in text for text in texts))
+
+            # Copy with results populates clipboard without crashing.
+            window.copy_doctor_report()
+            self.assertIn("hub reachable", QApplication.clipboard().text())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_diagnostics_failure_shows_callout_and_copy_is_safe(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_doctor_results({"error": "boom"})
+            self.assertFalse(window.copy_report_button.isEnabled())
+            self.assertIn("failed", window.diag_overall_label.text().lower())
+            page = window.main_tabs.widget(window.diagnostics_page_index)
+            texts = [label.text() for label in page.findChildren(QLabel)]
+            self.assertTrue(any("Doctor failed to run: boom" in text for text in texts))
+            # Copy Report without results must not crash.
+            window.copy_doctor_report()
+            window.close()
+        self.assertIsNotNone(app)
+
     def test_app_settings_dialog_has_sections_and_source_chips(self):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QLabel

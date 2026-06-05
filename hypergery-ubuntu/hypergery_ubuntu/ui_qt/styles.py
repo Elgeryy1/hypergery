@@ -366,6 +366,14 @@ QLabel#metricValue {
     font-weight: 600;
     color: #E5E7EB;
 }
+QLabel#statusChipWarn {
+    background: rgba(245, 158, 11, 0.13);
+    border: 1px solid rgba(245, 158, 11, 0.4);
+    border-radius: 10px;
+    color: #fcd34d;
+    padding: 4px 10px;
+    font-size: 9.5pt;
+}
 QLabel#srcChipEnv {
     border: 1px solid rgba(56, 189, 248, 0.35);
     border-radius: 4px;
