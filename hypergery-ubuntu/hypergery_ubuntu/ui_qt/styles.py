@@ -269,6 +269,13 @@ QLabel#placeholderTitle {
     font-weight: 700;
     color: #dbeafe;
 }
+QScrollArea {
+    background: transparent;
+    border: 0;
+}
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
 QLabel#pageTitle {
     font-size: 16pt;
     font-weight: 700;

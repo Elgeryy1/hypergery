@@ -190,6 +190,59 @@ class QtUiTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_dashboard_health_cards_update_from_state(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.backend import VmSummary
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            self.assertEqual(window.dash_hub_big.text(), "Not checked")
+
+            window.render_vms([
+                VmSummary(name="vm-a", state="running", lab_id="default-lab", ram_mib=1024, vcpus=1),
+                VmSummary(name="vm-b", state="shut off", lab_id="default-lab", ram_mib=1024, vcpus=1),
+            ])
+            self.assertEqual(window.dash_vm_big.text(), "1")
+            self.assertIn("1 shutoff", window.dash_vm_sub.text())
+            self.assertIn("2 total", window.dash_vm_sub.text())
+
+            window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=5)
+            self.assertEqual(window.dash_hub_big.text(), "Online")
+            self.assertIn("5 VM record(s)", window.dash_hub_sub.text())
+            self.assertEqual(window.dash_hosts_big.text(), "1 / 1")
+
+            window.render_hub_status([], reachable=False)
+            self.assertEqual(window.dash_hub_big.text(), "Offline")
+            warnings = [
+                window.dash_warnings_layout.itemAt(i).widget().text()
+                for i in range(window.dash_warnings_layout.count())
+            ]
+            self.assertTrue(any("Hub is not responding" in text for text in warnings))
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_dashboard_last_migration_from_worker_result(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            self.assertIn("No migrations", window.dash_migration_label.text())
+            window.render_remote_hosts({
+                "hosts": [FAKE_ONLINE_HOST],
+                "vm_count": 1,
+                "migrations": [{"migration_id": "hg-mig-1", "vm_name": "hg-src", "status": "done"}],
+            })
+            self.assertIn("hg-mig-1", window.dash_migration_label.text())
+            self.assertIn("done", window.dash_migration_label.text())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_remote_hosts_panel_uses_hub_labels(self, backend_cls):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.main_window import MainWindow

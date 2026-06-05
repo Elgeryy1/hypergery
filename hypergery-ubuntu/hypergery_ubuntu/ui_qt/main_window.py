@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QInputDialog,
+    QScrollArea,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -110,7 +111,8 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_left_panel())
-        splitter.addWidget(self._build_right_panel())
+        self.right_panel = self._build_right_panel()
+        splitter.addWidget(self.right_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
 
@@ -173,6 +175,7 @@ class MainWindow(QMainWindow):
             "Diagnostics": self.diagnostics_page_index,
         }
         self.main_tabs.setCurrentIndex(page_map[section])
+        self.right_panel.setVisible(section in {"Virtual Machines", "Labs"})
 
     def _build_top_bar(self) -> QWidget:
         bar = QFrame()
@@ -524,10 +527,7 @@ class MainWindow(QMainWindow):
         remote_layout.addWidget(self.remote_detail)
         self.main_tabs.addTab(remote_tab, "Remote Hosts")
 
-        self.dashboard_page_index = self.main_tabs.addTab(
-            self._placeholder_page("Dashboard", "Health cards for VMs, Hub, NAS, hosts, and migrations arrive in the next v0.7 phase."),
-            "Dashboard",
-        )
+        self.dashboard_page_index = self.main_tabs.addTab(self._build_dashboard_page(), "Dashboard")
         self.migrations_page_index = self.main_tabs.addTab(
             self._placeholder_page("Migrations", "NAS Clone Migration history and status view arrives in a later v0.7 phase. Use the Live Migration action on a VM meanwhile."),
             "Migrations",
@@ -539,6 +539,191 @@ class MainWindow(QMainWindow):
         self.main_tabs.tabBar().hide()
 
         return panel
+
+    def _stat_card(self, label: str) -> tuple[QFrame, QLabel, QLabel]:
+        card = QFrame()
+        card.setObjectName("panel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(6)
+        label_widget = QLabel(label)
+        label_widget.setObjectName("statLabel")
+        big = QLabel("—")
+        big.setObjectName("statBig")
+        sub = QLabel("")
+        sub.setObjectName("mutedLabel")
+        sub.setWordWrap(True)
+        layout.addWidget(label_widget)
+        layout.addWidget(big)
+        layout.addWidget(sub)
+        layout.addStretch()
+        return card, big, sub
+
+    def _set_stat_tone(self, label: QLabel, tone: str) -> None:
+        label.setObjectName({"ok": "statBigOk", "bad": "statBigBad"}.get(tone, "statBig"))
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+    def _build_dashboard_page(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 22, 24, 26)
+        layout.setSpacing(16)
+
+        title = QLabel("Dashboard")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Local host, HyperGery Hub on the NAS, and the remote lab hosts at a glance.")
+        subtitle.setObjectName("mutedLabel")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(14)
+        vm_card, self.dash_vm_big, self.dash_vm_sub = self._stat_card("VIRTUAL MACHINES")
+        hub_card, self.dash_hub_big, self.dash_hub_sub = self._stat_card("HYPERGERY HUB")
+        nas_card, self.dash_nas_big, self.dash_nas_sub = self._stat_card("NAS STAGING")
+        hosts_card, self.dash_hosts_big, self.dash_hosts_sub = self._stat_card("HOSTS ONLINE")
+        self.dash_hub_big.setText("Not checked")
+        self.dash_nas_big.setText("Not checked")
+        for card in (vm_card, hub_card, nas_card, hosts_card):
+            stats_row.addWidget(card, 1)
+        layout.addLayout(stats_row)
+
+        quick_title = QLabel("Quick actions")
+        quick_title.setObjectName("sectionTitle")
+        layout.addWidget(quick_title)
+        quick_grid = QGridLayout()
+        quick_grid.setHorizontalSpacing(14)
+        quick_grid.setVerticalSpacing(14)
+        actions = (
+            ("New VM", "Create from a local ISO", self.new_vm, True),
+            ("New Lab", "Isolated lab network", self.new_lab, False),
+            ("Open Console", "Integrated VNC console", self._dashboard_go_vms, False),
+            ("Live Migration", "NAS Clone Migration", self._dashboard_go_vms, False),
+            ("Run Doctor", "Host and Hub diagnostics", self._dashboard_go_diagnostics, False),
+            ("Settings", "Hub · NAS · VM defaults", self.app_settings, False),
+        )
+        for index, (name, sub, callback, primary) in enumerate(actions):
+            quick_grid.addWidget(self._quick_card(name, sub, callback, primary=primary), index // 3, index % 3)
+        layout.addLayout(quick_grid)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(14)
+
+        warnings_card = QFrame()
+        warnings_card.setObjectName("panel")
+        warnings_layout = QVBoxLayout(warnings_card)
+        warnings_layout.setContentsMargins(16, 14, 16, 14)
+        warnings_layout.setSpacing(8)
+        warnings_title = QLabel("Warnings")
+        warnings_title.setObjectName("sectionTitle")
+        warnings_layout.addWidget(warnings_title)
+        self.dash_warnings_layout = QVBoxLayout()
+        self.dash_warnings_layout.setSpacing(8)
+        warnings_layout.addLayout(self.dash_warnings_layout)
+        warnings_layout.addStretch()
+        initial = QLabel("Hub and NAS state not checked yet. Select Refresh to load it.")
+        initial.setObjectName("calloutInfo")
+        initial.setWordWrap(True)
+        self.dash_warnings_layout.addWidget(initial)
+
+        migration_card = QFrame()
+        migration_card.setObjectName("panel")
+        migration_layout = QVBoxLayout(migration_card)
+        migration_layout.setContentsMargins(16, 14, 16, 14)
+        migration_layout.setSpacing(8)
+        migration_title = QLabel("Last migration")
+        migration_title.setObjectName("sectionTitle")
+        self.dash_migration_label = QLabel("No migrations recorded yet.")
+        self.dash_migration_label.setObjectName("mutedLabel")
+        self.dash_migration_label.setWordWrap(True)
+        migration_note = QLabel("NAS Clone Migration keeps the source VM untouched; UUID and MAC are regenerated on the target.")
+        migration_note.setObjectName("mutedLabel")
+        migration_note.setWordWrap(True)
+        migration_layout.addWidget(migration_title)
+        migration_layout.addWidget(self.dash_migration_label)
+        migration_layout.addWidget(migration_note)
+        migration_layout.addStretch()
+
+        bottom_row.addWidget(warnings_card, 3)
+        bottom_row.addWidget(migration_card, 2)
+        layout.addLayout(bottom_row)
+        layout.addStretch()
+
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
+        return page
+
+    def _dashboard_go_vms(self) -> None:
+        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Virtual Machines"))
+
+    def _dashboard_go_diagnostics(self) -> None:
+        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Diagnostics"))
+
+    def update_dashboard_vms(self) -> None:
+        counts = {"running": 0, "shutoff": 0, "paused": 0, "unknown": 0}
+        for vm in self.all_vms:
+            counts[state_kind(vm.state)] += 1
+        self.dash_vm_big.setText(str(counts["running"]))
+        self._set_stat_tone(self.dash_vm_big, "ok" if counts["running"] else "")
+        self.dash_vm_sub.setText(
+            f"running · {counts['shutoff']} shutoff · {counts['paused']} paused · {len(self.all_vms)} total"
+        )
+
+    def update_dashboard_hub(self, hosts: list[dict[str, Any]], *, reachable: bool, vm_count: int | None, nas_writable: bool, nas_path: str) -> None:
+        self.dash_hub_big.setText("Online" if reachable else "Offline")
+        self._set_stat_tone(self.dash_hub_big, "ok" if reachable else "bad")
+        records = "unknown" if vm_count is None else f"{vm_count} VM record(s)"
+        self.dash_hub_sub.setText(f"{self.registry_url()} · {records}" if reachable else self.registry_url())
+        self.dash_nas_big.setText("Writable" if nas_writable else "Not writable")
+        self._set_stat_tone(self.dash_nas_big, "ok" if nas_writable else "bad")
+        self.dash_nas_sub.setText(nas_path)
+        online = sum(1 for host in hosts if host.get("status") == "online")
+        self.dash_hosts_big.setText(f"{online} / {len(hosts)}" if hosts else "0")
+        self._set_stat_tone(self.dash_hosts_big, "ok" if hosts and online == len(hosts) else "")
+        offline_ids = [str(host.get("host_id") or "?") for host in hosts if host.get("status") != "online"]
+        self.dash_hosts_sub.setText(
+            "all hosts operational" if hosts and not offline_ids
+            else (", ".join(offline_ids) + " offline" if offline_ids else "no hosts registered")
+        )
+        self._update_dashboard_warnings(reachable=reachable, nas_writable=nas_writable, offline_ids=offline_ids)
+
+    def _update_dashboard_warnings(self, *, reachable: bool, nas_writable: bool, offline_ids: list[str]) -> None:
+        while self.dash_warnings_layout.count():
+            item = self.dash_warnings_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        def callout(text: str, tone: str) -> None:
+            label = QLabel(text)
+            label.setObjectName(tone)
+            label.setWordWrap(True)
+            self.dash_warnings_layout.addWidget(label)
+        if not reachable:
+            callout("HyperGery Hub is not responding. Check HYPERGERY_HUB_URL and that the Docker container is healthy.", "calloutWarn")
+        if not nas_writable:
+            callout("NAS staging is not writable. Mount the NAS share before packaging migrations.", "calloutWarn")
+        for host_id in offline_ids:
+            callout(f"{host_id} is offline. It is not available as a migration target.", "calloutWarn")
+        if reachable and nas_writable and not offline_ids:
+            callout("No warnings. Hub and NAS staging are operational.", "calloutOk")
+
+    def update_dashboard_migration(self, migrations: list[dict[str, Any]]) -> None:
+        if not migrations:
+            self.dash_migration_label.setText("No migrations recorded yet.")
+            return
+        last = migrations[-1]
+        migration_id = str(last.get("migration_id") or "?")
+        status = str(last.get("status") or "unknown")
+        vm_name = str(last.get("vm_name") or last.get("source_vm_name") or "?")
+        self.dash_migration_label.setText(f"{migration_id}\n{vm_name} · status: {status}")
 
     def _placeholder_page(self, title: str, subtitle: str) -> QWidget:
         page = QWidget()
@@ -854,12 +1039,17 @@ class MainWindow(QMainWindow):
             vm_count: int | None = len(client.list_vms())
         except Exception:
             vm_count = None
-        return {"hosts": hosts, "vm_count": vm_count}
+        try:
+            migrations: list[dict[str, Any]] = client.list_migrations()
+        except Exception:
+            migrations = []
+        return {"hosts": hosts, "vm_count": vm_count, "migrations": migrations}
 
     def render_remote_hosts(self, result: dict[str, Any] | list[dict[str, Any]]) -> None:
         if isinstance(result, dict):
             hosts = result.get("hosts", [])
             vm_count = result.get("vm_count")
+            self.update_dashboard_migration(result.get("migrations") or [])
         else:
             hosts = result
             vm_count = None
@@ -914,6 +1104,13 @@ class MainWindow(QMainWindow):
         for chip in (self.hub_chip, self.nas_chip):
             chip.style().unpolish(chip)
             chip.style().polish(chip)
+        self.update_dashboard_hub(
+            hosts,
+            reachable=reachable,
+            vm_count=vm_count,
+            nas_writable=nas_writable,
+            nas_path=nas_path,
+        )
 
     def test_selected_remote_host(self) -> None:
         indexes = self.remote_host_table.selectionModel().selectedRows()
@@ -1059,6 +1256,7 @@ class MainWindow(QMainWindow):
         if current is None:
             current = self.selected_vm.name if self.selected_vm else ""
         self.all_vms = vms
+        self.update_dashboard_vms()
         selected_lab_id = self.selected_lab_id()
         self.vms = filter_vms_for_lab(vms, selected_lab_id, self.vm_filter.currentText() == "Selected Lab")
         self.vm_table.setRowCount(0)
