@@ -807,6 +807,33 @@ class QtUiTests(unittest.TestCase):
             dialog.close()
         self.assertIsNotNone(app)
 
+    def test_migration_wizard_auto_polls_status_and_stops_on_close(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp))
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+
+            # Poll timer exists, repeats every few seconds, and starts inactive.
+            self.assertEqual(dialog.status_poll_timer.interval(), 4000)
+            self.assertFalse(dialog.status_poll_timer.isActive())
+
+            # Closing the dialog stops an active poll loop (and nothing else).
+            dialog.status_poll_timer.start()
+            self.assertTrue(dialog.status_poll_timer.isActive())
+            dialog.reject()
+            self.assertFalse(dialog.status_poll_timer.isActive())
+
+            # Without a started migration the poll handler is a safe no-op.
+            dialog.refresh_migration_status()
+            self.assertIn("No migration started yet", dialog.error_label.text())
+            dialog.close()
+        self.assertIsNotNone(app)
+
     def test_migration_wizard_progress_result_and_copy_safety(self):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QLabel

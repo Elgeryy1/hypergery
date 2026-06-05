@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -927,6 +927,12 @@ class LiveMigrationDialog(QDialog):
         self.last_result: dict | None = None
         self.last_status: dict | None = None
         self._jobs: list = []
+        self._status_job_running = False
+        self.status_poll_timer = QTimer(self)
+        self.status_poll_timer.setInterval(4000)
+        self.status_poll_timer.timeout.connect(self.refresh_migration_status)
+        # Closing the dialog stops polling; it never touches the migration itself.
+        self.finished.connect(self.status_poll_timer.stop)
         self.setWindowTitle(f"NAS Clone Migration: {vm.name}")
 
         app_config = effective_config()
@@ -1523,10 +1529,11 @@ class LiveMigrationDialog(QDialog):
                 f"\nMigration queued.\nmigration_id: {migration_id}\n"
                 f"package: {self.last_result.get('package_dir', '')}\n"
                 f"target command: {self.last_result.get('command_id', '')}\n"
-                "Use Refresh Status to poll the Hub until the target agent finishes the import."
+                "Waiting for the target agent to import (status refreshes automatically)."
             )
             self.refresh_status_button.setEnabled(True)
             self._render_progress_states("uploaded")
+            self.status_poll_timer.start()
 
         def failed() -> None:
             self.last_status = {"status": "failed", "error": job.error_message}
@@ -1566,6 +1573,8 @@ class LiveMigrationDialog(QDialog):
         if not migration_id:
             self.error_label.setText("No migration started yet.")
             return
+        if self._status_job_running:
+            return
         url = self.registry_url.text().strip()
 
         def fetch() -> dict:
@@ -1577,19 +1586,27 @@ class LiveMigrationDialog(QDialog):
 
         job = BackendJob("migration status", fetch)
         self._jobs.append(job)
+        self._status_job_running = True
 
         def succeeded() -> None:
+            self._status_job_running = False
             record = job.result or {}
+            previous = str((self.last_status or {}).get("status") or "")
             self.last_status = record
             status = str(record.get("status") or "unknown")
-            self.progress_log.append(f"status: {status}")
+            if status != previous:
+                self.progress_log.append(f"status: {status}")
             self._render_progress_states(status if status in self.MIGRATION_STATES or status == "failed" else "created")
             if status == "done":
+                self.status_poll_timer.stop()
                 self._show_result_success(record)
             elif status == "failed":
-                self._show_result_failure(str(record.get("error") or "see migration log"))
+                self.status_poll_timer.stop()
+                errors = record.get("errors") or []
+                self._show_result_failure("; ".join(str(item) for item in errors) or str(record.get("error") or "see migration log"))
 
         def failed() -> None:
+            self._status_job_running = False
             self.progress_log.append(f"status check failed: {job.error_message}")
 
         job.succeeded.connect(succeeded)
