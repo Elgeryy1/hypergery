@@ -243,6 +243,94 @@ class QtUiTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_hosts_page_renders_host_cards_with_badges(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        offline_host = {
+            "host_id": "ubuntu-hyperv-old",
+            "name": "Old Host",
+            "status": "offline",
+            "last_seen": "2026-06-01T10:00:00",
+            "kvm_ok": True,
+            "libvirt_ok": True,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_remote_hosts({
+                "hosts": [FAKE_ONLINE_HOST, offline_host],
+                "vm_count": 4,
+                "migrations": [],
+                "latency_ms": 12,
+            })
+            self.assertEqual(len(window._host_card_frames), 2)
+            self.assertEqual(window.hub_latency_label.text(), "12 ms")
+            self.assertEqual(window.hub_status_label.text(), "ONLINE")
+
+            online_texts = [
+                label.text() for label in window._host_card_frames[0].findChildren(QLabel)
+            ]
+            self.assertIn("KVM OK", online_texts)
+            self.assertIn("libvirt OK", online_texts)
+            self.assertTrue(any(text == "ONLINE" for text in online_texts))
+
+            offline_texts = [
+                label.text() for label in window._host_card_frames[1].findChildren(QLabel)
+            ]
+            self.assertTrue(any(text == "OFFLINE" for text in offline_texts))
+            self.assertTrue(any("No heartbeat since 2026-06-01T10:00:00" in text for text in offline_texts))
+            self.assertEqual(window._host_card_frames[1].objectName(), "hostCardOffline")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_hosts_empty_and_hub_offline_states(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_remote_hosts({"hosts": [], "vm_count": 0, "migrations": []})
+            texts = [
+                label.text()
+                for label in window.remote_cards_scroll.widget().findChildren(QLabel)
+            ]
+            self.assertTrue(any("No hosts registered yet" in text for text in texts))
+
+            window.render_hub_offline("connection refused")
+            texts = [
+                label.text()
+                for label in window.remote_cards_scroll.widget().findChildren(QLabel)
+            ]
+            self.assertTrue(any("Hub not reachable" in text for text in texts))
+            self.assertTrue(any("docker compose" in text for text in texts))
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_hosts_card_selection_enables_test_button(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_remote_hosts({"hosts": [FAKE_ONLINE_HOST], "vm_count": 1, "migrations": []})
+            self.assertIsNone(window.selected_remote_host_index)
+            window.update_actions()
+            self.assertFalse(window.test_remote_button.isEnabled())
+            window._select_host_card(0)
+            self.assertEqual(window.selected_remote_host_index, 0)
+            self.assertEqual(window._host_card_frames[0].objectName(), "hostCardSelected")
+            self.assertTrue(window.test_remote_button.isEnabled())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_remote_hosts_panel_uses_hub_labels(self, backend_cls):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.main_window import MainWindow

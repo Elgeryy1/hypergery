@@ -323,4 +323,47 @@ QLabel#calloutInfo {
     color: #bfdbfe;
     padding: 10px 12px;
 }
+QLabel#calloutDanger {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 7px;
+    color: #f5b9b9;
+    padding: 10px 12px;
+}
+QFrame#hubCard {
+    background: #111C2E;
+    border: 1px solid rgba(34, 211, 238, 0.28);
+    border-radius: 12px;
+}
+QFrame#hubCardOffline {
+    background: #111C2E;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 12px;
+}
+QFrame#hostCard {
+    background: #111C2E;
+    border: 1px solid #263244;
+    border-radius: 10px;
+}
+QFrame#hostCardSelected {
+    background: #111C2E;
+    border: 1px solid #22D3EE;
+    border-radius: 10px;
+}
+QFrame#hostCardOffline {
+    background: #0E1726;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: 10px;
+}
+QLabel#metricLabel {
+    font-size: 8.5pt;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: #5C6B82;
+}
+QLabel#metricValue {
+    font-size: 11.5pt;
+    font-weight: 600;
+    color: #E5E7EB;
+}
 """

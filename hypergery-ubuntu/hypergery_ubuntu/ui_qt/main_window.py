@@ -459,73 +459,7 @@ class MainWindow(QMainWindow):
 
         self.main_tabs.addTab(templates_tab, "Templates")
 
-        remote_tab = QWidget()
-        remote_layout = QVBoxLayout(remote_tab)
-        remote_layout.setContentsMargins(18, 18, 12, 18)
-        remote_layout.setSpacing(12)
-        remote_header = QHBoxLayout()
-        remote_title = QLabel("Remote Hosts")
-        remote_title.setObjectName("sectionTitle")
-        self.remote_status_label = QLabel("Hub not loaded")
-        self.remote_status_label.setObjectName("mutedLabel")
-        self.refresh_remote_button = self._button("Refresh", self.refresh_remote_hosts)
-        self.test_remote_button = self._button("Test", self.test_selected_remote_host)
-        remote_header.addWidget(remote_title)
-        remote_header.addStretch()
-        remote_header.addWidget(self.remote_status_label)
-        remote_header.addWidget(self.refresh_remote_button)
-        remote_header.addWidget(self.test_remote_button)
-        remote_layout.addLayout(remote_header)
-        hub_grid = QGridLayout()
-        self.hub_url_label = QLabel(self.registry_url())
-        self.hub_status_label = QLabel("not checked")
-        self.hub_last_check_label = QLabel("")
-        self.hub_hosts_online_label = QLabel("0")
-        self.hub_vm_count_label = QLabel("0")
-        self.hub_nas_label = QLabel("")
-        for label in (
-            self.hub_url_label,
-            self.hub_status_label,
-            self.hub_last_check_label,
-            self.hub_hosts_online_label,
-            self.hub_vm_count_label,
-            self.hub_nas_label,
-        ):
-            label.setObjectName("mutedLabel")
-        hub_grid.addWidget(QLabel("Hub URL"), 0, 0)
-        hub_grid.addWidget(self.hub_url_label, 0, 1)
-        hub_grid.addWidget(QLabel("Hub status"), 0, 2)
-        hub_grid.addWidget(self.hub_status_label, 0, 3)
-        hub_grid.addWidget(QLabel("Last check"), 1, 0)
-        hub_grid.addWidget(self.hub_last_check_label, 1, 1)
-        hub_grid.addWidget(QLabel("Hosts online"), 1, 2)
-        hub_grid.addWidget(self.hub_hosts_online_label, 1, 3)
-        hub_grid.addWidget(QLabel("VM records"), 2, 0)
-        hub_grid.addWidget(self.hub_vm_count_label, 2, 1)
-        hub_grid.addWidget(QLabel("NAS staging"), 2, 2)
-        hub_grid.addWidget(self.hub_nas_label, 2, 3)
-        remote_layout.addLayout(hub_grid)
-        self.remote_host_table = QTableWidget(0, 8)
-        self.remote_host_table.setHorizontalHeaderLabels(["Host", "Status", "Last seen", "RAM", "Disk free", "KVM", "libvirt", "Active VMs"])
-        self.remote_host_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.remote_host_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.remote_host_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.remote_host_table.setAlternatingRowColors(True)
-        self.remote_host_table.verticalHeader().setVisible(False)
-        self.remote_host_table.horizontalHeader().setStretchLastSection(True)
-        self.remote_host_table.setColumnWidth(0, 130)
-        self.remote_host_table.setColumnWidth(1, 80)
-        self.remote_host_table.setColumnWidth(2, 165)
-        self.remote_host_table.setColumnWidth(3, 120)
-        self.remote_host_table.setColumnWidth(4, 90)
-        self.remote_host_table.itemSelectionChanged.connect(self.update_actions)
-        remote_layout.addWidget(self.remote_host_table, 1)
-        self.remote_detail = QTextEdit()
-        self.remote_detail.setReadOnly(True)
-        self.remote_detail.setMaximumHeight(160)
-        self.remote_detail.setPlaceholderText("Select Refresh to load hosts from the HyperGery Hub.")
-        remote_layout.addWidget(self.remote_detail)
-        self.main_tabs.addTab(remote_tab, "Remote Hosts")
+        self.main_tabs.addTab(self._build_remote_hosts_page(), "Remote Hosts")
 
         self.dashboard_page_index = self.main_tabs.addTab(self._build_dashboard_page(), "Dashboard")
         self.migrations_page_index = self.main_tabs.addTab(
@@ -539,6 +473,272 @@ class MainWindow(QMainWindow):
         self.main_tabs.tabBar().hide()
 
         return panel
+
+    def _build_remote_hosts_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        title = QLabel("Remote Hosts")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Hub-connected KVM hosts and VM inventory")
+        subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(title)
+        head_col.addWidget(subtitle)
+        header.addLayout(head_col)
+        header.addStretch()
+        self.remote_status_label = QLabel("Hub not loaded")
+        self.remote_status_label.setObjectName("mutedLabel")
+        self.refresh_remote_button = self._button("Refresh", self.refresh_remote_hosts)
+        self.test_remote_button = self._button("Test Selected Host", self.test_selected_remote_host)
+        remote_settings_button = self._button("Settings", self.app_settings)
+        header.addWidget(self.remote_status_label)
+        header.addWidget(self.refresh_remote_button)
+        header.addWidget(self.test_remote_button)
+        header.addWidget(remote_settings_button)
+        layout.addLayout(header)
+
+        self.hub_card = QFrame()
+        self.hub_card.setObjectName("hubCard")
+        hub_layout = QVBoxLayout(self.hub_card)
+        hub_layout.setContentsMargins(18, 14, 18, 14)
+        hub_layout.setSpacing(10)
+        hub_head = QHBoxLayout()
+        hub_title = QLabel("HyperGery Hub")
+        hub_title.setObjectName("sectionTitle")
+        self.hub_status_label = QLabel("not checked")
+        self.hub_status_label.setObjectName("statusChip")
+        self.hub_url_label = QLabel(self.registry_url())
+        self.hub_url_label.setObjectName("mutedLabel")
+        hub_config_button = self._button("Config Hub", self.app_settings)
+        hub_head.addWidget(hub_title)
+        hub_head.addWidget(self.hub_status_label)
+        hub_head.addSpacing(8)
+        hub_head.addWidget(self.hub_url_label)
+        hub_head.addStretch()
+        hub_head.addWidget(hub_config_button)
+        hub_layout.addLayout(hub_head)
+
+        metrics = QHBoxLayout()
+        metrics.setSpacing(24)
+        self.hub_latency_label = QLabel("—")
+        self.hub_hosts_online_label = QLabel("0")
+        self.hub_vm_count_label = QLabel("0")
+        self.hub_nas_label = QLabel("not checked")
+        self.hub_last_check_label = QLabel("—")
+        for caption, value_label in (
+            ("LATENCY", self.hub_latency_label),
+            ("HOSTS ONLINE", self.hub_hosts_online_label),
+            ("VM INVENTORY", self.hub_vm_count_label),
+            ("NAS STAGING", self.hub_nas_label),
+            ("LAST CHECK", self.hub_last_check_label),
+        ):
+            cell = QVBoxLayout()
+            cell.setSpacing(3)
+            caption_label = QLabel(caption)
+            caption_label.setObjectName("metricLabel")
+            value_label.setObjectName("metricValue")
+            value_label.setWordWrap(True)
+            cell.addWidget(caption_label)
+            cell.addWidget(value_label)
+            metrics.addLayout(cell, 1)
+        hub_layout.addLayout(metrics)
+        layout.addWidget(self.hub_card)
+
+        self.remote_cards_scroll = QScrollArea()
+        self.remote_cards_scroll.setWidgetResizable(True)
+        self.remote_cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cards_body = QWidget()
+        self.remote_cards_layout = QGridLayout(cards_body)
+        self.remote_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.remote_cards_layout.setHorizontalSpacing(14)
+        self.remote_cards_layout.setVerticalSpacing(14)
+        self.remote_cards_scroll.setWidget(cards_body)
+        layout.addWidget(self.remote_cards_scroll, 1)
+        self._host_card_frames: list[QFrame] = []
+        self.selected_remote_host_index: int | None = None
+
+        self.remote_detail = QTextEdit()
+        self.remote_detail.setReadOnly(True)
+        self.remote_detail.setMaximumHeight(120)
+        self.remote_detail.setPlaceholderText("Select Refresh to load hosts from the HyperGery Hub.")
+        layout.addWidget(self.remote_detail)
+        return page
+
+    def _clear_remote_cards(self) -> None:
+        self._host_card_frames = []
+        self.selected_remote_host_index = None
+        while self.remote_cards_layout.count():
+            item = self.remote_cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _remote_message_panel(self, title: str, body: str, *, action: tuple[str, Callable[[], None]] | None = None) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("emptyPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(28, 26, 28, 26)
+        layout.setSpacing(8)
+        title_label = QLabel(title)
+        title_label.setObjectName("sectionTitle")
+        body_label = QLabel(body)
+        body_label.setObjectName("mutedLabel")
+        body_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(body_label)
+        if action is not None:
+            layout.addWidget(self._button(action[0], action[1]), alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch()
+        return panel
+
+    def _select_host_card(self, index: int) -> None:
+        self.selected_remote_host_index = index
+        for frame_index, frame in enumerate(self._host_card_frames):
+            host = self.remote_hosts[frame_index] if frame_index < len(self.remote_hosts) else {}
+            offline = str(host.get("status") or "offline") != "online"
+            name = "hostCardSelected" if frame_index == index else ("hostCardOffline" if offline else "hostCard")
+            frame.setObjectName(name)
+            frame.style().unpolish(frame)
+            frame.style().polish(frame)
+        self.update_actions()
+
+    def _host_card(self, host: dict[str, Any], index: int) -> QFrame:
+        offline = str(host.get("status") or "offline") != "online"
+        card = QFrame()
+        card.setObjectName("hostCardOffline" if offline else "hostCard")
+        card.mousePressEvent = lambda event, idx=index: self._select_host_card(idx)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        head = QHBoxLayout()
+        host_id = str(host.get("host_id") or "?")
+        id_label = QLabel(host_id)
+        id_label.setObjectName("sectionTitle")
+        name = str(host.get("name") or host.get("hostname") or "")
+        cpu = str(host.get("cpu_model") or "")
+        if len(cpu) > 42:
+            cpu = cpu[:39] + "…"
+        meta = QLabel(" · ".join(part for part in (name, cpu) if part))
+        meta.setObjectName("mutedLabel")
+        status_chip = QLabel("OFFLINE" if offline else "ONLINE")
+        status_chip.setObjectName("statusChipBad" if offline else "statusChipOk")
+        head_col = QVBoxLayout()
+        head_col.setSpacing(1)
+        head_col.addWidget(id_label)
+        head_col.addWidget(meta)
+        head.addLayout(head_col)
+        head.addStretch()
+        head.addWidget(status_chip, alignment=Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(head)
+
+        if offline:
+            callout = QLabel(f"No heartbeat since {host.get('last_seen') or 'unknown'}. Not available as a migration target.")
+            callout.setObjectName("calloutDanger")
+            callout.setWordWrap(True)
+            layout.addWidget(callout)
+        else:
+            badges = QHBoxLayout()
+            badges.setSpacing(8)
+            for ok, text in ((host.get("kvm_ok"), "KVM"), (host.get("libvirt_ok"), "libvirt")):
+                badge = QLabel(f"{text} {'OK' if ok else 'FAIL'}")
+                badge.setObjectName("statusChipOk" if ok else "statusChipBad")
+                badges.addWidget(badge)
+            badges.addStretch()
+            active_vms = host.get("active_vms") or []
+            vm_count = QLabel(f"{len(active_vms)} active VM(s)")
+            vm_count.setObjectName("mutedLabel")
+            badges.addWidget(vm_count)
+            layout.addLayout(badges)
+
+            ram = QLabel(f"RAM {host.get('ram_free_mib', 0)} / {host.get('ram_total_mib', 0)} MiB free · Disk {host.get('disk_free_mib', 0)} MiB free")
+            ram.setObjectName("mutedLabel")
+            layout.addWidget(ram)
+
+            preview = ", ".join(str(vm) for vm in active_vms[:3])
+            if len(active_vms) > 3:
+                preview += f" +{len(active_vms) - 3} more"
+            inventory = QLabel(preview if preview else "No VM inventory reported")
+            inventory.setObjectName("mutedLabel")
+            inventory.setWordWrap(True)
+            layout.addWidget(inventory)
+
+        heartbeat = QLabel(f"last seen {host.get('last_seen') or 'unknown'}")
+        heartbeat.setObjectName("mutedLabel")
+        layout.addWidget(heartbeat)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        test_button = self._button("Test Host", lambda checked=False, hid=host_id: self._queue_host_test(hid))
+        test_button.setEnabled(not offline)
+        view_button = self._button("View VMs", self._dashboard_go_vms)
+        target_button = self._button("Use as Migration Target", lambda checked=False, hid=host_id: self._hint_migration_target(hid))
+        target_button.setEnabled(not offline)
+        actions.addWidget(test_button)
+        actions.addWidget(view_button)
+        actions.addWidget(target_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        return card
+
+    def _hint_migration_target(self, host_id: str) -> None:
+        self._dashboard_go_vms()
+        self.status.showMessage(f"Select a VM and use Live Migration with target host {host_id}", 8000)
+
+    def _render_host_cards(self, hosts: list[dict[str, Any]]) -> None:
+        self._clear_remote_cards()
+        if not hosts:
+            self.remote_cards_layout.addWidget(
+                self._remote_message_panel(
+                    "No hosts registered yet",
+                    "Start a HyperGery Agent on another machine to register it with the Hub.",
+                ),
+                0,
+                0,
+            )
+            return
+        for index, host in enumerate(hosts):
+            card = self._host_card(host, index)
+            self._host_card_frames.append(card)
+            self.remote_cards_layout.addWidget(card, index // 2, index % 2)
+        self.remote_cards_layout.setRowStretch((len(hosts) - 1) // 2 + 1, 1)
+
+    def render_hub_offline(self, error: str) -> None:
+        self._clear_remote_cards()
+        self.remote_cards_layout.addWidget(
+            self._remote_message_panel(
+                "Hub not reachable",
+                "Start docker compose in docker/ or check HYPERGERY_HUB_URL.\n\n" + error,
+                action=("Open Settings", self.app_settings),
+            ),
+            0,
+            0,
+        )
+
+    def _queue_host_test(self, host_id: str) -> None:
+        def do_test() -> dict:
+            from ..registry import RegistryClient
+
+            return RegistryClient(self.registry_url()).create_command(host_id, "ping", {})
+
+        def on_done(result: dict) -> None:
+            self.remote_detail.setPlainText(
+                details_block(
+                    ("Hub", self.registry_url()),
+                    ("Host", host_id),
+                    ("Queued command", str(result.get("command_id", ""))),
+                    ("Status", str(result.get("status", ""))),
+                )
+            )
+            self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
+
+        self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
 
     def _stat_card(self, label: str) -> tuple[QFrame, QLabel, QLabel]:
         card = QFrame()
@@ -1017,7 +1217,7 @@ class MainWindow(QMainWindow):
         self.delete_lab_template_button.setEnabled(has_lab_tmpl)
         self.edit_lab_template_button.setEnabled(has_lab_tmpl)
         self.export_lab_template_button.setEnabled(has_lab_tmpl)
-        self.test_remote_button.setEnabled(bool(self.remote_host_table.selectionModel().selectedRows()))
+        self.test_remote_button.setEnabled(self.selected_remote_host_index is not None)
 
     def registry_url(self) -> str:
         return effective_value("hub_url")
@@ -1033,7 +1233,15 @@ class MainWindow(QMainWindow):
     def _load_remote_hosts(self) -> dict[str, Any]:
         from ..registry import RegistryClient
 
+        import time
+
         client = RegistryClient(self.registry_url())
+        try:
+            started = time.perf_counter()
+            client.health()
+            latency_ms: int | None = int((time.perf_counter() - started) * 1000)
+        except Exception:
+            latency_ms = None
         hosts = client.list_hosts()
         try:
             vm_count: int | None = len(client.list_vms())
@@ -1043,35 +1251,21 @@ class MainWindow(QMainWindow):
             migrations: list[dict[str, Any]] = client.list_migrations()
         except Exception:
             migrations = []
-        return {"hosts": hosts, "vm_count": vm_count, "migrations": migrations}
+        return {"hosts": hosts, "vm_count": vm_count, "migrations": migrations, "latency_ms": latency_ms}
 
     def render_remote_hosts(self, result: dict[str, Any] | list[dict[str, Any]]) -> None:
+        latency_ms: int | None = None
         if isinstance(result, dict):
             hosts = result.get("hosts", [])
             vm_count = result.get("vm_count")
+            latency_ms = result.get("latency_ms")
             self.update_dashboard_migration(result.get("migrations") or [])
         else:
             hosts = result
             vm_count = None
         self.remote_hosts = hosts
-        self.remote_host_table.setRowCount(0)
-        for host in hosts:
-            row = self.remote_host_table.rowCount()
-            self.remote_host_table.insertRow(row)
-            active = ", ".join(host.get("active_vms") or [])
-            ram = f"{host.get('ram_free_mib', 0)}/{host.get('ram_total_mib', 0)} MiB"
-            values = [
-                str(host.get("host_id", "")),
-                str(host.get("status", "offline")),
-                str(host.get("last_seen", "")),
-                ram,
-                f"{host.get('disk_free_mib', 0)} MiB",
-                "OK" if host.get("kvm_ok") else "Blocked",
-                "OK" if host.get("libvirt_ok") else "Blocked",
-                active or "none",
-            ]
-            for col, value in enumerate(values):
-                self._set_table_item(self.remote_host_table, row, col, value)
+        self._render_host_cards(hosts)
+        self.hub_latency_label.setText(f"{latency_ms} ms" if latency_ms is not None else "—")
         self.remote_status_label.setText(f"{len(hosts)} host(s)")
         if hosts:
             self.remote_detail.setPlainText(details_block(("Hub", self.registry_url()), ("Status", "reachable")))
@@ -1090,7 +1284,13 @@ class MainWindow(QMainWindow):
         if reachable:
             vm_count_label = str(vm_count) if vm_count is not None else "unavailable"
         self.hub_url_label.setText(self.registry_url())
-        self.hub_status_label.setText("online" if reachable else "offline")
+        self.hub_status_label.setText("ONLINE" if reachable else "OFFLINE")
+        self.hub_status_label.setObjectName("statusChipOk" if reachable else "statusChipBad")
+        self.hub_status_label.style().unpolish(self.hub_status_label)
+        self.hub_status_label.style().polish(self.hub_status_label)
+        self.hub_card.setObjectName("hubCard" if reachable else "hubCardOffline")
+        self.hub_card.style().unpolish(self.hub_card)
+        self.hub_card.style().polish(self.hub_card)
         self.hub_last_check_label.setText(now_iso())
         self.hub_hosts_online_label.setText(str(sum(1 for host in hosts if host.get("status") == "online")))
         self.hub_vm_count_label.setText(vm_count_label)
@@ -1113,34 +1313,15 @@ class MainWindow(QMainWindow):
         )
 
     def test_selected_remote_host(self) -> None:
-        indexes = self.remote_host_table.selectionModel().selectedRows()
-        if not indexes:
+        index = self.selected_remote_host_index
+        if index is None:
             self.show_error("Select a remote host first.")
             return
-        row = indexes[0].row()
-        host = self.remote_hosts[row] if 0 <= row < len(self.remote_hosts) else None
+        host = self.remote_hosts[index] if 0 <= index < len(self.remote_hosts) else None
         if not host:
             self.show_error("Selected host is no longer available.")
             return
-        host_id = str(host.get("host_id", ""))
-
-        def do_test() -> dict:
-            from ..registry import RegistryClient
-
-            return RegistryClient(self.registry_url()).create_command(host_id, "ping", {})
-
-        def on_done(result: dict) -> None:
-            self.remote_detail.setPlainText(
-                details_block(
-                    ("Hub", self.registry_url()),
-                    ("Host", host_id),
-                    ("Queued command", str(result.get("command_id", ""))),
-                    ("Status", str(result.get("status", ""))),
-                )
-            )
-            self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
-
-        self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
+        self._queue_host_test(str(host.get("host_id", "")))
 
     def refresh_all(self) -> None:
         self.status.showMessage("Loading host state...")
@@ -1197,8 +1378,9 @@ class MainWindow(QMainWindow):
             self.render_remote_hosts(overview["remote_hosts"])
         elif "remote_hosts" in errors:
             self.remote_hosts = []
-            self.remote_host_table.setRowCount(0)
+            self.render_hub_offline(str(errors["remote_hosts"]))
             self.remote_status_label.setText("Hub unavailable")
+            self.hub_latency_label.setText("—")
             self.render_hub_status([], reachable=False)
             self.remote_detail.setPlainText(
                 "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
