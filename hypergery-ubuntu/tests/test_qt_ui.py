@@ -652,7 +652,7 @@ class QtUiTests(unittest.TestCase):
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
 
-            # Remote inventory renders in a read-only dialog with the host's VMs.
+            # Remote inventory renders in a dialog with the host's VMs.
             window._show_remote_vms_dialog(
                 "gery-lenovo",
                 {
@@ -669,9 +669,11 @@ class QtUiTests(unittest.TestCase):
             self.assertEqual(table.rowCount(), 2)
             self.assertEqual(table.item(0, 0).text(), "ubuntu-migrated")
             self.assertEqual(table.item(0, 1).text(), "RUNNING")
+            self.assertEqual(table.item(0, 5).text(), "gery-lenovo")
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("Read-only inventory", texts)
-            self.assertIn("v0.8", texts)
+            self.assertIn("Remote power commands are executed by the target host agent", texts)
+            self.assertIn("Remote console arrives", texts)
+            self.assertIn("delete is intentionally not supported", texts)
             dialog.close()
 
             # Hub error surfaces instead of silently showing local VMs.
@@ -686,6 +688,130 @@ class QtUiTests(unittest.TestCase):
                 config.return_value = {"host_id": type("V", (), {"value": "local-host"})()}
                 window._view_host_vms("local-host")
                 go_vms.assert_called_once()
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_vm_power_buttons_follow_vm_state(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window._show_remote_vms_dialog(
+                "gery-lenovo",
+                {
+                    "vms": [
+                        {"vm_name": "ubuntu-migrated", "state": "running", "lab_id": "default-lab", "ram_mib": 4096, "vcpus": 2},
+                        {"vm_name": "ubuntu-hub-e2e", "state": "shut off", "lab_id": "default-lab", "ram_mib": 2048, "vcpus": 1},
+                    ]
+                },
+            )
+            dialog = window._remote_vms_dialog
+            # No selection: every power action stays disabled.
+            self.assertFalse(window.remote_vm_start_button.isEnabled())
+            self.assertFalse(window.remote_vm_shutdown_button.isEnabled())
+            self.assertFalse(window.remote_vm_force_off_button.isEnabled())
+            self.assertTrue(window.remote_vm_refresh_button.isEnabled())
+            # Force Off carries the danger style.
+            self.assertEqual(window.remote_vm_force_off_button.objectName(), "dangerButton")
+            # Running VM: Start disabled, Shutdown/Force Off enabled.
+            window.remote_vms_table.selectRow(0)
+            self.assertFalse(window.remote_vm_start_button.isEnabled())
+            self.assertTrue(window.remote_vm_shutdown_button.isEnabled())
+            self.assertTrue(window.remote_vm_force_off_button.isEnabled())
+            # Shut off VM: only Start enabled.
+            window.remote_vms_table.selectRow(1)
+            self.assertTrue(window.remote_vm_start_button.isEnabled())
+            self.assertFalse(window.remote_vm_shutdown_button.isEnabled())
+            self.assertFalse(window.remote_vm_force_off_button.isEnabled())
+            dialog.close()
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_vm_power_actions_queue_hub_commands(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QMessageBox
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window._show_remote_vms_dialog(
+                "gery-lenovo",
+                {
+                    "vms": [
+                        {"vm_name": "ubuntu-migrated", "state": "running", "lab_id": "default-lab", "ram_mib": 4096, "vcpus": 2},
+                        {"vm_name": "ubuntu-hub-e2e", "state": "shut off", "lab_id": "default-lab", "ram_mib": 2048, "vcpus": 1},
+                    ]
+                },
+            )
+            dialog = window._remote_vms_dialog
+
+            def run_sync(label, fn, *, on_success=None, refresh_after=True, busy=True):
+                result = fn()
+                if on_success:
+                    on_success(result)
+
+            with patch.object(window, "run_operation", side_effect=run_sync), \
+                 patch("hypergery_ubuntu.registry.RegistryClient") as client_cls:
+                client = client_cls.return_value
+                client.queue_vm_power_command.return_value = {"command_id": "cmd-power-1", "status": "pending"}
+
+                # Start on a shut off VM queues vm_start for the remote host.
+                window.remote_vms_table.selectRow(1)
+                window.remote_vm_start_button.click()
+                client.queue_vm_power_command.assert_called_once_with("gery-lenovo", "ubuntu-hub-e2e", "start")
+                self.assertIn("cmd-power-1", window.remote_power_status.text())
+                window._remote_power_poll_timer.stop()
+
+                # Shutdown on a running VM queues vm_shutdown.
+                client.queue_vm_power_command.reset_mock()
+                window.remote_vms_table.selectRow(0)
+                window.remote_vm_shutdown_button.click()
+                client.queue_vm_power_command.assert_called_once_with("gery-lenovo", "ubuntu-migrated", "shutdown")
+                window._remote_power_poll_timer.stop()
+
+                # Force Off asks for confirmation; declining queues nothing.
+                client.queue_vm_power_command.reset_mock()
+                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+                    window.remote_vm_force_off_button.click()
+                client.queue_vm_power_command.assert_not_called()
+                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                    window.remote_vm_force_off_button.click()
+                client.queue_vm_power_command.assert_called_once_with("gery-lenovo", "ubuntu-migrated", "force_off")
+                window._remote_power_poll_timer.stop()
+
+                # Command completion updates the status and refreshes inventory.
+                client.command.return_value = {
+                    "command_id": "cmd-power-1",
+                    "status": "done",
+                    "result": {"message": "force off executed on ubuntu-migrated (running -> shut off)."},
+                }
+                client.list_vms.return_value = [
+                    {"vm_name": "ubuntu-migrated", "state": "shut off", "lab_id": "default-lab", "ram_mib": 4096, "vcpus": 2},
+                ]
+                window._remote_power_command_id = "cmd-power-1"
+                window._poll_remote_power_command()
+                self.assertIn("done", window.remote_power_status.text())
+                client.list_vms.assert_called_once_with("gery-lenovo")
+                self.assertEqual(window.remote_vms_table.rowCount(), 1)
+                self.assertEqual(window.remote_vms_table.item(0, 1).text(), "SHUT OFF")
+                self.assertFalse(window._remote_power_poll_timer.isActive())
+
+                # Hub errors surface in the status label instead of crashing.
+                client.queue_vm_power_command.side_effect = Exception("hub offline")
+                window.remote_vms_table.selectRow(0)
+                window._queue_remote_power_action("start")
+                self.assertIn("hub offline", window.remote_power_status.text())
+
+            # No local backend power call ever happens for remote VMs.
+            backend_cls.return_value.start_vm.assert_not_called()
+            backend_cls.return_value.shutdown_vm.assert_not_called()
+            backend_cls.return_value.force_off_vm.assert_not_called()
+            dialog.close()
             window.close()
         self.assertIsNotNone(app)
 

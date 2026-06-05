@@ -745,19 +745,84 @@ class MainWindow(QMainWindow):
         title.setObjectName("pageTitle")
         layout.addWidget(title)
         note = QLabel(
-            "Read-only inventory reported by that host's agent. Manage these VMs from HyperGery on that "
-            "host; remote VM control arrives in v0.8. Use Live Migration to move VMs between hosts."
+            "Inventory reported by that host's agent. Remote power commands are executed by the target "
+            "host agent (App → Hub → Agent → libvirt). Remote console arrives in v0.8.x/v0.9; remote "
+            "delete is intentionally not supported. Reboot/Reset is not available yet (no safe backend)."
         )
         note.setObjectName("calloutInfo")
         note.setWordWrap(True)
         layout.addWidget(note)
-        table = QTableWidget(len(vms), 5)
+        table = QTableWidget(len(vms), 6)
         table.setObjectName("remoteVmsTable")
-        table.setHorizontalHeaderLabels(["Name", "State", "Lab", "RAM (MiB)", "vCPUs"])
+        table.setHorizontalHeaderLabels(["Name", "State", "Lab", "RAM (MiB)", "vCPUs", "Host"])
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(table, 1)
+        empty = QLabel("No VM inventory reported for this host yet (the agent reports it on each heartbeat).")
+        empty.setObjectName("mutedLabel")
+        empty.setWordWrap(True)
+        layout.addWidget(empty)
+
+        power_status = QLabel("Select a VM to enable remote power actions.")
+        power_status.setObjectName("mutedLabel")
+        power_status.setWordWrap(True)
+        layout.addWidget(power_status)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        start_button = QPushButton("Start")
+        shutdown_button = QPushButton("ACPI Shutdown")
+        force_off_button = QPushButton("Force Off")
+        force_off_button.setObjectName("dangerButton")
+        refresh_button = QPushButton("Refresh")
+        for button in (start_button, shutdown_button, force_off_button):
+            button.setEnabled(False)
+        actions.addWidget(start_button)
+        actions.addWidget(shutdown_button)
+        actions.addWidget(force_off_button)
+        actions.addWidget(refresh_button)
+        actions.addStretch()
+        close_button = QPushButton("Close")
+        actions.addWidget(close_button)
+        layout.addLayout(actions)
+
+        dialog.host_id = host_id
+        self._remote_vms_dialog = dialog
+        self.remote_vms_table = table
+        self.remote_power_status = power_status
+        self.remote_vm_start_button = start_button
+        self.remote_vm_shutdown_button = shutdown_button
+        self.remote_vm_force_off_button = force_off_button
+        self.remote_vm_refresh_button = refresh_button
+        self._remote_vms = []
+        self._remote_power_poll_timer = QTimer(dialog)
+        self._remote_power_poll_timer.setInterval(3000)
+        self._remote_power_poll_timer.timeout.connect(self._poll_remote_power_command)
+        self._remote_power_command_id = ""
+        self._remote_power_poll_running = False
+
+        table.itemSelectionChanged.connect(self._update_remote_power_buttons)
+        start_button.clicked.connect(lambda: self._queue_remote_power_action("start"))
+        shutdown_button.clicked.connect(lambda: self._queue_remote_power_action("shutdown"))
+        force_off_button.clicked.connect(lambda: self._queue_remote_power_action("force_off"))
+        refresh_button.clicked.connect(self._refresh_remote_vms)
+        close_button.clicked.connect(dialog.accept)
+        dialog.finished.connect(self._remote_power_poll_timer.stop)
+
+        self._populate_remote_vms_table(vms)
+        dialog.resize(720, 460)
+        dialog.show()
+
+    def _populate_remote_vms_table(self, vms: list[dict[str, Any]]) -> None:
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        if dialog is None:
+            return
+        table = self.remote_vms_table
+        self._remote_vms = list(vms)
+        host_id = str(getattr(dialog, "host_id", ""))
+        table.setRowCount(len(vms))
         for row, vm in enumerate(vms):
             state = str(vm.get("state") or "unknown")
             cells = (
@@ -766,24 +831,162 @@ class MainWindow(QMainWindow):
                 str(vm.get("lab_id") or ""),
                 str(vm.get("ram_mib") or ""),
                 str(vm.get("vcpus") or ""),
+                host_id,
             )
             for column, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if column == 1:
                     item.setForeground(QColor(STATE_COLORS.get(state.replace(" ", ""), "#94A3B8")))
                 table.setItem(row, column, item)
-        layout.addWidget(table, 1)
-        if not vms:
-            empty = QLabel("No VM inventory reported for this host yet (the agent reports it on each heartbeat).")
-            empty.setObjectName("mutedLabel")
-            empty.setWordWrap(True)
-            layout.addWidget(empty)
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(dialog.accept)
-        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
-        dialog.resize(640, 420)
-        dialog.show()
-        self._remote_vms_dialog = dialog
+        # The empty-state hint is the widget right below the table.
+        for label in dialog.findChildren(QLabel):
+            if label.text().startswith("No VM inventory reported"):
+                label.setVisible(not vms)
+        self._update_remote_power_buttons()
+
+    def _selected_remote_vm(self) -> dict[str, Any] | None:
+        table = getattr(self, "remote_vms_table", None)
+        if table is None:
+            return None
+        row = table.currentRow()
+        if row < 0 or row >= len(self._remote_vms):
+            return None
+        return self._remote_vms[row]
+
+    def _update_remote_power_buttons(self) -> None:
+        vm = self._selected_remote_vm()
+        if vm is None:
+            for button in (self.remote_vm_start_button, self.remote_vm_shutdown_button, self.remote_vm_force_off_button):
+                button.setEnabled(False)
+            return
+        state = str(vm.get("state") or "unknown").lower()
+        running_like = state in {"running", "paused"}
+        shut_off = state in {"shut off", "shutoff"}
+        self.remote_vm_start_button.setEnabled(shut_off)
+        self.remote_vm_shutdown_button.setEnabled(running_like)
+        # Force Off also covers stuck/unknown states; it always asks first.
+        self.remote_vm_force_off_button.setEnabled(running_like or state == "unknown")
+
+    def _queue_remote_power_action(self, action: str) -> None:
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        vm = self._selected_remote_vm()
+        if dialog is None or vm is None:
+            return
+        host_id = str(getattr(dialog, "host_id", ""))
+        vm_name = str(vm.get("vm_name") or vm.get("name") or "")
+        if action == "force_off":
+            answer = QMessageBox.question(
+                dialog,
+                "Force Off VM",
+                f"Force Off may corrupt guest data on {vm_name}. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        url = self.registry_url()
+
+        def queue_command() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return RegistryClient(url).queue_vm_power_command(host_id, vm_name, action)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def on_queued(result: dict[str, Any]) -> None:
+            error = str((result or {}).get("error") or "")
+            if error:
+                self.remote_power_status.setText(f"Cannot queue {action} for {vm_name}: {error}")
+                return
+            command_id = str((result or {}).get("command_id") or "")
+            self._remote_power_command_id = command_id
+            self.remote_power_status.setText(
+                f"Command queued: {command_id} ({action} {vm_name}). Waiting for the target host agent..."
+            )
+            self.log_activity(f"Queued remote {action} for {vm_name} on {host_id}: {command_id}")
+            self._remote_power_poll_timer.start()
+
+        self.run_operation(
+            f"Queueing remote {action} for {vm_name} on {host_id}",
+            queue_command,
+            on_success=on_queued,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def _poll_remote_power_command(self) -> None:
+        command_id = self._remote_power_command_id
+        if not command_id or self._remote_power_poll_running:
+            return
+        self._remote_power_poll_running = True
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return RegistryClient(url).command(command_id)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def on_status(result: dict[str, Any]) -> None:
+            self._remote_power_poll_running = False
+            error = str((result or {}).get("error") or "")
+            if error:
+                self.remote_power_status.setText(f"Cannot read command {command_id}: {error}")
+                return
+            status = str((result or {}).get("status") or "")
+            if status not in {"done", "failed"}:
+                self.remote_power_status.setText(f"Command {command_id}: {status or 'pending'}...")
+                return
+            self._remote_power_poll_timer.stop()
+            self._remote_power_command_id = ""
+            payload = (result or {}).get("result") or {}
+            message = str(payload.get("message") or payload.get("error") or "")
+            if status == "done":
+                self.remote_power_status.setText(f"Command {command_id} done. {message}".strip())
+            else:
+                self.remote_power_status.setText(f"Command {command_id} FAILED. {message}".strip())
+            self._refresh_remote_vms()
+
+        self.run_operation(
+            f"Checking remote command {command_id}",
+            fetch,
+            on_success=on_status,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def _refresh_remote_vms(self) -> None:
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        if dialog is None:
+            return
+        host_id = str(getattr(dialog, "host_id", ""))
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return {"vms": RegistryClient(url).list_vms(host_id)}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def on_loaded(result: dict[str, Any]) -> None:
+            error = str((result or {}).get("error") or "")
+            if error:
+                self.remote_power_status.setText(f"Cannot refresh inventory for {host_id}: {error}")
+                return
+            self._populate_remote_vms_table(list((result or {}).get("vms") or []))
+
+        self.run_operation(
+            f"Refreshing VM inventory for {host_id}",
+            fetch,
+            on_success=on_loaded,
+            refresh_after=False,
+            busy=False,
+        )
 
     def _render_host_cards(self, hosts: list[dict[str, Any]]) -> None:
         self._clear_remote_cards()
