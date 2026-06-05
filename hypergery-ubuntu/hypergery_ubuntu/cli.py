@@ -666,6 +666,9 @@ def main(argv: list[str] | None = None) -> int:
     migrate_remote.add_argument("--no-snapshots", action="store_true")
     migrate_remote.add_argument("--start-after-import", action="store_true")
     migrate_remote.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
+    from .v1.cli_v1 import add_v1_parser
+
+    add_v1_parser(sub)
     args = parser.parse_args(argv)
 
     try:
@@ -681,6 +684,10 @@ def main(argv: list[str] | None = None) -> int:
             return agent_action(args)
         if args.command == "host":
             return host_action(args)
+        if args.command == "v1":
+            from .v1.cli_v1 import v1_action
+
+            return v1_action(args)
         if args.command == "doctor":
             return doctor_action()
         backend = HyperGeryBackend()
