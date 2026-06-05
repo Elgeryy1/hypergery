@@ -2,9 +2,16 @@
 
 ## v0.8.0 - Unreleased / Planned
 
-Initial plan (subject to change, nothing implemented yet):
+### Added — Remote VM Power Control (Fase 1, implemented)
 
-- Remote VM power control from Remote Hosts (new allowlisted agent commands: start, ACPI shutdown, force off).
+- New allowlisted Hub→Agent commands: `vm_start`, `vm_shutdown` (ACPI), `vm_force_off`. Everything flows App → Hub → target Agent → libvirt; the app never touches a remote libvirt directly.
+- Agent validates each command against its own allowlist, requires a non-empty `vm_name`, checks the VM exists locally and is HyperGery-managed, checks the current state allows the action, and returns a structured result (`vm_name`, `action`, `previous_state`, `new_state`, `message`, `host_id`). Failures come back as `failed` with a clear error; the agent re-reports its VM inventory to the Hub right after each action.
+- `RegistryClient` helpers: `queue_vm_power_command(host_id, vm_name, action)` plus `start_remote_vm` / `shutdown_remote_vm` / `force_off_remote_vm`, reusing the existing `/commands` queue (no parallel protocol).
+- Remote Hosts → View VMs now shows power controls: Start / ACPI Shutdown / Force Off (danger style, always asks for confirmation) / Refresh. Buttons enable/disable based on the selected VM's state; the dialog shows the queued `command_id`, polls its status, and refreshes the inventory when the command finishes.
+- Security: remote delete, undefine, delete-disks, XML edits, and shell commands are intentionally NOT remote-controllable (rejected by both the Hub and Agent allowlists). `vm_reboot`/`vm_reset` is not included because the backend has no safe reboot method yet.
+
+### Planned (subject to change, not implemented yet)
+
 - Lab-specific visual workspace.
 - Advanced Settings sections: Host Agent options, Console preferences, Appearance accent/density.
 - Topology view improvements.

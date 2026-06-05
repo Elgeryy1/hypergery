@@ -93,6 +93,10 @@ v0.7.0 adds a second transfer mode on top of NAS Clone Migration. With `--transf
 
 The registry command queue is not a shell execution mechanism. Supported command types are explicit and limited to safe operations such as `ping`, `preflight`, `list_vms`, `receive_vm_package`, `import_vm_package`, and `migration_status`. Package validation/import commands only accept package directories inside the agent's configured `nas_staging_path` or its `migrations/` child.
 
+## Remote VM Power Control (v0.8)
+
+v0.8 Fase 1 extends the same command queue with three power commands: `vm_start`, `vm_shutdown` (ACPI), and `vm_force_off`. The flow is App → Hub `/commands` → target Agent → `HyperGeryBackend` (`start_vm` / `shutdown_vm` / `force_off_vm`) → libvirt; the app never talks to a remote libvirt directly. The allowlist is enforced twice — by the Hub when queueing and by the Agent before executing — so a compromised Hub cannot make agents run arbitrary commands. The Agent verifies the VM exists locally and is HyperGery-managed (`get_vm`), checks the current state allows the action, executes, records `previous_state`/`new_state` in the structured command result, and re-reports its inventory to the Hub. Remote delete, undefine, disk deletion, XML edits, console, and reboot/reset (no safe backend method yet) are intentionally excluded.
+
 The first migration implementation lives in `hypergery_ubuntu.migration` and is intentionally offline-first:
 
 - `collect_vm_assets()` parses libvirt domain XML and records disk, ISO, and snapshot-related file assets.

@@ -321,7 +321,7 @@ The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime fo
 - v0.5.0 — Lab Topology view, planned VM editor, ISO reuse, resource overview, CLI update/instantiate ✓
 - v0.6.0 — NAS Live Migration: registry, agents, host discovery, NAS staging, migration package export/import, UI action, CLI helpers ✓
 - v0.7.0 — Visual Refresh & UX Stabilization: PySide6/QSS UI redesign, Hub on the NAS, Hub Transfer migrations, migrations history, agent user service ✓
-- v0.8.0 — Lab visual workspace, extra Settings sections (agent options, console preferences, appearance), further UX
+- v0.8.0 — Remote VM power control via Hub→Agent (in development), Lab visual workspace, extra Settings sections (agent options, console preferences, appearance), further UX
 - v1.0.0 — stable classroom-ready release
 
 ## License

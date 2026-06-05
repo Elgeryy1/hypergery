@@ -368,3 +368,30 @@ The **Migrations** section reads history from the Hub. If it shows
 "Hub not reachable", check the Hub URL chip in the top bar and
 `curl http://192.168.1.150:8765/migrations`. History is stored in the Hub
 SQLite DB; the UI never deletes records or packages.
+
+## Remote Power Command Stuck in "pending"
+
+A remote Start/Shutdown/Force Off (Remote Hosts → View VMs) is queued in the
+Hub and executed by the **target host's agent**. If the dialog keeps showing
+`pending`, the target agent is not picking up commands: check that the agent
+is running on the target host (`systemctl --user status hypergery-agent` or
+the agent log) and that the host card shows ONLINE. The command stays queued
+and will run when the agent comes back; queue it again only if you replaced
+the agent config.
+
+## Remote Power Command Fails
+
+The dialog shows the agent's error verbatim. Common cases:
+
+- `VM <name> is not available on this host` — the VM was renamed/removed or
+  is not HyperGery-managed; hit Refresh to reload the inventory.
+- `Cannot start/shutdown ... VM state is '<state>'` — the inventory was stale
+  and the VM changed state; Refresh and retry from the new state.
+- `Backend failed to ...` — libvirt error on the target host; inspect
+  `journalctl` / `virsh` there.
+
+Remote Reboot/Reset, delete, undefine, and console are intentionally not
+available remotely in v0.8 Fase 1. ACPI Shutdown needs guest cooperation, so
+the VM may legitimately still be `running` right after the command reports
+done; the inventory refresh will show the final state once the guest powers
+off (use Force Off only as a last resort — it can corrupt guest data).

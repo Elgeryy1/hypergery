@@ -51,6 +51,29 @@ Package staging (v0.7, Hub Transfer):
 
 All endpoints return JSON except package file downloads (`application/octet-stream`). Unsupported commands and invalid payloads return JSON errors. Package paths are validated against directory traversal.
 
+### Command allowlist
+
+`POST /commands` only accepts an explicit allowlist of command types; anything
+else is rejected by the Hub **and** re-validated by the target agent:
+
+- `ping`, `preflight`, `list_vms` — diagnostics and inventory.
+- `receive_vm_package`, `import_vm_package`, `migration_status` — migrations.
+- `vm_start`, `vm_shutdown`, `vm_force_off` — remote VM power control (v0.8).
+
+Remote power commands require `payload.vm_name` and flow App → Hub → target
+Agent → libvirt; the agent checks that the VM exists locally, is
+HyperGery-managed, and that its current state allows the action, then returns
+a structured result (`previous_state`, `new_state`, `message`) recorded on the
+command. The agent re-reports its inventory right after acting so the UI sees
+the new state quickly.
+
+Intentionally **not** remote-controllable: VM delete, undefine, disk deletion,
+XML edits, console access, and arbitrary shell commands. `vm_reboot`/`vm_reset`
+is not offered yet (no safe backend method). Limitations: the target agent must
+be online, libvirt must be healthy on the target host, actions depend on the
+VM's current state, and Force Off can corrupt guest data (the UI always asks
+for confirmation).
+
 ## Data Model
 
 The Hub stores metadata and state in SQLite. The DB must live in the container-local persistent volume, not directly on a shared SMB/NFS path with multiple writers.
