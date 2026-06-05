@@ -629,12 +629,79 @@ class QtUiTests(unittest.TestCase):
             texts = [label.text() for label in page.findChildren(QLabel)]
             self.assertIn("Migrations", texts)
             self.assertIn("NAS package history and migration status", texts)
-            self.assertTrue(any("v0.7.x" in text for text in texts))
-            self.assertIn("Open Live Migration", texts)
+            self.assertTrue(any("read-only" in text for text in texts))
+            # History table and actions exist; copy starts disabled.
+            self.assertEqual(window.migrations_table.columnCount(), 7)
+            self.assertTrue(window.migrations_refresh_button.isEnabled())
+            self.assertFalse(window.copy_migration_id_button.isEnabled())
+            self.assertFalse(window.copy_migration_summary_button.isEnabled())
             # Quick action without a selected VM navigates instead of crashing.
             window.selected_vm = None
             window._open_live_migration_from_page()
             self.assertEqual(window.sidebar_nav.currentItem().text(), "Virtual Machines")
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_migrations_history_renders_records_and_copies(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.render_migrations(
+                {
+                    "migrations": [
+                        {
+                            "migration_id": "mig-done-1",
+                            "source_vm_name": "ubuntu",
+                            "target_vm_name": "ubuntu-migrated",
+                            "source_host_id": "pc-1",
+                            "target_host_id": "pc-2",
+                            "strategy": "hub_transfer",
+                            "status": "done",
+                            "package_path": "hub://mig-done-1",
+                            "updated_at": "2026-06-05T18:49:00+00:00",
+                            "errors": [],
+                        },
+                        {
+                            "migration_id": "mig-fail-2",
+                            "source_vm_name": "ubuntu",
+                            "target_vm_name": "x",
+                            "source_host_id": "pc-1",
+                            "target_host_id": "pc-2",
+                            "strategy": "nas_clone",
+                            "status": "failed",
+                            "errors": ["staging path rejected"],
+                        },
+                    ]
+                }
+            )
+            self.assertEqual(window.migrations_table.rowCount(), 2)
+            self.assertEqual(window.migrations_table.item(0, 0).text(), "mig-done-1")
+            self.assertEqual(window.migrations_table.item(0, 5).text(), "DONE")
+            self.assertEqual(window.migrations_table.item(1, 4).text(), "nas_clone")
+            self.assertIn("2 migration(s)", window.migrations_status_label.text())
+            self.assertIn("1 done", window.migrations_status_label.text())
+            self.assertIn("1 failed", window.migrations_status_label.text())
+
+            # Selecting a row enables copy actions and copies real data.
+            window.migrations_table.selectRow(0)
+            self.assertTrue(window.copy_migration_id_button.isEnabled())
+            window.copy_selected_migration_id()
+            self.assertEqual(QApplication.clipboard().text(), "mig-done-1")
+            window.migrations_table.selectRow(1)
+            window.copy_selected_migration_summary()
+            summary = QApplication.clipboard().text()
+            self.assertIn("mig-fail-2", summary)
+            self.assertIn("staging path rejected", summary)
+
+            # Hub error renders inline without touching history records.
+            window.render_migrations({"error": "connection refused"})
+            self.assertEqual(window.migrations_table.rowCount(), 0)
+            self.assertIn("Hub not reachable", window.migrations_status_label.text())
+            self.assertFalse(window.copy_migration_id_button.isEnabled())
             window.close()
         self.assertIsNotNone(app)
 

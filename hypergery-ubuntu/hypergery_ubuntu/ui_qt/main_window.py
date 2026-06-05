@@ -176,6 +176,8 @@ class MainWindow(QMainWindow):
             "Diagnostics": self.diagnostics_page_index,
         }
         self.main_tabs.setCurrentIndex(page_map[section])
+        if section == "Migrations" and not getattr(self, "_migrations_loaded", False):
+            self.refresh_migrations()
         self.right_panel.setVisible(section in {"Virtual Machines", "Labs"})
         self.labs_mode_banner.setVisible(section == "Labs")
         self.vm_page_title.setText("Labs" if section == "Labs" else "Virtual Machines")
@@ -1146,35 +1148,164 @@ class MainWindow(QMainWindow):
         vm_name = str(last.get("vm_name") or last.get("source_vm_name") or "?")
         self.dash_migration_label.setText(f"{migration_id}\n{vm_name} · status: {status}")
 
+    MIGRATIONS_TABLE_COLUMNS = ("Migration ID", "Source VM", "Target VM", "Source → Target", "Strategy", "Status", "Updated")
+
     def _build_migrations_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(24, 22, 24, 26)
         layout.setSpacing(12)
+        header = QHBoxLayout()
+        title_block = QVBoxLayout()
+        title_block.setSpacing(2)
         title = QLabel("Migrations")
         title.setObjectName("pageTitle")
         subtitle = QLabel("NAS package history and migration status")
         subtitle.setObjectName("mutedLabel")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
-        callout = QLabel(
-            "Detailed history arrives in v0.7.x. Meanwhile, the last migration is shown on the Dashboard and you can "
-            "poll any migration with `migrate status --migration-id <id>`."
+        title_block.addWidget(title)
+        title_block.addWidget(subtitle)
+        header.addLayout(title_block)
+        header.addStretch()
+        self.migrations_refresh_button = QPushButton("Refresh")
+        self.migrations_refresh_button.clicked.connect(self.refresh_migrations)
+        open_migration = QPushButton("Open Live Migration")
+        open_migration.setObjectName("primaryButton")
+        open_migration.clicked.connect(self._open_live_migration_from_page)
+        header.addWidget(self.migrations_refresh_button)
+        header.addWidget(open_migration)
+        layout.addLayout(header)
+
+        self.migrations_status_label = QLabel("History not loaded yet — press Refresh or open this section again.")
+        self.migrations_status_label.setObjectName("mutedLabel")
+        self.migrations_status_label.setWordWrap(True)
+        layout.addWidget(self.migrations_status_label)
+
+        self.migrations_table = QTableWidget(0, len(self.MIGRATIONS_TABLE_COLUMNS))
+        self.migrations_table.setHorizontalHeaderLabels(list(self.MIGRATIONS_TABLE_COLUMNS))
+        self.migrations_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.migrations_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.migrations_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.migrations_table.verticalHeader().setVisible(False)
+        self.migrations_table.horizontalHeader().setStretchLastSection(True)
+        self.migrations_table.itemSelectionChanged.connect(self._update_migration_copy_buttons)
+        layout.addWidget(self.migrations_table, 1)
+
+        actions = QHBoxLayout()
+        self.copy_migration_id_button = QPushButton("Copy Migration ID")
+        self.copy_migration_id_button.setEnabled(False)
+        self.copy_migration_id_button.clicked.connect(self.copy_selected_migration_id)
+        self.copy_migration_summary_button = QPushButton("Copy Summary")
+        self.copy_migration_summary_button.setEnabled(False)
+        self.copy_migration_summary_button.clicked.connect(self.copy_selected_migration_summary)
+        actions.addWidget(self.copy_migration_id_button)
+        actions.addWidget(self.copy_migration_summary_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+
+        safety = QLabel(
+            "History is read-only: migration records and packages are never deleted from this page. "
+            "Source VMs are never touched by migrations."
         )
-        callout.setObjectName("calloutInfo")
-        callout.setWordWrap(True)
-        layout.addWidget(callout)
-        layout.addWidget(
-            self._quick_card(
-                "Open Live Migration",
-                "Select a VM and start a NAS Clone Migration — the source VM stays untouched.",
-                self._open_live_migration_from_page,
-                primary=True,
-            ),
-            alignment=Qt.AlignmentFlag.AlignLeft,
-        )
-        layout.addStretch()
+        safety.setObjectName("calloutInfo")
+        safety.setWordWrap(True)
+        layout.addWidget(safety)
+        self.migrations_history: list[dict[str, Any]] = []
+        self._migrations_loaded = False
         return page
+
+    def refresh_migrations(self) -> None:
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return {"migrations": RegistryClient(url).list_migrations()}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            "Loading migration history",
+            fetch,
+            on_success=self.render_migrations,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def render_migrations(self, result: dict[str, Any]) -> None:
+        self._migrations_loaded = True
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.migrations_table.setRowCount(0)
+            self.migrations_history = []
+            self.migrations_status_label.setText(f"Hub not reachable: {error}")
+            self._update_migration_copy_buttons()
+            return
+        migrations = list((result or {}).get("migrations") or [])
+        self.migrations_history = migrations
+        self.migrations_table.setRowCount(len(migrations))
+        for row, record in enumerate(migrations):
+            status = str(record.get("status") or "unknown")
+            cells = (
+                str(record.get("migration_id") or ""),
+                str(record.get("source_vm_name") or ""),
+                str(record.get("target_vm_name") or ""),
+                f"{record.get('source_host_id') or '?'} → {record.get('target_host_id') or '?'}",
+                str(record.get("strategy") or ""),
+                status.upper(),
+                str(record.get("updated_at") or ""),
+            )
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if column == 5:
+                    status_colors = {"done": "#22C55E", "failed": "#EF4444"}
+                    item.setForeground(QColor(status_colors.get(status, "#F59E0B")))
+                self.migrations_table.setItem(row, column, item)
+        if migrations:
+            done = sum(1 for record in migrations if record.get("status") == "done")
+            failed = sum(1 for record in migrations if record.get("status") == "failed")
+            self.migrations_status_label.setText(
+                f"{len(migrations)} migration(s) on the Hub · {done} done · {failed} failed"
+            )
+        else:
+            self.migrations_status_label.setText("No migrations recorded on the Hub yet.")
+        self._update_migration_copy_buttons()
+
+    def _selected_migration(self) -> dict[str, Any] | None:
+        row = self.migrations_table.currentRow()
+        if row < 0 or row >= len(self.migrations_history):
+            return None
+        return self.migrations_history[row]
+
+    def _update_migration_copy_buttons(self) -> None:
+        enabled = self._selected_migration() is not None
+        self.copy_migration_id_button.setEnabled(enabled)
+        self.copy_migration_summary_button.setEnabled(enabled)
+
+    def copy_selected_migration_id(self) -> None:
+        record = self._selected_migration()
+        if not record:
+            return
+        QApplication.clipboard().setText(str(record.get("migration_id") or ""))
+        self.status.showMessage("Migration ID copied", 4000)
+
+    def copy_selected_migration_summary(self) -> None:
+        record = self._selected_migration()
+        if not record:
+            return
+        errors = record.get("errors") or []
+        lines = [
+            f"migration_id: {record.get('migration_id', '')}",
+            f"status: {record.get('status', '')}",
+            f"strategy: {record.get('strategy', '')}",
+            f"source: {record.get('source_host_id', '')} / {record.get('source_vm_name', '')}",
+            f"target: {record.get('target_host_id', '')} / {record.get('target_vm_name', '')}",
+            f"package: {record.get('package_path', '')}",
+            f"updated: {record.get('updated_at', '')}",
+            f"errors: {'; '.join(str(item) for item in errors) if errors else 'none'}",
+        ]
+        QApplication.clipboard().setText("\n".join(lines))
+        self.status.showMessage("Migration summary copied", 4000)
 
     def _open_live_migration_from_page(self) -> None:
         if self.selected_vm is not None:
