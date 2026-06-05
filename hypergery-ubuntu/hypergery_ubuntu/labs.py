@@ -16,6 +16,9 @@ RESERVED_LAB_IDS = {"default", "root", "system", "libvirt", "qemu", "admin"}
 # descriptive metadata; "" means no role assigned.
 LAB_VM_ROLES = ("router", "firewall", "dns", "ad", "server", "db", "web", "client")
 
+# v0.9 lab subjects (course/topic the lab belongs to).
+LAB_SUBJECTS = ("ASR", "PAR", "ISO", "SAD", "DB", "WEB", "CUSTOM")
+
 
 def normalize_lab_id(name: str) -> str:
     value = name.strip().lower()
@@ -127,6 +130,14 @@ class LabStore:
             "notes": "",
             "disks": [],
             "iso_references": [],
+            # v0.9 workspace metadata. Old manifests without these fields
+            # keep working; migrate_manifest fills safe defaults.
+            "subject": "CUSTOM",
+            "owner": "",
+            "tags": [],
+            "favorite": False,
+            "archived": False,
+            "last_started_at": "",
         }
 
     def migrate_manifest(self, manifest: dict) -> dict:
@@ -159,6 +170,13 @@ class LabStore:
             for vm_name, role in (roles.items() if isinstance(roles, dict) else ())
             if str(role) in LAB_VM_ROLES
         }
+        subject = str(migrated.get("subject") or "CUSTOM").upper()
+        migrated["subject"] = subject if subject in LAB_SUBJECTS else "CUSTOM"
+        migrated["owner"] = str(migrated.get("owner") or "")
+        migrated["tags"] = sorted({str(tag) for tag in migrated.get("tags", []) if str(tag).strip()})
+        migrated["favorite"] = bool(migrated.get("favorite"))
+        migrated["archived"] = bool(migrated.get("archived"))
+        migrated["last_started_at"] = str(migrated.get("last_started_at") or "")
         return migrated
 
     def read_manifest(self, path: Path) -> dict:
@@ -214,6 +232,33 @@ class LabStore:
             roles.pop(clean_name, None)
         manifest["vm_roles"] = roles
         manifest["updated_at"] = now_iso()
+        self.write_lab(manifest)
+        return self.get_lab(lab_id)
+
+    WORKSPACE_FIELDS = {"subject", "owner", "tags", "favorite", "archived", "description", "notes"}
+
+    def update_workspace_fields(self, lab_id: str, **fields) -> dict:
+        """Update v0.9 workspace metadata (subject, owner, tags, favorite,
+        archived, description, notes). Values are sanitized by migration."""
+        unknown = set(fields) - self.WORKSPACE_FIELDS
+        if unknown:
+            raise HyperGeryError(f"Unknown lab workspace fields: {', '.join(sorted(unknown))}")
+        if "subject" in fields:
+            subject = str(fields["subject"] or "").upper()
+            if subject not in LAB_SUBJECTS:
+                raise HyperGeryError(f"Unknown lab subject: {fields['subject']}. Allowed: {', '.join(LAB_SUBJECTS)}")
+            fields["subject"] = subject
+        manifest = self.get_lab(lab_id)
+        manifest.update(fields)
+        manifest["updated_at"] = now_iso()
+        self.write_lab(manifest)
+        return self.get_lab(lab_id)
+
+    def touch_started(self, lab_id: str) -> dict:
+        """Record that the lab was just started (Labs workspace actions)."""
+        manifest = self.get_lab(lab_id)
+        manifest["last_started_at"] = now_iso()
+        manifest["updated_at"] = manifest["last_started_at"]
         self.write_lab(manifest)
         return self.get_lab(lab_id)
 
