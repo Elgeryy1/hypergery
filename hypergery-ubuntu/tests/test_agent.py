@@ -233,6 +233,58 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(result["target_vm_name"], "hg-target")
             self.assertEqual([item["status"] for item in client.migration_updates], ["importing", "defining_vm", "done"])
 
+    def test_agent_import_vm_package_hub_transfer_downloads_and_deletes_hub_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_backend = MigrationFakeBackend(root / "source")
+            export = export_vm_package(source_backend, "hg-source", root / "staging", target_vm_name="hg-target", migration_id="mig-hub-1")
+            package_dir = Path(export["package_dir"])
+            target_backend = MigrationFakeBackend(root / "target")
+            client = FakeClient()
+            deleted: list[str] = []
+
+            def download_package(migration_id, destination_dir):
+                self.assertEqual(migration_id, "mig-hub-1")
+                destination = Path(destination_dir)
+                for item in package_dir.rglob("*"):
+                    if item.is_file():
+                        target = destination / item.relative_to(package_dir)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(item.read_bytes())
+                return destination
+
+            client.download_package = download_package
+            client.delete_package = lambda migration_id: deleted.append(migration_id) or {"deleted": True}
+            agent = HyperGeryAgent(
+                AgentConfig(host_id="target", nas_staging_path=str(root / "unused-nas")),
+                backend=target_backend,
+                client=client,
+            )
+
+            status, result = agent.execute_command(
+                {
+                    "command_type": "import_vm_package",
+                    "payload": {
+                        "migration_id": "mig-hub-1",
+                        "source_host_id": "source",
+                        "source_vm_name": "hg-source",
+                        "package_dir": "hub://mig-hub-1",
+                        "transfer": "hub",
+                        "target_vm_name": "hg-target",
+                    },
+                }
+            )
+            self.assertEqual(status, "done")
+            self.assertEqual(result["target_vm_name"], "hg-target")
+            self.assertTrue(result["hub_package_deleted"])
+            self.assertEqual(deleted, ["mig-hub-1"])
+            # Local downloaded copy is cleaned up after import.
+            incoming = target_backend.data_dir / "hub-transfer" / "incoming" / "mig-hub-1"
+            self.assertFalse(incoming.exists())
+            # Hub strategy is reported in migration updates.
+            self.assertEqual({item["strategy"] for item in client.migration_updates}, {"hub_transfer"})
+            self.assertEqual([item["status"] for item in client.migration_updates], ["importing", "defining_vm", "done"])
+
 
 class AgentCliTests(unittest.TestCase):
     def test_agent_config_show_does_not_require_backend(self):

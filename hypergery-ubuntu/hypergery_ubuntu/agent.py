@@ -244,61 +244,68 @@ class HyperGeryAgent:
                 "validation": validation,
             }
         if command_type == "import_vm_package":
-            from .migration import import_vm_package
+            from .migration import HUB_PACKAGE_PREFIX, hub_transfer_staging_dir, import_vm_package
 
-            package = self.resolve_staged_package(str(payload.get("package_dir", "")))
             migration_id = str(payload.get("migration_id") or "")
-            if migration_id:
+            package_dir = str(payload.get("package_dir", ""))
+            hub_transfer = str(payload.get("transfer") or "") == "hub" or package_dir.startswith(HUB_PACKAGE_PREFIX)
+            strategy = "hub_transfer" if hub_transfer else "nas_clone"
+            downloaded_dir: Path | None = None
+            if hub_transfer:
+                if not migration_id:
+                    migration_id_for_download = package_dir.removeprefix(HUB_PACKAGE_PREFIX)
+                else:
+                    migration_id_for_download = migration_id
+                if not migration_id_for_download:
+                    raise HyperGeryError("Hub transfer import requires a migration id.")
+                downloaded_dir = hub_transfer_staging_dir(self.backend) / "incoming" / migration_id_for_download
+                self.client.download_package(migration_id_for_download, downloaded_dir)
+                package = downloaded_dir
+            else:
+                package = self.resolve_staged_package(package_dir)
+
+            def report(status: str, target_vm_name: str, result: dict[str, Any]) -> None:
+                if not migration_id:
+                    return
                 self.client.update_migration_status(
                     migration_id,
                     {
                         "source_host_id": str(payload.get("source_host_id") or ""),
                         "target_host_id": self.config.host_id,
                         "source_vm_name": str(payload.get("source_vm_name") or ""),
-                        "target_vm_name": str(payload.get("target_vm_name") or ""),
-                        "strategy": "nas_clone",
-                        "status": "importing",
-                        "package_path": str(package),
-                        "result": {"package_dir": str(package), "agent_host_id": self.config.host_id},
-                    },
-                )
-            result = import_vm_package(
-                self.backend,
-                package,
-                target_vm_name=str(payload.get("target_vm_name", "")),
-                target_lab_id=str(payload.get("target_lab_id", "")),
-            )
-            if migration_id:
-                self.client.update_migration_status(
-                    migration_id,
-                    {
-                        "source_host_id": str(payload.get("source_host_id") or ""),
-                        "target_host_id": self.config.host_id,
-                        "source_vm_name": str(payload.get("source_vm_name") or ""),
-                        "target_vm_name": result["target_vm_name"],
-                        "strategy": "nas_clone",
-                        "status": "defining_vm",
-                        "package_path": str(package),
+                        "target_vm_name": target_vm_name,
+                        "strategy": strategy,
+                        "status": status,
+                        "package_path": str(package) if not hub_transfer else package_dir,
                         "result": result,
                     },
                 )
-            if payload.get("start_after_import"):
-                self.backend.start_vm(result["target_vm_name"])
-                result["started"] = True
-            if migration_id:
-                self.client.update_migration_status(
-                    migration_id,
-                    {
-                        "source_host_id": str(payload.get("source_host_id") or ""),
-                        "target_host_id": self.config.host_id,
-                        "source_vm_name": str(payload.get("source_vm_name") or ""),
-                        "target_vm_name": result["target_vm_name"],
-                        "strategy": "nas_clone",
-                        "status": "done",
-                        "package_path": str(package),
-                        "result": result,
-                    },
+
+            try:
+                report("importing", str(payload.get("target_vm_name") or ""), {"package_dir": str(package), "agent_host_id": self.config.host_id})
+                result = import_vm_package(
+                    self.backend,
+                    package,
+                    target_vm_name=str(payload.get("target_vm_name", "")),
+                    target_lab_id=str(payload.get("target_lab_id", "")),
                 )
+                report("defining_vm", result["target_vm_name"], result)
+                if payload.get("start_after_import"):
+                    self.backend.start_vm(result["target_vm_name"])
+                    result["started"] = True
+            finally:
+                # Hub transfer cleanup only removes the temporary downloaded
+                # copy; the imported VM disks and the source VM stay untouched.
+                if downloaded_dir is not None:
+                    shutil.rmtree(downloaded_dir, ignore_errors=True)
+            if hub_transfer:
+                try:
+                    self.client.delete_package(migration_id_for_download)
+                    result["hub_package_deleted"] = True
+                except Exception as exc:
+                    result["hub_package_deleted"] = False
+                    result["hub_package_delete_error"] = str(exc)
+            report("done", result["target_vm_name"], result)
             return "done", result
         if command_type == "migration_status":
             from .migration import list_migration_packages, validate_vm_package
@@ -342,7 +349,7 @@ class HyperGeryAgent:
                                 "target_host_id": self.config.host_id,
                                 "source_vm_name": str((command.get("payload") or {}).get("source_vm_name") or ""),
                                 "target_vm_name": str((command.get("payload") or {}).get("target_vm_name") or ""),
-                                "strategy": "nas_clone",
+                                "strategy": "hub_transfer" if str((command.get("payload") or {}).get("transfer") or "") == "hub" else "nas_clone",
                                 "status": "failed",
                                 "package_path": str((command.get("payload") or {}).get("package_dir") or ""),
                                 "result": result,

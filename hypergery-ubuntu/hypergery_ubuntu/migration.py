@@ -16,6 +16,9 @@ from .templates import TemplateStore
 
 MIGRATION_SCHEMA_VERSION = 1
 PACKAGE_ROOT_NAME = "migrations"
+HUB_PACKAGE_PREFIX = "hub://"
+TRANSFER_NAS = "nas"
+TRANSFER_HUB = "hub"
 REMOTE_MIGRATION_STEPS = [
     "preflight",
     "packaging",
@@ -26,6 +29,13 @@ REMOTE_MIGRATION_STEPS = [
     "done",
     "failed",
 ]
+
+
+def hub_transfer_staging_dir(backend: object) -> Path:
+    """Local scratch directory used to build/receive packages for hub transfer."""
+    data_dir = getattr(backend, "data_dir", None)
+    base = Path(str(data_dir)) if data_dir else Path.home() / ".local" / "share" / "hypergery"
+    return base / "hub-transfer"
 
 
 def _sha256(path: Path) -> str:
@@ -681,13 +691,14 @@ def _migration_status_payload(
     result: dict[str, Any] | None = None,
     errors: list[str] | None = None,
     warnings: list[str] | None = None,
+    strategy: str = "nas_clone",
 ) -> dict[str, Any]:
     return {
         "source_host_id": source_host_id,
         "target_host_id": target_host_id,
         "source_vm_name": source_vm_name,
         "target_vm_name": target_vm_name,
-        "strategy": "nas_clone",
+        "strategy": strategy,
         "status": status,
         "package_path": package_path,
         "result": result or {},
@@ -707,11 +718,13 @@ def create_remote_import_command(
     package_dir: str,
     target_lab_id: str = "",
     start_after_import: bool = False,
+    transfer: str = TRANSFER_NAS,
 ) -> dict[str, Any]:
     if not target_host_id:
         raise HyperGeryError("target_host_id is required.")
     if not package_dir:
         raise HyperGeryError("package_dir is required.")
+    strategy = "hub_transfer" if transfer == TRANSFER_HUB else "nas_clone"
     command = client.create_command(
         target_host_id,
         "import_vm_package",
@@ -723,6 +736,7 @@ def create_remote_import_command(
             "target_vm_name": target_vm_name,
             "target_lab_id": target_lab_id,
             "start_after_import": start_after_import,
+            "transfer": transfer,
         },
     )
     client.update_migration_status(
@@ -735,6 +749,7 @@ def create_remote_import_command(
             status="waiting_target",
             package_path=package_dir,
             result={"package_dir": package_dir, "command_id": command["command_id"]},
+            strategy=strategy,
         ),
     )
     return command
@@ -754,24 +769,31 @@ def start_remote_migration(
     include_iso: bool = True,
     include_snapshots: bool = True,
     start_after_import: bool = False,
+    transfer: str = TRANSFER_NAS,
 ) -> dict[str, Any]:
     if not source_host_id:
         raise HyperGeryError("source_host_id is required.")
     if not target_host_id:
         raise HyperGeryError("target_host_id is required.")
+    if transfer not in (TRANSFER_NAS, TRANSFER_HUB):
+        raise HyperGeryError(f"Unsupported transfer mode: {transfer}")
+    if transfer == TRANSFER_NAS and not str(nas_path):
+        raise HyperGeryError("nas_path is required for NAS transfer.")
     target_host = client.get_host(target_host_id)
     if target_host.get("status") != "online":
         raise HyperGeryError(f"Target host is offline: {target_host_id}")
     if not target_host.get("kvm_ok") or not target_host.get("libvirt_ok"):
         raise HyperGeryError(f"Target host is not ready for KVM/libvirt import: {target_host_id}")
 
+    strategy = "hub_transfer" if transfer == TRANSFER_HUB else "nas_clone"
+    staging_path = hub_transfer_staging_dir(backend) / "outgoing" if transfer == TRANSFER_HUB else Path(str(nas_path))
     target_vm_name = target_vm_name or vm_name
     preflight = migration_preflight(
         backend,
         vm_name,
         target_host=target_host_id,
         target_vm_name=target_vm_name,
-        nas_path=str(nas_path),
+        nas_path=str(staging_path),
         allow_paused=allow_paused,
         include_iso=include_iso,
         include_snapshots=include_snapshots,
@@ -788,6 +810,7 @@ def start_remote_migration(
             result={"preflight": preflight},
             errors=preflight["errors"],
             warnings=preflight["warnings"],
+            strategy=strategy,
         ),
     )
     if not preflight["ok"]:
@@ -802,6 +825,7 @@ def start_remote_migration(
                 result={"preflight": preflight},
                 errors=preflight["errors"],
                 warnings=preflight["warnings"],
+                strategy=strategy,
             ),
         )
         raise HyperGeryError("Migration preflight failed: " + "; ".join(preflight["errors"]))
@@ -816,12 +840,13 @@ def start_remote_migration(
             status="packaging",
             result={"preflight": preflight},
             warnings=preflight["warnings"],
+            strategy=strategy,
         ),
     )
     exported = export_vm_package(
         backend,
         vm_name,
-        nas_path,
+        staging_path,
         target_vm_name=target_vm_name,
         allow_paused=allow_paused,
         include_iso=include_iso,
@@ -829,6 +854,14 @@ def start_remote_migration(
         migration_id=migration_id,
     )
     package_dir = exported["package_dir"]
+    if transfer == TRANSFER_HUB:
+        try:
+            client.upload_package(migration_id, package_dir)
+        finally:
+            # The local package is a temporary copy built for upload only;
+            # the source VM and its disks are never touched.
+            shutil.rmtree(package_dir, ignore_errors=True)
+        package_dir = HUB_PACKAGE_PREFIX + migration_id
     client.update_migration_status(
         migration_id,
         _migration_status_payload(
@@ -840,6 +873,7 @@ def start_remote_migration(
             package_path=package_dir,
             result={"package_dir": package_dir, "preflight": preflight},
             warnings=preflight["warnings"],
+            strategy=strategy,
         ),
     )
     command = create_remote_import_command(
@@ -852,11 +886,13 @@ def start_remote_migration(
         package_dir=package_dir,
         target_lab_id=target_lab_id,
         start_after_import=start_after_import,
+        transfer=transfer,
     )
     return {
         "migration_id": migration_id,
         "command_id": command["command_id"],
         "package_dir": package_dir,
+        "transfer": transfer,
         "source_will_be_deleted": False,
         "steps": REMOTE_MIGRATION_STEPS,
         "preflight": preflight,
