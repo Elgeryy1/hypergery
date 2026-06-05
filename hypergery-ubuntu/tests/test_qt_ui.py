@@ -767,6 +767,46 @@ class QtUiTests(unittest.TestCase):
             dialog.close()
         self.assertIsNotNone(app)
 
+    def test_migration_wizard_hub_transfer_default_and_nas_toggle(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp))
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+
+            # Hub transfer is the default and does not need a NAS path.
+            self.assertEqual(dialog.values()["transfer"], "hub")
+            self.assertFalse(dialog.nas_path.isEnabled())
+            self.assertFalse(dialog.nas_browse_button.isEnabled())
+
+            # Switching to shared NAS re-enables the path field.
+            dialog.transfer_mode.setCurrentIndex(1)
+            self.assertEqual(dialog.values()["transfer"], "nas")
+            self.assertTrue(dialog.nas_path.isEnabled())
+            self.assertTrue(dialog.nas_browse_button.isEnabled())
+
+            # NAS mode without a path blocks preflight with a clear message.
+            dialog.source_host_id.setText("source-host")
+            dialog.target_host.setCurrentIndex(0)
+            dialog.nas_path.setText("")
+            dialog.run_preflight()
+            self.assertIn("NAS staging path is required", dialog.error_label.text())
+            self.assertFalse(dialog.package_button.isEnabled())
+
+            # Hub mode passes preflight without any NAS path and reports the transfer.
+            dialog.transfer_mode.setCurrentIndex(0)
+            dialog._set_step(3)
+            dialog.run_preflight()
+            self.assertTrue(dialog.package_button.isEnabled(), dialog.error_label.text())
+            self.assertIn("Transfer: hub", dialog.result_view.toPlainText())
+            self.assertIn("removed from the Hub after import", dialog.result_view.toPlainText())
+            dialog.close()
+        self.assertIsNotNone(app)
+
     def test_migration_wizard_progress_result_and_copy_safety(self):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QLabel

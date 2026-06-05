@@ -934,6 +934,9 @@ class LiveMigrationDialog(QDialog):
         self.source_host_id = QLineEdit(app_config["host_id"].value)
         self.target_host = QComboBox()
         self.target_name = QLineEdit(f"{vm.name}-migrated")
+        self.transfer_mode = QComboBox()
+        self.transfer_mode.addItem("Hub transfer — upload through the Hub, no shared NAS mount needed", "hub")
+        self.transfer_mode.addItem("Shared NAS path — same mount visible on both hosts", "nas")
         self.nas_path = QLineEdit(app_config["nas_staging_path"].value)
         self.include_iso = QCheckBox("Include attached ISO")
         self.include_iso.setChecked(True)
@@ -1021,9 +1024,18 @@ class LiveMigrationDialog(QDialog):
             widget.toggled.connect(self.invalidate_preflight)
         self.target_host.currentIndexChanged.connect(self.invalidate_preflight)
         self.target_host.currentIndexChanged.connect(self._render_target_summary)
+        self.transfer_mode.currentIndexChanged.connect(self._on_transfer_mode_changed)
+        self._on_transfer_mode_changed()
 
         self._set_step(0)
         self.refresh_hosts()
+
+    def _on_transfer_mode_changed(self, *_args) -> None:
+        nas_selected = str(self.transfer_mode.currentData() or "") == "nas"
+        self.nas_path.setEnabled(nas_selected)
+        if hasattr(self, "nas_browse_button"):
+            self.nas_browse_button.setEnabled(nas_selected)
+        self.invalidate_preflight()
 
     # ---------- pages ----------
 
@@ -1103,13 +1115,14 @@ class LiveMigrationDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
-        browse = QPushButton("Browse")
-        browse.clicked.connect(self.pick_nas_path)
+        self.nas_browse_button = QPushButton("Browse")
+        self.nas_browse_button.clicked.connect(self.pick_nas_path)
         path_row = QHBoxLayout()
         path_row.addWidget(self.nas_path, 1)
-        path_row.addWidget(browse)
+        path_row.addWidget(self.nas_browse_button)
         form = QFormLayout()
         form.addRow("Target VM name", self.target_name)
+        form.addRow("Transfer mode", self.transfer_mode)
         form.addRow("NAS staging path", path_row)
         form.addRow("", self.include_iso)
         form.addRow("", self.include_snapshots)
@@ -1245,7 +1258,8 @@ class LiveMigrationDialog(QDialog):
         elif step == 1:
             self.next_button.setEnabled(self._target_ready())
         elif step == 2:
-            self.next_button.setEnabled(bool(self.target_name.text().strip() and self.nas_path.text().strip()))
+            nas_ok = str(self.transfer_mode.currentData() or "") != "nas" or bool(self.nas_path.text().strip())
+            self.next_button.setEnabled(bool(self.target_name.text().strip()) and nas_ok)
 
     def go_next(self) -> None:
         step = self.current_step()
@@ -1338,6 +1352,7 @@ class LiveMigrationDialog(QDialog):
             "source_host_id": self.source_host_id.text().strip(),
             "target_host_id": str(self.target_host.currentData() or ""),
             "target_vm_name": self.target_name.text().strip(),
+            "transfer": str(self.transfer_mode.currentData() or "nas"),
             "nas_path": self.nas_path.text().strip(),
             "include_iso": self.include_iso.isChecked(),
             "include_snapshots": self.include_snapshots.isChecked(),
@@ -1361,8 +1376,8 @@ class LiveMigrationDialog(QDialog):
         if not values["target_host_id"]:
             self.error_label.setText("Select an online target host from the Hub.")
             return
-        if not values["nas_path"]:
-            self.error_label.setText("NAS staging path is required.")
+        if values["transfer"] == "nas" and not values["nas_path"]:
+            self.error_label.setText("NAS staging path is required for shared NAS transfer.")
             return
         if values["target_host_id"] == values["source_host_id"]:
             self.error_label.setText("Target host must differ from the source host.")
@@ -1377,13 +1392,19 @@ class LiveMigrationDialog(QDialog):
             self.error_label.setText("Selected target host is not ready: KVM/libvirt check failed.")
             self.package_button.setEnabled(False)
             return
+        if values["transfer"] == "hub":
+            from ..migration import hub_transfer_staging_dir
+
+            staging_path = str(hub_transfer_staging_dir(self.backend) / "outgoing")
+        else:
+            staging_path = values["nas_path"]
         try:
             result = migration_preflight(
                 self.backend,
                 self.vm.name,
                 target_host=values["target_host_id"],
                 target_vm_name=values["target_vm_name"],
-                nas_path=values["nas_path"],
+                nas_path=staging_path,
                 allow_paused=values["allow_paused"],
                 include_iso=values["include_iso"],
                 include_snapshots=values["include_snapshots"],
@@ -1400,9 +1421,16 @@ class LiveMigrationDialog(QDialog):
         errors = result.get("errors", [])
         warnings = result.get("warnings", [])
         assets = result.get("assets", [])
+        transfer = str(self.transfer_mode.currentData() or "nas")
+        transfer_line = (
+            "Transfer: hub (package uploaded through the Hub, removed from the Hub after import)"
+            if transfer == "hub"
+            else "Transfer: shared NAS path (must be visible at the same path on both hosts)"
+        )
         lines = [
             f"Status: {'OK' if result.get('ok') else 'Blocked'}",
             f"Strategy: {result.get('strategy', 'offline-copy')} (NAS Clone Migration)",
+            transfer_line,
             f"Source will be deleted: {result.get('source_will_be_deleted')}",
             "Target identity: UUID and MAC will be regenerated on import.",
             f"Estimated package size: {result.get('estimated_size_bytes', 0)} bytes",
@@ -1449,10 +1477,18 @@ class LiveMigrationDialog(QDialog):
         self.package_button.setEnabled(False)
         self._set_step(4)
         self.migration_id_label.setText("Starting migration…")
-        self.progress_log.setPlainText(
-            f"Packaging {values['vm_name']} into NAS staging and queueing import on {values['target_host_id']}.\n"
-            "The source VM and source disks remain untouched."
-        )
+        if values["transfer"] == "hub":
+            progress_intro = (
+                f"Packaging {values['vm_name']} locally and uploading it through the Hub for {values['target_host_id']}.\n"
+                "The Hub copy is temporary and is removed after the target imports it.\n"
+                "The source VM and source disks remain untouched."
+            )
+        else:
+            progress_intro = (
+                f"Packaging {values['vm_name']} into NAS staging and queueing import on {values['target_host_id']}.\n"
+                "The source VM and source disks remain untouched."
+            )
+        self.progress_log.setPlainText(progress_intro)
         self._render_progress_states("created")
 
         def do_migration() -> dict:
@@ -1471,6 +1507,7 @@ class LiveMigrationDialog(QDialog):
                 include_iso=values["include_iso"],
                 include_snapshots=values["include_snapshots"],
                 start_after_import=values["start_after_import"],
+                transfer=values["transfer"],
             )
 
         from .workers import BackendJob
