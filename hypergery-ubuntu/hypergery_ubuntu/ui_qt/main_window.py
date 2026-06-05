@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary, now_iso
 from ..config import HyperGeryConfig, effective_config, effective_value
-from ..labs import LabStore
+from ..labs import LAB_VM_ROLES, LabStore
 from ..templates import TemplateStore
 from .dialogs import (
     AppSettingsDialog,
@@ -66,7 +66,14 @@ from .dialogs import (
 )
 from .console import VmConsoleWindow
 from .console_helpers import should_autoconnect_console
-from .lab_helpers import build_lab_topology, filter_vms_for_lab, vm_count_for_lab
+from .lab_helpers import (
+    build_lab_topology,
+    filter_vms_for_lab,
+    lab_status_summary,
+    plan_lab_power_action,
+    unify_lab_vms,
+    vm_count_for_lab,
+)
 from .topology import LabTopologyWidget
 from .styles import (
     APP_DISPLAY_VERSION,
@@ -96,6 +103,7 @@ class MainWindow(QMainWindow):
         self.selected_vm_template: dict | None = None
         self.selected_lab_template: dict | None = None
         self.remote_hosts: list[dict[str, Any]] = []
+        self.remote_vms_inventory: list[dict[str, Any]] = []
         self.console_windows: dict[str, VmConsoleWindow] = {}
         self.jobs: list[BackendJob] = []
         self.completed_jobs: list[BackendJob] = []
@@ -173,7 +181,7 @@ class MainWindow(QMainWindow):
         page_map = {
             "Dashboard": self.dashboard_page_index,
             "Virtual Machines": 0,
-            "Labs": 0,
+            "Labs": self.labs_page_index,
             "Templates": 1,
             "Remote Hosts": 2,
             "Migrations": self.migrations_page_index,
@@ -186,13 +194,9 @@ class MainWindow(QMainWindow):
             self.refresh_hub_staging()
         if section == "Commands" and not getattr(self, "_commands_loaded", False):
             self.refresh_commands()
-        self.right_panel.setVisible(section in {"Virtual Machines", "Labs"})
-        self.labs_mode_banner.setVisible(section == "Labs")
-        self.vm_page_title.setText("Labs" if section == "Labs" else "Virtual Machines")
-        self.vm_page_subtitle.setText(
-            "Isolated lab networks and their workloads" if section == "Labs"
-            else "Local KVM/libvirt machines and lab workloads"
-        )
+        if section == "Labs":
+            self.render_labs_workspace()
+        self.right_panel.setVisible(section == "Virtual Machines")
 
     def _build_top_bar(self) -> QWidget:
         bar = QFrame()
@@ -312,14 +316,6 @@ class MainWindow(QMainWindow):
         header.addWidget(self.vm_filter)
         header.addWidget(self.vm_count_label)
         layout.addLayout(header)
-        self.labs_mode_banner = QLabel(
-            "Labs share this view for now — a lab-specific visual workspace arrives in v0.8. "
-            "Use the Labs table and lab actions below."
-        )
-        self.labs_mode_banner.setObjectName("calloutInfo")
-        self.labs_mode_banner.setWordWrap(True)
-        self.labs_mode_banner.setVisible(False)
-        layout.addWidget(self.labs_mode_banner)
         layout.addWidget(self._build_vm_actions_bar())
 
         self.vm_table = QTableWidget(0, 7)
@@ -493,6 +489,7 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self._build_remote_hosts_page(), "Remote Hosts")
 
         self.dashboard_page_index = self.main_tabs.addTab(self._build_dashboard_page(), "Dashboard")
+        self.labs_page_index = self.main_tabs.addTab(self._build_labs_page(), "Labs")
         self.migrations_page_index = self.main_tabs.addTab(self._build_migrations_page(), "Migrations")
         self.commands_page_index = self.main_tabs.addTab(self._build_commands_page(), "Commands")
         self.diagnostics_page_index = self.main_tabs.addTab(self._build_diagnostics_page(), "Diagnostics")
@@ -1510,6 +1507,424 @@ class MainWindow(QMainWindow):
         vm_name = str(last.get("vm_name") or last.get("source_vm_name") or "?")
         self.dash_migration_label.setText(f"{migration_id}\n{vm_name} · status: {status}")
 
+    # ------------------------------------------------------------------ #
+    # Labs workspace (v0.8)                                               #
+    # ------------------------------------------------------------------ #
+
+    LAB_WS_TABLE_COLUMNS = ("Name", "Role", "State", "Host", "RAM", "vCPUs", "Location")
+
+    def _build_labs_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        title = QLabel("Labs")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Lab workspaces: grouped VMs across local and remote hosts")
+        subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(title)
+        head_col.addWidget(subtitle)
+        header.addLayout(head_col)
+        header.addStretch()
+        self.lab_ws_new_button = self._button("New Lab", self.new_lab, primary=True)
+        self.lab_ws_refresh_button = self._button("Refresh", self.refresh_all)
+        header.addWidget(self.lab_ws_new_button)
+        header.addWidget(self.lab_ws_refresh_button)
+        layout.addLayout(header)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        cards_scroll = QScrollArea()
+        cards_scroll.setWidgetResizable(True)
+        cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cards_body = QWidget()
+        self.lab_ws_cards_layout = QVBoxLayout(cards_body)
+        self.lab_ws_cards_layout.setContentsMargins(0, 0, 8, 0)
+        self.lab_ws_cards_layout.setSpacing(10)
+        cards_scroll.setWidget(cards_body)
+        splitter.addWidget(cards_scroll)
+
+        detail = QFrame()
+        detail.setObjectName("panel")
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(16, 14, 16, 14)
+        detail_layout.setSpacing(8)
+        self.lab_ws_title = QLabel("No lab selected")
+        self.lab_ws_title.setObjectName("sectionTitle")
+        self.lab_ws_meta = QLabel("")
+        self.lab_ws_meta.setObjectName("mutedLabel")
+        self.lab_ws_meta.setWordWrap(True)
+        self.lab_ws_status_label = QLabel("")
+        self.lab_ws_status_label.setObjectName("mutedLabel")
+        self.lab_ws_status_label.setWordWrap(True)
+        self.lab_ws_hosts_label = QLabel("")
+        self.lab_ws_hosts_label.setObjectName("mutedLabel")
+        self.lab_ws_hosts_label.setWordWrap(True)
+        detail_layout.addWidget(self.lab_ws_title)
+        detail_layout.addWidget(self.lab_ws_meta)
+        detail_layout.addWidget(self.lab_ws_status_label)
+        detail_layout.addWidget(self.lab_ws_hosts_label)
+
+        self.lab_ws_vm_table = QTableWidget(0, len(self.LAB_WS_TABLE_COLUMNS))
+        self.lab_ws_vm_table.setHorizontalHeaderLabels(list(self.LAB_WS_TABLE_COLUMNS))
+        self.lab_ws_vm_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.lab_ws_vm_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.lab_ws_vm_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.lab_ws_vm_table.setAlternatingRowColors(True)
+        self.lab_ws_vm_table.verticalHeader().setVisible(False)
+        self.lab_ws_vm_table.horizontalHeader().setStretchLastSection(True)
+        self.lab_ws_vm_table.itemSelectionChanged.connect(self._update_lab_ws_buttons)
+        detail_layout.addWidget(self.lab_ws_vm_table, 1)
+
+        vm_actions = QHBoxLayout()
+        vm_actions.setSpacing(8)
+        self.lab_ws_open_vm_button = self._button("Open VM", self.lab_ws_open_vm)
+        self.lab_ws_view_remote_button = self._button("View Remote VM", self.lab_ws_view_remote_vm)
+        self.lab_ws_migrate_button = self._button("Migrate VM", self.lab_ws_migrate_vm)
+        self.lab_ws_role_button = self._button("Set VM Role…", self.lab_ws_set_role)
+        for button in (
+            self.lab_ws_open_vm_button,
+            self.lab_ws_view_remote_button,
+            self.lab_ws_migrate_button,
+            self.lab_ws_role_button,
+        ):
+            vm_actions.addWidget(button)
+        vm_actions.addStretch()
+        detail_layout.addLayout(vm_actions)
+
+        lab_actions = QHBoxLayout()
+        lab_actions.setSpacing(8)
+        self.lab_ws_start_button = self._button("Start Lab", self.start_lab, primary=True)
+        self.lab_ws_shutdown_button = self._button("Shutdown Lab", self.shutdown_lab)
+        self.lab_ws_snapshot_button = QPushButton("Snapshot Lab")
+        self.lab_ws_snapshot_button.setEnabled(False)
+        self.lab_ws_snapshot_button.setToolTip(
+            "Planned — lab-wide snapshots are not available yet. Use per-VM Snapshots in Virtual Machines."
+        )
+        lab_actions.addWidget(self.lab_ws_start_button)
+        lab_actions.addWidget(self.lab_ws_shutdown_button)
+        lab_actions.addWidget(self.lab_ws_snapshot_button)
+        lab_actions.addStretch()
+        detail_layout.addLayout(lab_actions)
+
+        self.lab_ws_feedback = QLabel(
+            "Start Lab starts every shut off VM in the lab (local backend or Hub → Agent for remote VMs). "
+            "Shutdown Lab sends ACPI shutdown to every running VM. There is no lab-wide Force Off."
+        )
+        self.lab_ws_feedback.setObjectName("calloutInfo")
+        self.lab_ws_feedback.setWordWrap(True)
+        detail_layout.addWidget(self.lab_ws_feedback)
+
+        splitter.addWidget(detail)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, 1)
+
+        self._lab_ws_card_frames: list[QFrame] = []
+        self.selected_workspace_lab_id = ""
+        self._lab_ws_vms: list[dict[str, Any]] = []
+        return page
+
+    def _local_host_id(self) -> str:
+        return str(effective_config()["host_id"].value)
+
+    def _clear_lab_ws_cards(self) -> None:
+        self._lab_ws_card_frames = []
+        while self.lab_ws_cards_layout.count():
+            item = self.lab_ws_cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _lab_ws_card(self, lab: dict[str, Any]) -> QFrame:
+        lab_id = str(lab.get("lab_id", ""))
+        selected = lab_id == self.selected_workspace_lab_id
+        card = QFrame()
+        card.setObjectName("hostCardSelected" if selected else "hostCard")
+        card.mousePressEvent = lambda event, lid=lab_id: self._select_workspace_lab(lid)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+        title = QLabel(str(lab.get("name") or lab_id))
+        title.setObjectName("sectionTitle")
+        meta = QLabel(f"{lab_id} · {lab.get('network_mode', 'nat')} · {lab.get('subnet', '')}")
+        meta.setObjectName("mutedLabel")
+        summary = lab_status_summary(self._workspace_unified_vms(lab))
+        counts = summary["counts"]
+        chips = QLabel(
+            f"{counts['total']} VM(s) · {counts['running']} running · {counts['shut_off']} shut off"
+            + (f" · {counts['paused']} paused" if counts["paused"] else "")
+            + (f" · {counts['not_created']} not created" if counts["not_created"] else "")
+            + (f" · {counts['unknown']} unknown" if counts["unknown"] else "")
+        )
+        chips.setObjectName("mutedLabel")
+        chips.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(meta)
+        layout.addWidget(chips)
+        if lab.get("description"):
+            description = QLabel(str(lab.get("description")))
+            description.setObjectName("mutedLabel")
+            description.setWordWrap(True)
+            layout.addWidget(description)
+        return card
+
+    def _workspace_unified_vms(self, lab: dict[str, Any]) -> list[dict[str, Any]]:
+        return unify_lab_vms(lab, self.all_vms, self.remote_vms_inventory, self._local_host_id())
+
+    def _selected_workspace_lab(self) -> dict[str, Any] | None:
+        for lab in self.labs:
+            if str(lab.get("lab_id", "")) == self.selected_workspace_lab_id:
+                return lab
+        return None
+
+    def _select_workspace_lab(self, lab_id: str) -> None:
+        self.selected_workspace_lab_id = lab_id
+        self.render_labs_workspace()
+
+    def render_labs_workspace(self) -> None:
+        if not hasattr(self, "lab_ws_cards_layout"):
+            return
+        labs = self.labs
+        if labs and not any(str(lab.get("lab_id", "")) == self.selected_workspace_lab_id for lab in labs):
+            self.selected_workspace_lab_id = str(labs[0].get("lab_id", ""))
+        self._clear_lab_ws_cards()
+        if not labs:
+            self.lab_ws_cards_layout.addWidget(
+                self._remote_message_panel(
+                    "No labs yet",
+                    "Create VMs in default-lab or create a new lab.",
+                    action=("New Lab", self.new_lab),
+                )
+            )
+            self.lab_ws_cards_layout.addStretch()
+            self._render_lab_ws_detail(None)
+            return
+        for lab in labs:
+            card = self._lab_ws_card(lab)
+            self._lab_ws_card_frames.append(card)
+            self.lab_ws_cards_layout.addWidget(card)
+        self.lab_ws_cards_layout.addStretch()
+        self._render_lab_ws_detail(self._selected_workspace_lab())
+
+    def _render_lab_ws_detail(self, lab: dict[str, Any] | None) -> None:
+        if lab is None:
+            self.lab_ws_title.setText("No lab selected")
+            self.lab_ws_meta.setText("")
+            self.lab_ws_status_label.setText("")
+            self.lab_ws_hosts_label.setText("")
+            self.lab_ws_vm_table.setRowCount(0)
+            self._lab_ws_vms = []
+            self._update_lab_ws_buttons()
+            return
+        lab_id = str(lab.get("lab_id", ""))
+        self.lab_ws_title.setText(str(lab.get("name") or lab_id))
+        description = str(lab.get("description") or "")
+        self.lab_ws_meta.setText(
+            f"{lab_id} · {lab.get('network_mode', 'nat')} · subnet {lab.get('subnet', '')} · "
+            f"bridge {lab.get('bridge_name', '')}"
+            + (f"\n{description}" if description else "")
+        )
+        unified = self._workspace_unified_vms(lab)
+        self._lab_ws_vms = unified
+        summary = lab_status_summary(unified)
+        counts = summary["counts"]
+        self.lab_ws_status_label.setText(
+            f"Status: {counts['total']} VM(s) · {counts['running']} running · "
+            f"{counts['shut_off']} shut off · {counts['paused']} paused · "
+            f"{counts['unknown']} unknown · {counts['not_created']} not created"
+        )
+        hosts = summary["hosts"]
+        if hosts:
+            parts = [f"{host_id}: {len(names)} VM(s)" for host_id, names in sorted(hosts.items())]
+            self.lab_ws_hosts_label.setText("Host distribution — " + " · ".join(parts))
+        else:
+            self.lab_ws_hosts_label.setText("Host distribution — no live VMs yet")
+        self.lab_ws_vm_table.setRowCount(len(unified))
+        local_host_id = self._local_host_id()
+        for row, vm in enumerate(unified):
+            location = "Local" if (not vm["remote"] and vm["host_id"] == local_host_id) else ("Remote" if vm["remote"] else "—")
+            cells = (
+                vm["name"],
+                vm["role"] or "—",
+                vm["state"].upper(),
+                vm["host_id"] or "—",
+                format_mib(vm["ram_mib"]) if vm["ram_mib"] else "—",
+                str(vm["vcpus"] or "—"),
+                location,
+            )
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if column == 2:
+                    item.setForeground(QColor(STATE_COLORS.get(state_kind(vm["state"]), "#94A3B8")))
+                self.lab_ws_vm_table.setItem(row, column, item)
+        self._update_lab_ws_buttons()
+
+    def _selected_lab_ws_vm(self) -> dict[str, Any] | None:
+        row = self.lab_ws_vm_table.currentRow()
+        if row < 0 or row >= len(self._lab_ws_vms):
+            return None
+        return self._lab_ws_vms[row]
+
+    def _update_lab_ws_buttons(self) -> None:
+        lab = self._selected_workspace_lab()
+        vm = self._selected_lab_ws_vm()
+        has_lab = lab is not None
+        is_local = vm is not None and not vm["remote"] and vm["state"] != "not created"
+        is_remote = vm is not None and vm["remote"]
+        self.lab_ws_open_vm_button.setEnabled(is_local)
+        self.lab_ws_view_remote_button.setEnabled(is_remote)
+        self.lab_ws_migrate_button.setEnabled(is_local)
+        self.lab_ws_role_button.setEnabled(has_lab and vm is not None)
+        self.lab_ws_start_button.setEnabled(has_lab and any(v["state"] == "shut off" for v in self._lab_ws_vms))
+        self.lab_ws_shutdown_button.setEnabled(has_lab and any(v["state"] == "running" for v in self._lab_ws_vms))
+
+    def lab_ws_open_vm(self) -> None:
+        vm = self._selected_lab_ws_vm()
+        if vm is None or vm["remote"]:
+            return
+        self._dashboard_go_vms()
+        self.vm_filter.setCurrentIndex(0)
+        self._select_vm_by_name(vm["name"])
+
+    def lab_ws_view_remote_vm(self) -> None:
+        vm = self._selected_lab_ws_vm()
+        if vm is None or not vm["remote"]:
+            return
+        self._view_host_vms(vm["host_id"])
+
+    def lab_ws_migrate_vm(self) -> None:
+        vm = self._selected_lab_ws_vm()
+        if vm is None or vm["remote"]:
+            return
+        self._dashboard_go_vms()
+        self.vm_filter.setCurrentIndex(0)
+        self._select_vm_by_name(vm["name"])
+        if self.selected_vm is not None and self.selected_vm.name == vm["name"]:
+            self.live_migration_vm()
+        else:
+            self.status.showMessage(f"Select {vm['name']} in Virtual Machines, then use Live Migration", 8000)
+
+    def lab_ws_set_role(self) -> None:
+        lab = self._selected_workspace_lab()
+        vm = self._selected_lab_ws_vm()
+        if lab is None or vm is None:
+            return
+        options = ["(no role)"] + list(LAB_VM_ROLES)
+        current = vm["role"] if vm["role"] in LAB_VM_ROLES else "(no role)"
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Set VM Role",
+            f"Role for {vm['name']} in {lab.get('lab_id', '')}:",
+            options,
+            options.index(current),
+            False,
+        )
+        if not ok:
+            return
+        role = "" if choice == "(no role)" else choice
+        try:
+            self.lab_store().set_vm_role(str(lab["lab_id"]), vm["name"], role)
+        except Exception as exc:
+            self.show_error(str(exc))
+            return
+        self.log_activity(f"Set role '{role or 'none'}' for {vm['name']} in lab {lab.get('lab_id', '')}")
+        self.refresh_labs()
+        self.render_labs_workspace()
+
+    def start_lab(self) -> None:
+        self._confirm_and_run_lab_power("start")
+
+    def shutdown_lab(self) -> None:
+        self._confirm_and_run_lab_power("shutdown")
+
+    def _confirm_and_run_lab_power(self, action: str) -> None:
+        lab = self._selected_workspace_lab()
+        if lab is None:
+            self.show_error("Select a lab first.")
+            return
+        plan = plan_lab_power_action(self._workspace_unified_vms(lab), action)
+        targets = plan["targets"]
+        if not targets:
+            self.lab_ws_feedback.setText(
+                f"Nothing to {action}: no VMs in the required state ("
+                + ("shut off" if action == "start" else "running")
+                + ")."
+            )
+            return
+        if action == "start":
+            question = f"This will start {len(targets)} VM(s) across {plan['host_count']} host(s)."
+        else:
+            question = f"This will request ACPI shutdown for {len(targets)} running VM(s)."
+        names = ", ".join(vm["name"] for vm in targets[:8]) + ("…" if len(targets) > 8 else "")
+        answer = QMessageBox.question(
+            self,
+            f"{action.capitalize()} Lab",
+            f"{question}\n\nVMs: {names}\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._execute_lab_power(str(lab.get("lab_id", "")), action, targets)
+
+    def _execute_lab_power(self, lab_id: str, action: str, targets: list[dict[str, Any]]) -> None:
+        url = self.registry_url()
+        backend = self.backend
+        local_method = "start_vm" if action == "start" else "shutdown_vm"
+
+        def run() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            results: dict[str, list[str]] = {"local": [], "queued": [], "errors": []}
+            client: RegistryClient | None = None
+            for vm in targets:
+                try:
+                    if vm["remote"]:
+                        if client is None:
+                            client = RegistryClient(url)
+                        command = client.queue_vm_power_command(vm["host_id"], vm["name"], action)
+                        results["queued"].append(f"{vm['name']}@{vm['host_id']} ({command.get('command_id', '')})")
+                    else:
+                        getattr(backend, local_method)(vm["name"])
+                        results["local"].append(vm["name"])
+                except Exception as exc:
+                    results["errors"].append(f"{vm['name']}: {exc}")
+            return results
+
+        def on_done(results: dict[str, Any]) -> None:
+            local = results.get("local") or []
+            queued = results.get("queued") or []
+            errors = results.get("errors") or []
+            lines = [f"Lab {lab_id} {action}:"]
+            if local:
+                lines.append(f"  {len(local)} local VM(s): {', '.join(local)}")
+            if queued:
+                lines.append(f"  {len(queued)} remote command(s) queued: {', '.join(queued)}")
+            if errors:
+                lines.append(f"  {len(errors)} FAILED: {'; '.join(errors)}")
+            summary = "\n".join(lines)
+            self.lab_ws_feedback.setText(summary)
+            self.lab_ws_feedback.setObjectName("calloutDanger" if errors else "calloutOk")
+            self.lab_ws_feedback.style().unpolish(self.lab_ws_feedback)
+            self.lab_ws_feedback.style().polish(self.lab_ws_feedback)
+            self.log_activity(summary.replace("\n", " · "))
+            self.refresh_all()
+
+        self.log_activity(f"Lab {action} requested for {lab_id}: {len(targets)} VM(s)")
+        self.run_operation(
+            f"{'Starting' if action == 'start' else 'Shutting down'} lab {lab_id}",
+            run,
+            on_success=on_done,
+            refresh_after=False,
+            busy=False,
+        )
+
     MIGRATIONS_TABLE_COLUMNS = ("Migration ID", "Source VM", "Target VM", "Source → Target", "Strategy", "Status", "Updated")
 
     def _build_migrations_page(self) -> QWidget:
@@ -2314,6 +2729,14 @@ class MainWindow(QMainWindow):
             self.staging_dry_run_button,
             self.staging_cleanup_button,
             self.commands_refresh_button,
+            self.lab_ws_new_button,
+            self.lab_ws_refresh_button,
+            self.lab_ws_start_button,
+            self.lab_ws_shutdown_button,
+            self.lab_ws_open_vm_button,
+            self.lab_ws_view_remote_button,
+            self.lab_ws_migrate_button,
+            self.lab_ws_role_button,
         ):
             button.setEnabled(not busy)
         if busy:
@@ -2355,6 +2778,8 @@ class MainWindow(QMainWindow):
         self.edit_lab_template_button.setEnabled(has_lab_tmpl)
         self.export_lab_template_button.setEnabled(has_lab_tmpl)
         self.test_remote_button.setEnabled(self.selected_remote_host_index is not None)
+        if hasattr(self, "lab_ws_vm_table"):
+            self._update_lab_ws_buttons()
 
     def registry_url(self) -> str:
         return effective_value("hub_url")
@@ -2381,14 +2806,22 @@ class MainWindow(QMainWindow):
             latency_ms = None
         hosts = client.list_hosts()
         try:
-            vm_count: int | None = len(client.list_vms())
+            remote_vms: list[dict[str, Any]] | None = client.list_vms()
+            vm_count: int | None = len(remote_vms)
         except Exception:
+            remote_vms = None
             vm_count = None
         try:
             migrations: list[dict[str, Any]] = client.list_migrations()
         except Exception:
             migrations = []
-        return {"hosts": hosts, "vm_count": vm_count, "migrations": migrations, "latency_ms": latency_ms}
+        return {
+            "hosts": hosts,
+            "vm_count": vm_count,
+            "remote_vms": remote_vms,
+            "migrations": migrations,
+            "latency_ms": latency_ms,
+        }
 
     def render_remote_hosts(self, result: dict[str, Any] | list[dict[str, Any]]) -> None:
         latency_ms: int | None = None
@@ -2396,11 +2829,14 @@ class MainWindow(QMainWindow):
             hosts = result.get("hosts", [])
             vm_count = result.get("vm_count")
             latency_ms = result.get("latency_ms")
+            if result.get("remote_vms") is not None:
+                self.remote_vms_inventory = list(result.get("remote_vms") or [])
             self.update_dashboard_migration(result.get("migrations") or [])
         else:
             hosts = result
             vm_count = None
         self.remote_hosts = hosts
+        self.render_labs_workspace()
         self._render_host_cards(hosts)
         self.hub_latency_label.setText(f"{latency_ms} ms" if latency_ms is not None else "—")
         self.remote_status_label.setText(f"{len(hosts)} host(s)")
@@ -2903,6 +3339,7 @@ class MainWindow(QMainWindow):
             self.selected_lab = None
         self.lab_table.blockSignals(was_blocked)
         self.render_lab_details()
+        self.render_labs_workspace()
         self.update_vm_empty_state()
         self.update_actions()
 

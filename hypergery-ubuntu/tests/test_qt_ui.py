@@ -603,7 +603,7 @@ class QtUiTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
-    def test_labs_sidebar_shows_banner_without_breaking_page(self, backend_cls):
+    def test_labs_sidebar_opens_real_workspace_page(self, backend_cls):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.main_window import MainWindow
 
@@ -612,12 +612,11 @@ class QtUiTests(unittest.TestCase):
             window = MainWindow()
             sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
             window.sidebar_nav.setCurrentRow(sections.index("Labs"))
-            self.assertEqual(window.main_tabs.currentIndex(), 0)
-            self.assertEqual(window.vm_page_title.text(), "Labs")
-            self.assertIn("v0.8", window.labs_mode_banner.text())
+            # Labs is a dedicated workspace page now, not the shared VM view.
+            self.assertEqual(window.main_tabs.currentIndex(), window.labs_page_index)
+            self.assertFalse(window.right_panel.isVisible())
             window.sidebar_nav.setCurrentRow(sections.index("Virtual Machines"))
-            self.assertEqual(window.vm_page_title.text(), "Virtual Machines")
-            self.assertFalse(window.labs_mode_banner.isVisible())
+            self.assertEqual(window.main_tabs.currentIndex(), 0)
             window.close()
         self.assertIsNotNone(app)
 
@@ -1501,6 +1500,226 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
             button_texts = {b.text().lower() for b in dialog.findChildren(QPushButton)}
             self.assertFalse(any("delete" in text for text in button_texts))
             dialog.close()
+            window.close()
+        self.assertIsNotNone(app)
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 not installed — run inside the project venv")
+class QtLabsWorkspaceTests(unittest.TestCase):
+    LAB = {
+        "lab_id": "asr-lab",
+        "name": "ASR Lab",
+        "description": "Active Directory lab",
+        "network_mode": "isolated",
+        "subnet": "192.168.30.0/24",
+        "bridge_name": "hgbr1234567",
+        "vms": ["alpha", "ghost"],
+        "vm_roles": {"alpha": "server"},
+    }
+
+    def make_window(self, backend_cls, tmp):
+        from hypergery_ubuntu.backend import VmSummary
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+        window = MainWindow()
+        window.labs = [dict(self.LAB)]
+        window.all_vms = [
+            VmSummary(name="alpha", state="shut off", lab_id="asr-lab", ram_mib=2048, vcpus=2),
+        ]
+        window.remote_vms_inventory = [
+            {
+                "host_id": "lenovo",
+                "vm_name": "remote-db",
+                "state": "running",
+                "lab_id": "asr-lab",
+                "ram_mib": 4096,
+                "vcpus": 4,
+            }
+        ]
+        window.render_labs_workspace()
+        return window
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_workspace_renders_cards_status_and_host_distribution(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            self.assertEqual(len(window._lab_ws_card_frames), 1)
+            self.assertEqual(window.lab_ws_title.text(), "ASR Lab")
+            self.assertIn("isolated", window.lab_ws_meta.text())
+            self.assertIn("Active Directory lab", window.lab_ws_meta.text())
+            status = window.lab_ws_status_label.text()
+            self.assertIn("3 VM(s)", status)
+            self.assertIn("1 running", status)
+            self.assertIn("1 shut off", status)
+            self.assertIn("1 not created", status)
+            hosts = window.lab_ws_hosts_label.text()
+            self.assertIn("lenovo: 1 VM(s)", hosts)
+            self.assertEqual(window.lab_ws_vm_table.rowCount(), 3)
+            roles = {window.lab_ws_vm_table.item(row, 1).text() for row in range(3)}
+            self.assertIn("server", roles)
+            locations = {window.lab_ws_vm_table.item(row, 6).text() for row in range(3)}
+            self.assertIn("Remote", locations)
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_workspace_empty_state(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            window.labs = []
+            window.render_labs_workspace()
+            texts = []
+            for index in range(window.lab_ws_cards_layout.count()):
+                widget = window.lab_ws_cards_layout.itemAt(index).widget()
+                if widget is not None:
+                    texts.extend(label.text() for label in widget.findChildren(QLabel))
+            self.assertTrue(any("No labs yet" in text for text in texts))
+            self.assertTrue(any("default-lab" in text for text in texts))
+            self.assertEqual(window.lab_ws_title.text(), "No lab selected")
+            self.assertFalse(window.lab_ws_start_button.isEnabled())
+            self.assertFalse(window.lab_ws_shutdown_button.isEnabled())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_start_lab_requires_confirmation_and_targets_shut_off_vms(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            with (
+                patch.object(window, "_execute_lab_power") as execute,
+                patch(
+                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.No,
+                ) as question,
+            ):
+                window.start_lab()
+                question.assert_called_once()
+                self.assertIn("start 1 VM(s) across 1 host(s)", question.call_args.args[2])
+                execute.assert_not_called()
+            with (
+                patch.object(window, "_execute_lab_power") as execute,
+                patch(
+                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ),
+            ):
+                window.start_lab()
+                execute.assert_called_once()
+                lab_id, action, targets = execute.call_args.args
+                self.assertEqual((lab_id, action), ("asr-lab", "start"))
+                self.assertEqual([vm["name"] for vm in targets], ["alpha"])
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_shutdown_lab_targets_running_vms_including_remote(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            with (
+                patch.object(window, "_execute_lab_power") as execute,
+                patch(
+                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ) as question,
+            ):
+                window.shutdown_lab()
+                self.assertIn("ACPI shutdown for 1 running VM(s)", question.call_args.args[2])
+                _lab_id, action, targets = execute.call_args.args
+                self.assertEqual(action, "shutdown")
+                self.assertEqual([vm["name"] for vm in targets], ["remote-db"])
+                self.assertTrue(targets[0]["remote"])
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_execute_lab_power_mixes_local_and_remote_and_reports_partial_failure(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+
+            def fake_run_operation(label, fn, *, on_success=None, **kwargs):
+                result = fn()
+                if on_success:
+                    on_success(result)
+
+            backend = backend_cls.return_value
+            backend.start_vm.side_effect = lambda name: None
+            targets = [
+                {"name": "alpha", "host_id": window._local_host_id(), "remote": False, "state": "shut off"},
+                {"name": "remote-db", "host_id": "lenovo", "remote": True, "state": "shut off"},
+                {"name": "broken", "host_id": window._local_host_id(), "remote": False, "state": "shut off"},
+            ]
+
+            def start_vm(name):
+                if name == "broken":
+                    raise Exception("libvirt exploded")
+
+            backend.start_vm.side_effect = start_vm
+            with (
+                patch.object(window, "run_operation", side_effect=fake_run_operation),
+                patch.object(window, "refresh_all"),
+                patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls,
+            ):
+                registry_cls.return_value.queue_vm_power_command.return_value = {"command_id": "cmd-9"}
+                window._execute_lab_power("asr-lab", "start", targets)
+                registry_cls.return_value.queue_vm_power_command.assert_called_once_with("lenovo", "remote-db", "start")
+            feedback = window.lab_ws_feedback.text()
+            self.assertIn("1 local VM(s): alpha", feedback)
+            self.assertIn("remote-db@lenovo (cmd-9)", feedback)
+            self.assertIn("1 FAILED", feedback)
+            self.assertIn("libvirt exploded", feedback)
+            self.assertIn("Lab asr-lab start", window.activity_log.toPlainText())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_workspace_has_no_force_off_or_delete_lab_actions(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QPushButton
+
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            page = window.main_tabs.widget(window.labs_page_index)
+            button_texts = {button.text().lower() for button in page.findChildren(QPushButton)}
+            self.assertFalse(any("force" in text for text in button_texts))
+            self.assertFalse(any("delete" in text for text in button_texts))
+            # Snapshot Lab exists but is explicitly disabled as planned.
+            snapshot = [b for b in page.findChildren(QPushButton) if b.text() == "Snapshot Lab"]
+            self.assertEqual(len(snapshot), 1)
+            self.assertFalse(snapshot[0].isEnabled())
+            self.assertIn("Planned", snapshot[0].toolTip())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_vm_action_buttons_follow_selection(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window(backend_cls, tmp)
+            # Row order is alphabetical: alpha (local), ghost (not created), remote-db (remote).
+            window.lab_ws_vm_table.selectRow(0)
+            self.assertTrue(window.lab_ws_open_vm_button.isEnabled())
+            self.assertTrue(window.lab_ws_migrate_button.isEnabled())
+            self.assertFalse(window.lab_ws_view_remote_button.isEnabled())
+            window.lab_ws_vm_table.selectRow(1)
+            self.assertFalse(window.lab_ws_open_vm_button.isEnabled())
+            self.assertFalse(window.lab_ws_view_remote_button.isEnabled())
+            window.lab_ws_vm_table.selectRow(2)
+            self.assertFalse(window.lab_ws_open_vm_button.isEnabled())
+            self.assertTrue(window.lab_ws_view_remote_button.isEnabled())
             window.close()
         self.assertIsNotNone(app)
 
