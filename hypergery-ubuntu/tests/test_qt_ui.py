@@ -556,6 +556,130 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    def test_migration_wizard_steps_and_microcopy(self):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp))
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+
+            self.assertEqual(len(dialog._step_labels), 6)
+            self.assertEqual(
+                list(dialog.STEPS),
+                ["Select VM", "Target Host", "Options", "Preflight", "Progress", "Result"],
+            )
+            texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+            self.assertIn("NAS Clone Migration", texts)
+            self.assertIn("not live RAM migration", texts)
+            self.assertIn("Source VM and source disks will not be deleted.", texts)
+            self.assertIn("Must be shut off", texts)
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_migration_wizard_running_vm_blocks_next_with_callout(self):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp), state="running")
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+
+            self.assertEqual(dialog.current_step(), 0)
+            self.assertFalse(dialog.next_button.isEnabled())
+            texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+            self.assertIn("Running VM migration is blocked", texts)
+            dialog.go_next()
+            self.assertEqual(dialog.current_step(), 0)
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_migration_wizard_offline_target_blocks_and_preflight_enables_start(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        offline_host = dict(FAKE_ONLINE_HOST, host_id="offline-target", status="offline")
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp))
+            nas = Path(tmp) / "nas"
+            nas.mkdir()
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [offline_host, FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+            dialog.nas_path.setText(str(nas))
+            dialog.source_host_id.setText("source-host")
+
+            # Offline target blocks Next on the Target Host step and blocks preflight.
+            dialog._set_step(1)
+            dialog.target_host.setCurrentIndex(0)
+            self.assertFalse(dialog.next_button.isEnabled())
+            dialog.run_preflight()
+            self.assertIn("offline", dialog.error_label.text().lower())
+            self.assertFalse(dialog.package_button.isEnabled())
+
+            # Online, ready target passes preflight and enables Start Migration.
+            dialog.target_host.setCurrentIndex(1)
+            dialog._set_step(3)
+            dialog.run_preflight()
+            self.assertTrue(dialog.package_button.isEnabled(), dialog.error_label.text())
+            self.assertIn("Source will be deleted: False", dialog.result_view.toPlainText())
+            self.assertIn("UUID and MAC will be regenerated", dialog.result_view.toPlainText())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_migration_wizard_progress_result_and_copy_safety(self):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp))
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+
+            # Copy buttons must be safe without any migration data.
+            dialog.copy_migration_id()
+            self.assertIn("No migration ID", dialog.error_label.text())
+            dialog.copy_progress_logs()
+            dialog.copy_summary()
+            self.assertIn("No result", dialog.error_label.text())
+
+            # Progress page renders migration id and state list.
+            dialog.last_result = {"migration_id": "hg-mig-77", "package_dir": "/nas/migrations/hg-mig-77"}
+            dialog.migration_id_label.setText("Migration ID: hg-mig-77")
+            dialog._render_progress_states("importing")
+            states = [
+                dialog.progress_states_layout.itemAt(i).widget().text()
+                for i in range(dialog.progress_states_layout.count())
+            ]
+            self.assertTrue(any("importing" in text and "▶" in text for text in states))
+            dialog.copy_migration_id()
+            self.assertEqual(QApplication.clipboard().text(), "hg-mig-77")
+
+            # Result success page shows source intact and UUID/MAC regenerated.
+            dialog._show_result_success({"status": "done"})
+            self.assertEqual(dialog.current_step(), 5)
+            texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+            self.assertIn("Source VM remains untouched", texts)
+            self.assertIn("regenerated UUID and MAC", texts)
+            self.assertIn("conserved", texts)
+
+            # Closing the wizard must not touch the backend destructively.
+            dialog.reject()
+            self.assertFalse(hasattr(backend, "deleted_vms"))
+        self.assertIsNotNone(app)
+
     def test_live_migration_dialog_uses_config_defaults(self):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.config import HyperGeryConfig

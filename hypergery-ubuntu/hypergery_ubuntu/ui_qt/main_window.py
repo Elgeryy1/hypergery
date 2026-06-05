@@ -2262,64 +2262,14 @@ class MainWindow(QMainWindow):
             self.show_error("Select a VM first.")
             return
         dialog = LiveMigrationDialog(self.backend, self.selected_vm, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        values = dialog.values()
-        if (
-            QMessageBox.question(
-                self,
-                "Start NAS Live Migration",
-                (
-                    f"Start NAS migration for {values['vm_name']}?\n\n"
-                    f"Source host: {values['source_host_id']}\n"
-                    f"Target host: {values['target_host_id']}\n"
-                    f"Target VM: {values['target_vm_name']}\n"
-                    f"NAS staging path: {values['nas_path']}\n\n"
-                    "HyperGery will package the source VM, queue an import command on the target agent, "
-                    "and leave the source VM and disks untouched."
-                ),
-            )
-            != QMessageBox.StandardButton.Yes
-        ):
-            return
-
-        def do_migration() -> dict:
-            from ..migration import start_remote_migration
-            from ..registry import RegistryClient
-
-            return start_remote_migration(
-                self.backend,
-                RegistryClient(values["registry_url"]),
-                values["vm_name"],
-                values["nas_path"],
-                source_host_id=values["source_host_id"],
-                target_host_id=values["target_host_id"],
-                target_vm_name=values["target_vm_name"],
-                allow_paused=values["allow_paused"],
-                include_iso=values["include_iso"],
-                include_snapshots=values["include_snapshots"],
-                start_after_import=values["start_after_import"],
-            )
-
-        def on_done(result: dict) -> None:
-            package_dir = result.get("package_dir", "")
-            migration_id = result.get("migration_id", "")
-            command_id = result.get("command_id", "")
+        dialog.exec()
+        if dialog.last_result:
             self.log_activity(
-                f"Remote migration queued: migration_id={migration_id} command_id={command_id} package={package_dir}"
+                "Remote migration queued: "
+                f"migration_id={dialog.last_result.get('migration_id', '')} "
+                f"command_id={dialog.last_result.get('command_id', '')} "
+                f"package={dialog.last_result.get('package_dir', '')}"
             )
-            QMessageBox.information(
-                self,
-                "Migration Queued",
-                (
-                    f"Migration: {migration_id}\n"
-                    f"Target command: {command_id}\n"
-                    f"Package: {package_dir}\n\n"
-                    "The target agent will import the package on its next run. Source VM remains untouched."
-                ),
-            )
-
-        self.run_operation(f"Starting migration for {values['vm_name']}", do_migration, on_success=on_done, refresh_after=False)
 
     def delete_vm(self) -> None:
         if self.selected_vm is None:
