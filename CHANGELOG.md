@@ -24,9 +24,15 @@
 - New Hub endpoint `GET /commands` (read-only listing, newest first) with `target_host_id`, `status`, `command_type`, and `limit` filters; `RegistryClient.list_commands()`.
 - New read-only **Commands** page in the sidebar: command id, host, type, status colors, created/age, payload and result summaries; filters (all/pending/running/done/failed/power/migration); Copy Command ID / Copy Result. No requeue, delete, or execute actions.
 
+### Added — Labs Workspace (Fase 4, implemented)
+
+- The sidebar Labs entry is now a real workspace page (the v0.7 “shares this view” banner is gone): cards per lab with live VM counts, plus a detail panel combining local libvirt VMs and remote Hub-inventory VMs (name, role, state, host, RAM, vCPUs, location), global status, and host distribution.
+- Optional per-VM roles in the lab manifest (`vm_roles`: router/firewall/dns/ad/server/db/web/client) with safe migration — old manifests keep working; invalid roles are dropped. New `LabStore.set_vm_role()` and a “Set VM Role…” action.
+- Quick actions: Open VM, View Remote VM, Migrate VM. Lab actions: Start Lab (local backend + Hub→Agent for remote VMs, with “This will start N VMs across M hosts.” confirmation) and Shutdown Lab (ACPI to running VMs, confirmed). Partial failures are listed per VM in the feedback area and activity log.
+- Intentionally not included: lab-wide Force Off, lab-wide snapshots (button disabled, planned), remote delete (does not exist), guest IPs (no reliable source — not invented).
+
 ### Planned (subject to change, not implemented yet)
 
-- Lab-specific visual workspace.
 - Advanced Settings sections: Host Agent options, Console preferences, Appearance accent/density.
 - Topology view improvements.
 - Optional real-time migration updates beyond the current auto-poll.

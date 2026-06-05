@@ -25,12 +25,19 @@ Lab manifests live at:
   "subnet": "192.168.20.0/24",
   "bridge_name": "hgbr123abcd",
   "vms": [],
+  "vm_roles": {},
   "templates_used": [],
   "notes": ""
 }
 ```
 
 Legacy fields such as `disks` and `iso_references` may still exist for backward compatibility, but portable exports clear private disk and ISO paths.
+
+`vm_roles` (v0.8) is an optional map of VM name → descriptive role used by
+the Labs workspace. Allowed roles: `router`, `firewall`, `dns`, `ad`,
+`server`, `db`, `web`, `client`. Unknown roles are dropped during manifest
+migration; missing entries mean "no role". Old manifests without the field
+keep working unchanged.
 
 ## Lab ID Rules
 
@@ -64,6 +71,30 @@ python -m hypergery_ubuntu.cli lab delete imported-lab
 ```
 
 `delete_lab` does not delete VMs by default. VM deletion must be explicit and backed by real VM deletion logic.
+
+## Labs Workspace (v0.8)
+
+The sidebar **Labs** entry opens a dedicated workspace page (it no longer
+shares the Virtual Machines view):
+
+- One card per lab: name, lab id, network mode, subnet, description, and live
+  VM counts (total / running / shut off / paused / not created).
+- Lab detail: per-VM table combining **local** libvirt VMs and **remote** VMs
+  from the Hub inventory (Name, Role, State, Host, RAM, vCPUs, Location),
+  global status counts, and host distribution.
+- Quick actions: Open VM (local), View Remote VM (opens the host's remote
+  inventory dialog), Migrate VM (local), Set VM Role….
+- Lab actions: **Start Lab** (starts every shut off VM — local backend for
+  local VMs, Hub → Agent command queue for remote VMs; asks
+  "This will start N VMs across M hosts.") and **Shutdown Lab** (ACPI shutdown
+  for every running VM, with confirmation). Partial failures are reported
+  per-VM in the feedback area and the activity log.
+- Intentionally not available: lab-wide Force Off (per-VM Force Off remains in
+  Remote Hosts / Virtual Machines, always confirmed), lab-wide Snapshot
+  (button disabled, planned), remote delete (does not exist anywhere).
+- Empty state: "No labs yet. Create VMs in default-lab or create a new lab."
+- IP addresses are not shown: there is no reliable source for guest IPs yet,
+  so the workspace does not invent them.
 
 ## Qt Lab Manager
 
