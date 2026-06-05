@@ -17,6 +17,13 @@
 - CLI: `hub packages` and `hub cleanup-staging --older-than-hours N [--dry-run] [--confirm] [--include-failed] [--no-orphans]`. Without `--confirm` nothing is ever deleted; real cleanup errors exit non-zero.
 - UI: Migrations → Hub Staging Maintenance panel with staging stats (path, packages, total size, orphans, oldest), Dry Run Cleanup, and Cleanup Confirmed (confirmation dialog). Hub-offline errors render inline without crashing.
 
+### Added — Remote VM Details + Command Queue UI (Fase 3, implemented)
+
+- Agents now report `networks` and `macs` per VM (parsed from the domain XML, best effort) alongside disks/ISOs/display. Backwards compatible: old agents keep working with empty lists.
+- Remote Hosts → View VMs gains a details panel for the selected remote VM: name, host id/name, state, lab, RAM, vCPUs, disk paths, ISO paths, display, MACs, networks, last inventory update, inventory source, and a staleness warning when the data is old. Remote console shows as a disabled button (“arrives later”); remote delete remains intentionally unsupported (no button exists).
+- New Hub endpoint `GET /commands` (read-only listing, newest first) with `target_host_id`, `status`, `command_type`, and `limit` filters; `RegistryClient.list_commands()`.
+- New read-only **Commands** page in the sidebar: command id, host, type, status colors, created/age, payload and result summaries; filters (all/pending/running/done/failed/power/migration); Copy Command ID / Copy Result. No requeue, delete, or execute actions.
+
 ### Planned (subject to change, not implemented yet)
 
 - Lab-specific visual workspace.

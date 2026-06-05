@@ -32,7 +32,11 @@ python -m hypergery_ubuntu.cli registry health
 - `GET /vms`
 - `GET /vms/{host_id}`
 - `POST /commands`
-- `GET /commands/{host_id}`
+- `GET /commands` — read-only command queue listing (v0.8), newest first.
+  Optional query filters: `target_host_id`, `status`
+  (`pending|running|done|failed`), `command_type` (allowlisted types only),
+  `limit` (1–500, default 100).
+- `GET /commands/{host_id}` — pending commands for one host (agent polling)
 - `GET /commands/id/{command_id}`
 - `POST /commands/{command_id}/result`
 - `POST /migrations`
@@ -91,6 +95,25 @@ is not offered yet (no safe backend method). Limitations: the target agent must
 be online, libvirt must be healthy on the target host, actions depend on the
 VM's current state, and Force Off can corrupt guest data (the UI always asks
 for confirmation).
+
+### Remote VM inventory fields (v0.8)
+
+Agents report per-VM inventory on each heartbeat (`POST /vms/report`):
+`vm_name`, `state`, `lab_id`, `display`, `ram_mib`, `vcpus`, `disk_paths`,
+`iso_paths`, and since v0.8 also `networks` and `macs` (parsed from the
+domain XML, best effort). Old agents that omit the new fields keep working —
+the Hub stores empty lists. The Qt app shows these details in
+Remote Hosts → View VMs, including a staleness warning when the inventory
+has not been refreshed recently.
+
+### Command observability (v0.8)
+
+The Qt app has a read-only **Commands** page (sidebar) showing the Hub
+command queue: command id, target host, type, status (pending / running /
+done / failed), created time, age, payload and result summaries. Filters:
+all, per status, power commands, migration commands. Copy actions for the
+command id and the full JSON result. Nothing can be requeued, deleted, or
+executed from this page.
 
 ## Data Model
 
