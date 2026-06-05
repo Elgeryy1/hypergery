@@ -1,6 +1,6 @@
 # HyperGery v0.7 Quick Start
 
-HyperGery v0.7.0 (pre-release) is the Visual Refresh & UX Stabilization release
+HyperGery v0.7.0 is the Visual Refresh & UX Stabilization release
 with Hub Transfer migrations. The big practical change versus v0.6: hosts no
 longer need a shared NAS mount to migrate VMs — packages travel through the
 Hub over HTTP.

@@ -1,5 +1,20 @@
 # HyperGery Validation
 
+## v0.7.0 — Visual Refresh & Hub Transfer close-out (2026-06-05)
+
+- [x] `QT_QPA_PLATFORM=offscreen ~/.venvs/hypergery/bin/python -m unittest discover -s tests` ran 249 tests OK.
+- [x] `python3 -m unittest discover -s tests` ran 249 tests OK with Qt tests skipped cleanly.
+- [x] `python3 -m compileall hypergery-ubuntu` OK.
+- [x] `bash -n` on all 9 shell scripts OK (including `start-second-host.sh` and `install-agent-user-service.sh`).
+- [x] `docker compose config` OK.
+- [x] Hub package staging endpoints smoke-tested against the NAS Hub (upload → list → delete).
+- [x] Real two-host Hub Transfer E2E migrations passed on physical hardware (source gerard-MS-7E26 → target gery-Lenovo-ideapad-330S-14IKB via Hub on the NAS):
+  - small-disk migration → `done`
+  - migration including a 2.8 GiB ISO → `done`
+  - migration with a ~5.8 GiB VM disk → `done`, target started after import
+- [x] In every E2E run: source VM untouched, target imported with regenerated UUID/MAC, Hub staging copy deleted after import (`hub_package_deleted: true`), target temp directory cleaned.
+- [x] True live RAM migration remains intentionally not included in v0.7.0.
+
 ## HyperGery Hub Docker
 
 Validate the Docker deployment files without starting the service:

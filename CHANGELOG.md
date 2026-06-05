@@ -1,9 +1,11 @@
 # Changelog
 
-## v0.7.0 - Unreleased (pre-release, pending final manual smoke)
+## v0.7.0 - Visual Refresh & Hub Transfer (2026-06-05)
 
-Visual Refresh & UX Stabilization plus Hub Transfer migrations. Develop only;
-not tagged or released until the final two-host manual smoke passes.
+Visual Refresh & UX Stabilization plus Hub Transfer migrations. Validated with
+248+ automated tests on two interpreters and real two-host Hub Transfer E2E
+migrations (including a 2.8 GiB ISO and a ~5.8 GiB disk), with the source VM
+untouched and Hub staging cleaned after import.
 
 ### UI — Visual Refresh (PySide6/QSS, design tokens)
 
@@ -16,6 +18,7 @@ not tagged or released until the final two-host manual smoke passes.
 - Virtual Machines view: page header with counters, 7-column table with state chips, modernized detail cards including Console status (Host Key: Right Ctrl).
 - Console window polish: grouped toolbar, status bar with display type/resolution, explicit disconnected/powered-off/SPICE states. Closing the console never stops the VM.
 - Migrations page with real read-only history from the Hub (`/migrations`): refresh on demand, status colors, copy ID/summary. Never deletes records or packages.
+- Remote Hosts "View VMs" opens the selected host's read-only VM inventory from the Hub (remote VM control arrives in v0.8).
 
 ### Hub Transfer migrations (new in v0.7)
 
@@ -30,10 +33,18 @@ not tagged or released until the final two-host manual smoke passes.
 - `scripts/start-second-host.sh`: one-command launcher for a secondary host (agent + app against the NAS Hub).
 - `scripts/install-agent-user-service.sh`: installs the agent as a systemd --user service (no sudo, no stored credentials; optional `loginctl enable-linger` for headless hosts).
 
+### Not included in v0.7.0
+
+- True live RAM migration / HG-MEMDIFF or any dirty-page transfer protocol.
+- AutoBoost, Android Hub, IsardVDI, P2P transfer.
+- Remote VM power control or remote console (inventory is read-only).
+- SPICE integrated console (external viewer fallback remains).
+
 ### Deferred to v0.8
 
 - Lab-specific visual workspace.
 - Extra Settings sections (Host Agent options, Console preferences, Appearance accent/density).
+- Remote VM power control from Remote Hosts.
 
 ## v0.6.0 - NAS Clone Migration
 

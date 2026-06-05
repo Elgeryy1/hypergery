@@ -87,6 +87,10 @@ The migration architecture has four parts:
 
 Running VM copy is not treated as safe by default. If HyperGery cannot use a real libvirt/QEMU-safe strategy, preflight blocks the migration with a clear error and asks for paused/offline packaging. The source VM, source disks, and source lab metadata are never deleted by v0.6.0 migration flows.
 
+## Hub Transfer (v0.7.0)
+
+v0.7.0 adds a second transfer mode on top of NAS Clone Migration. With `--transfer hub` (the UI default), the source packages the VM locally, uploads it to the Hub's staging area over HTTP (`/packages` endpoints, streamed in chunks), and the target downloads, validates, and imports it. After a successful import the target deletes both its local temporary copy and the Hub staging copy. Hosts no longer need a shared mount or identical paths — only the Hub URL. The shared-NAS mode remains available with `--transfer nas`. The safety model is unchanged: the source VM is never touched and target imports regenerate UUID/MAC.
+
 The registry command queue is not a shell execution mechanism. Supported command types are explicit and limited to safe operations such as `ping`, `preflight`, `list_vms`, `receive_vm_package`, `import_vm_package`, and `migration_status`. Package validation/import commands only accept package directories inside the agent's configured `nas_staging_path` or its `migrations/` child.
 
 The first migration implementation lives in `hypergery_ubuntu.migration` and is intentionally offline-first:
