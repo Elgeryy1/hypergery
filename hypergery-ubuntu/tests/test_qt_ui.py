@@ -1482,6 +1482,46 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_command_completion_logs_activity(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            window = self.make_window_with_dialog(backend_cls, tmp, [dict(self.REMOTE_VM)])
+
+            def fake_run_operation(label, fn, *, on_success=None, **kwargs):
+                result = fn()
+                if on_success:
+                    on_success(result)
+
+            window._remote_power_command_id = "cmd-1"
+            with (
+                patch.object(window, "run_operation", side_effect=fake_run_operation),
+                patch.object(window, "_refresh_remote_vms"),
+                patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls,
+            ):
+                registry_cls.return_value.command.return_value = {
+                    "status": "done",
+                    "result": {"message": "start executed on hg-remote."},
+                }
+                window._poll_remote_power_command()
+            self.assertIn("Remote command done: cmd-1", window.activity_log.toPlainText())
+
+            window._remote_power_command_id = "cmd-2"
+            with (
+                patch.object(window, "run_operation", side_effect=fake_run_operation),
+                patch.object(window, "_refresh_remote_vms"),
+                patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls,
+            ):
+                registry_cls.return_value.command.return_value = {
+                    "status": "failed",
+                    "result": {"error": "VM state mismatch"},
+                }
+                window._poll_remote_power_command()
+            self.assertIn("Remote command FAILED: cmd-2", window.activity_log.toPlainText())
+            window._remote_vms_dialog.close()
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_details_panel_clears_without_selection_and_console_stays_disabled(self, backend_cls):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QPushButton

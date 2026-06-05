@@ -1025,8 +1025,10 @@ class MainWindow(QMainWindow):
             message = str(payload.get("message") or payload.get("error") or "")
             if status == "done":
                 self.remote_power_status.setText(f"Command {command_id} done. {message}".strip())
+                self.log_activity(f"Remote command done: {command_id}. {message}".strip())
             else:
                 self.remote_power_status.setText(f"Command {command_id} FAILED. {message}".strip())
+                self.log_activity(f"Remote command FAILED: {command_id}. {message}".strip())
             self._refresh_remote_vms()
 
         self.run_operation(
@@ -1387,7 +1389,7 @@ class MainWindow(QMainWindow):
             ("New VM", "Create from a local ISO", self.new_vm, True),
             ("New Lab", "Isolated lab network", self.new_lab, False),
             ("Open Console", "Integrated VNC console", self._dashboard_go_vms, False),
-            ("Live Migration", "NAS Clone Migration", self._dashboard_go_vms, False),
+            ("Live Migration", "Hub Transfer or NAS Clone", self._dashboard_go_vms, False),
             ("Run Doctor", "Host and Hub diagnostics", self._dashboard_go_diagnostics, False),
             ("Settings", "Hub · NAS · VM defaults", self.app_settings, False),
         )
@@ -1425,7 +1427,7 @@ class MainWindow(QMainWindow):
         self.dash_migration_label = QLabel("No migrations recorded yet.")
         self.dash_migration_label.setObjectName("mutedLabel")
         self.dash_migration_label.setWordWrap(True)
-        migration_note = QLabel("NAS Clone Migration keeps the source VM untouched; UUID and MAC are regenerated on the target.")
+        migration_note = QLabel("Migrations (Hub Transfer or NAS Clone) keep the source VM untouched; UUID and MAC are regenerated on the target.")
         migration_note.setObjectName("mutedLabel")
         migration_note.setWordWrap(True)
         migration_layout.addWidget(migration_title)
