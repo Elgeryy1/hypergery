@@ -1,0 +1,51 @@
+# TEST_RESULTS_V1 — v0.9/v1 overnight run (2026-06-06)
+
+## Final results
+
+```text
+QT_QPA_PLATFORM=offscreen ~/.venvs/hypergery/bin/python -m pytest
+→ 463 passed, 1 skipped in 53.54s        (pytest 9.0.3, full suite incl. Qt offscreen)
+
+python3 -m unittest discover -s tests
+→ Ran 464 tests · OK (skipped=70)         (system Python, Qt tests skip cleanly)
+
+python3 -m compileall hypergery-ubuntu    → OK
+```
+
+The single venv skip is `test_require_raises_without_battery`: psutil reports
+the laptop's real battery, so the "no battery available" branch cannot be
+forced on this hardware (covered by the sysfs-less code path on machines
+without a battery).
+
+Baseline at session start: 315 tests (v0.8). Added this session: **149 tests**
+across 8 new test modules:
+
+| Module | Tests | Covers |
+| --- | --- | --- |
+| test_v1_core.py | 13 | errors+codes, V1Settings (env/validation), structured logger, operation ids |
+| test_v1_hosts_telemetry.py | 20 | telemetry readers/history/stale, alerts, host registry, health checks |
+| test_v1_labs_providers.py | 21 | lab v0.9 fields/migration, validate_lab, filters, 3 VM providers |
+| test_v1_nas.py | 10 | NAS health, commit dry-run/real, checksums, corruption, restore |
+| test_v1_orchestrator_battery.py | 18 | battery tiers/modes/events, every orchestrator rule |
+| test_v1_teleport_memdiff.py | 16 | memdiff roundtrip/corruption, teleport modes, rollback |
+| test_v1_network_rbac_nodes.py | 19 | network conflicts, RBAC + guest limits, external nodes |
+| test_v1_api.py | 15 | live HTTP server: envelope, all endpoints, error codes, confirm guard |
+| test_v1_cli.py | 7 | v1 CLI: validation exit codes, NAS dry-run flow, guests, health |
+| test_v1_integration.py | 5 | goal §20.2 flows 1–5 end to end |
+| test_qt_ui.py (Control Center) | +5 | tabs, first-open refresh, inline errors, real collectors, export |
+
+## Integration flows (goal §20.2)
+
+1. **Create lab → validate → orchestrator plan → teleport dry-run** ✅
+2. **Low battery (22%) → offload recommendations → plan moves heavy VM to home_pc** ✅
+3. **NAS commit dry-run → real commit → checksum verify → restore** ✅
+4. **MemDiff A/B → delta saved/loaded → apply → verify byte-identical** ✅
+5. **Guest offload → PermissionDeniedError → audit log entry → orchestrator keeps local** ✅
+
+## Real-hardware checks during the session
+
+- Battery service read the laptop's real battery (57%, not_charging → tier
+  normal, no actions — correct).
+- `v1 network validate` validated the real `default-lab` network.
+- v0.8 regression suite untouched and green throughout (no existing test
+  modified except sidebar additions for the new pages).
