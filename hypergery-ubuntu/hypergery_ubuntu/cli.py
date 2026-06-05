@@ -13,7 +13,9 @@ from .templates import TemplateStore
 
 
 def default_hub_url() -> str:
-    return os.environ.get("HYPERGERY_HUB_URL") or os.environ.get("HYPERGERY_REGISTRY_URL") or "http://127.0.0.1:8765"
+    from .config import effective_value
+
+    return effective_value("hub_url")
 
 
 def print_preflight(backend: HyperGeryBackend) -> int:
@@ -121,6 +123,14 @@ def wait_state(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
 def print_json(data: object) -> int:
     print(json.dumps(data, indent=2, sort_keys=True))
     return 0
+
+
+def doctor_action() -> int:
+    from .doctor import collect_doctor_items, doctor_exit_code, format_doctor_items
+
+    items = collect_doctor_items()
+    print(format_doctor_items(items))
+    return doctor_exit_code(items)
 
 
 def lab_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
@@ -383,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hypergery-cli")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight", help="Run non-GUI host dependency checks.")
+    sub.add_parser("doctor", help="Run v0.6 Hub, agent, NAS, Docker, and libvirt diagnostics without changing the system.")
     sub.add_parser("list-vms", help="List real libvirt VMs managed by HyperGery.")
     vm_parser = sub.add_parser("validate-vm", help="Print real libvirt state for a HyperGery VM.")
     vm_parser.add_argument("name")
@@ -571,6 +582,8 @@ def main(argv: list[str] | None = None) -> int:
             return agent_action(args)
         if args.command == "host":
             return host_action(args)
+        if args.command == "doctor":
+            return doctor_action()
         backend = HyperGeryBackend()
         if args.command == "preflight":
             return print_preflight(backend)

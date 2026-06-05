@@ -28,14 +28,16 @@ class AgentConfig:
     heartbeat_interval_seconds: int = 15
 
     def __post_init__(self) -> None:
+        from .config import effective_value
+
         if not self.registry_url:
-            self.registry_url = os.environ.get("HYPERGERY_HUB_URL") or os.environ.get("HYPERGERY_REGISTRY_URL") or "http://127.0.0.1:8765"
+            self.registry_url = effective_value("hub_url")
         if not self.host_id:
-            self.host_id = os.environ.get("HYPERGERY_HOST_ID") or socket.gethostname()
+            self.host_id = effective_value("host_id")
         if not self.name:
-            self.name = os.environ.get("HYPERGERY_HOST_NAME") or socket.gethostname()
+            self.name = effective_value("host_name")
         if not self.nas_staging_path:
-            self.nas_staging_path = os.environ.get("HYPERGERY_NAS_STAGING_PATH") or str(Path.home() / "hypergery-nas" / "migrations")
+            self.nas_staging_path = effective_value("nas_staging_path")
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AgentConfig":

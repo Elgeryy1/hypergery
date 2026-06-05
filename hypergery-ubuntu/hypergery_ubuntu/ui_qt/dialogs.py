@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import os
 import socket
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
+from ..config import HyperGeryConfig, default_config_values, effective_config
+from ..registry import RegistryClient
 from ..templates import normalize_template_id
 from .lab_helpers import build_lab_preview
 from .styles import details_block
@@ -45,9 +48,127 @@ if TYPE_CHECKING:
 FILE_DIALOG_OPTIONS = QFileDialog.Option.DontUseNativeDialog
 
 
+class AppSettingsDialog(QDialog):
+    def __init__(self, backend: HyperGeryBackend, parent=None) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.setWindowTitle("HyperGery Settings")
+        effective = effective_config()
+        saved = HyperGeryConfig.load()
+
+        self.hub_url = QLineEdit(saved.hub_url or effective["hub_url"].value)
+        self.host_id = QLineEdit(saved.host_id or effective["host_id"].value)
+        self.host_name = QLineEdit(saved.host_name or effective["host_name"].value)
+        self.nas_staging_path = QLineEdit(saved.nas_staging_path or effective["nas_staging_path"].value)
+        self.default_display = QComboBox()
+        self.default_display.addItems(["vnc", "spice"])
+        display = saved.default_display or effective["default_display"].value
+        idx = self.default_display.findText(display)
+        self.default_display.setCurrentIndex(idx if idx >= 0 else 0)
+        self.default_iso_folder = QLineEdit(saved.default_iso_folder or effective["default_iso_folder"].value)
+        self.default_vm_storage_path = QLineEdit(saved.default_vm_storage_path or effective["default_vm_storage_path"].value)
+        self.status = QLabel("")
+        self.status.setObjectName("mutedLabel")
+
+        form = QFormLayout()
+        for label, field, key in (
+            ("Hub URL", self.hub_url, "hub_url"),
+            ("Host ID", self.host_id, "host_id"),
+            ("Host name", self.host_name, "host_name"),
+            ("NAS staging path", self.nas_staging_path, "nas_staging_path"),
+            ("Default display", self.default_display, "default_display"),
+            ("Default ISO folder", self.default_iso_folder, "default_iso_folder"),
+            ("Default VM storage path", self.default_vm_storage_path, "default_vm_storage_path"),
+        ):
+            row = QHBoxLayout()
+            row.addWidget(field, 1)
+            source = QLabel(effective[key].source)
+            source.setObjectName("mutedLabel")
+            row.addWidget(source)
+            form.addRow(label, row)
+
+        test_hub = QPushButton("Test Hub")
+        test_hub.clicked.connect(self.test_hub)
+        test_nas = QPushButton("Test NAS Write")
+        test_nas.clicked.connect(self.test_nas)
+        test_libvirt = QPushButton("Test libvirt")
+        test_libvirt.clicked.connect(self.test_libvirt)
+        reset = QPushButton("Reset Defaults")
+        reset.clicked.connect(self.reset_defaults)
+        action_row = QHBoxLayout()
+        action_row.addWidget(test_hub)
+        action_row.addWidget(test_nas)
+        action_row.addWidget(test_libvirt)
+        action_row.addWidget(reset)
+        action_row.addStretch()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addLayout(action_row)
+        layout.addWidget(self.status)
+        layout.addWidget(buttons)
+        self.resize(760, 380)
+
+    def values(self) -> dict[str, str]:
+        return {
+            "hub_url": self.hub_url.text().strip(),
+            "host_id": self.host_id.text().strip(),
+            "host_name": self.host_name.text().strip(),
+            "nas_staging_path": self.nas_staging_path.text().strip(),
+            "default_display": self.default_display.currentText(),
+            "default_iso_folder": self.default_iso_folder.text().strip(),
+            "default_vm_storage_path": self.default_vm_storage_path.text().strip(),
+        }
+
+    def test_hub(self) -> None:
+        try:
+            result = RegistryClient(self.hub_url.text().strip(), timeout=3).health()
+            self.status.setText(f"Hub OK: {result}")
+        except HyperGeryError as exc:
+            self.status.setText(f"Hub FAIL: {exc}")
+
+    def test_nas(self) -> None:
+        path = Path(self.nas_staging_path.text().strip()).expanduser()
+        if not path.is_dir():
+            self.status.setText(f"NAS FAIL: path does not exist: {path}")
+            return
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".hypergery-write-", dir=path, delete=True) as fh:
+                fh.write(b"ok")
+                fh.flush()
+            self.status.setText(f"NAS OK: writable {path}")
+        except OSError as exc:
+            self.status.setText(f"NAS FAIL: {exc}")
+
+    def test_libvirt(self) -> None:
+        try:
+            items = self.backend.preflight()
+        except Exception as exc:
+            self.status.setText(f"libvirt FAIL: {exc}")
+            return
+        failures = [item for item in items if item.status == "Error" and item.name in {"libvirt connection", "virsh"}]
+        self.status.setText("libvirt OK" if not failures else "libvirt FAIL: " + "; ".join(item.detail for item in failures))
+
+    def reset_defaults(self) -> None:
+        defaults = default_config_values()
+        self.hub_url.setText(defaults["hub_url"])
+        self.host_id.setText(defaults["host_id"])
+        self.host_name.setText(defaults["host_name"])
+        self.nas_staging_path.setText(defaults["nas_staging_path"])
+        self.default_display.setCurrentIndex(self.default_display.findText(defaults["default_display"]))
+        self.default_iso_folder.setText(defaults["default_iso_folder"])
+        self.default_vm_storage_path.setText(defaults["default_vm_storage_path"])
+        self.status.setText("Defaults loaded. Select Save to persist them.")
+
+
 class IdentityPage(QWizardPage):
-    def __init__(self) -> None:
+    def __init__(self, default_iso_folder: str = "") -> None:
         super().__init__()
+        self.default_iso_folder = default_iso_folder
         self.setTitle("Identity")
         self.setSubTitle("Choose the VM name and boot ISO.")
         self.error_label = QLabel("")
@@ -84,7 +205,7 @@ class IdentityPage(QWizardPage):
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Select boot ISO",
-            "",
+            self.default_iso_folder,
             "ISO images (*.iso);;All files (*)",
             "",
             FILE_DIALOG_OPTIONS,
@@ -135,11 +256,12 @@ class ResourcesPage(QWizardPage):
 
 
 class IntegrationPage(QWizardPage):
-    def __init__(self, default_lab_id: str = "default-lab") -> None:
+    def __init__(self, default_lab_id: str = "default-lab", default_disk_dir: str = "", default_display: str = "") -> None:
         super().__init__()
         self.setTitle("Storage & Network")
         self.setSubTitle("Choose disk location, lab network and console type.")
         self.disk_dir = QLineEdit()
+        self.disk_dir.setText(default_disk_dir)
         self.disk_dir.setPlaceholderText("Default HyperGery VM directory")
         browse = QPushButton("Browse")
         browse.clicked.connect(self.pick_dir)
@@ -147,6 +269,10 @@ class IntegrationPage(QWizardPage):
         self.network.addItems(["nat", "isolated"])
         self.display = QComboBox()
         self.display.addItems(["spice", "vnc"])
+        if default_display:
+            idx = self.display.findText(default_display)
+            if idx >= 0:
+                self.display.setCurrentIndex(idx)
         self.lab_id = QLineEdit(default_lab_id or "default-lab")
 
         disk_row = QHBoxLayout()
@@ -217,9 +343,14 @@ class VMWizard(QWizard):
         super().__init__(parent)
         self.setWindowTitle("Create Virtual Machine")
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
-        self.identity_page = IdentityPage()
+        app_defaults = effective_config()
+        self.identity_page = IdentityPage(app_defaults["default_iso_folder"].value)
         self.resources_page = ResourcesPage()
-        self.integration_page = IntegrationPage(default_lab_id)
+        self.integration_page = IntegrationPage(
+            default_lab_id,
+            app_defaults["default_vm_storage_path"].value,
+            app_defaults["default_display"].value,
+        )
         self.review_page = ReviewPage(self)
         self.addPage(self.identity_page)
         self.addPage(self.resources_page)
@@ -663,8 +794,9 @@ class LiveMigrationDialog(QDialog):
         notice.setObjectName("mutedLabel")
         notice.setWordWrap(True)
 
-        self.registry_url = QLineEdit(os.environ.get("HYPERGERY_HUB_URL") or os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765"))
-        self.source_host_id = QLineEdit(os.environ.get("HYPERGERY_HOST_ID", socket.gethostname()))
+        app_config = effective_config()
+        self.registry_url = QLineEdit(app_config["hub_url"].value)
+        self.source_host_id = QLineEdit(app_config["host_id"].value)
         self.target_host = QComboBox()
         refresh_hosts = QPushButton("Refresh Hosts")
         refresh_hosts.clicked.connect(self.refresh_hosts)
@@ -672,7 +804,7 @@ class LiveMigrationDialog(QDialog):
         host_row.addWidget(self.target_host, 1)
         host_row.addWidget(refresh_hosts)
         self.target_name = QLineEdit(f"{vm.name}-migrated")
-        self.nas_path = QLineEdit(str(Path.home() / "hypergery-nas"))
+        self.nas_path = QLineEdit(app_config["nas_staging_path"].value)
         browse = QPushButton("Browse")
         browse.clicked.connect(self.pick_nas_path)
         path_row = QHBoxLayout()

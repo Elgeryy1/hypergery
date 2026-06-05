@@ -33,9 +33,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary, now_iso
+from ..config import HyperGeryConfig, effective_config, effective_value
 from ..labs import LabStore
 from ..templates import TemplateStore
 from .dialogs import (
+    AppSettingsDialog,
     CleanupPreviewDialog,
     CloneDialog,
     DeleteConfirmationDialog,
@@ -133,6 +135,7 @@ class MainWindow(QMainWindow):
         layout.addSpacing(18)
 
         self.new_button = self._button("New VM", self.new_vm, primary=True)
+        self.app_settings_button = self._button("App Settings", self.app_settings)
         self.settings_button = self._button("Settings", self.settings_vm)
         self.start_button = self._button("Start", self.start_vm)
         self.shutdown_button = self._button("ACPI Shutdown", self.shutdown_vm)
@@ -147,6 +150,7 @@ class MainWindow(QMainWindow):
         self.overview_button = self._button("Resources…", self.show_cleanup_preview)
         for button in (
             self.new_button,
+            self.app_settings_button,
             self.settings_button,
             self.start_button,
             self.shutdown_button,
@@ -385,6 +389,35 @@ class MainWindow(QMainWindow):
         remote_header.addWidget(self.refresh_remote_button)
         remote_header.addWidget(self.test_remote_button)
         remote_layout.addLayout(remote_header)
+        hub_grid = QGridLayout()
+        self.hub_url_label = QLabel(self.registry_url())
+        self.hub_status_label = QLabel("not checked")
+        self.hub_last_check_label = QLabel("")
+        self.hub_hosts_online_label = QLabel("0")
+        self.hub_vm_count_label = QLabel("0")
+        self.hub_nas_label = QLabel("")
+        for label in (
+            self.hub_url_label,
+            self.hub_status_label,
+            self.hub_last_check_label,
+            self.hub_hosts_online_label,
+            self.hub_vm_count_label,
+            self.hub_nas_label,
+        ):
+            label.setObjectName("mutedLabel")
+        hub_grid.addWidget(QLabel("Hub URL"), 0, 0)
+        hub_grid.addWidget(self.hub_url_label, 0, 1)
+        hub_grid.addWidget(QLabel("Hub status"), 0, 2)
+        hub_grid.addWidget(self.hub_status_label, 0, 3)
+        hub_grid.addWidget(QLabel("Last check"), 1, 0)
+        hub_grid.addWidget(self.hub_last_check_label, 1, 1)
+        hub_grid.addWidget(QLabel("Hosts online"), 1, 2)
+        hub_grid.addWidget(self.hub_hosts_online_label, 1, 3)
+        hub_grid.addWidget(QLabel("VM records"), 2, 0)
+        hub_grid.addWidget(self.hub_vm_count_label, 2, 1)
+        hub_grid.addWidget(QLabel("NAS staging"), 2, 2)
+        hub_grid.addWidget(self.hub_nas_label, 2, 3)
+        remote_layout.addLayout(hub_grid)
         self.remote_host_table = QTableWidget(0, 8)
         self.remote_host_table.setHorizontalHeaderLabels(["Host", "Status", "Last seen", "RAM", "Disk free", "KVM", "libvirt", "Active VMs"])
         self.remote_host_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -612,6 +645,7 @@ class MainWindow(QMainWindow):
         for button in (
             self.new_button,
             self.settings_button,
+            self.app_settings_button,
             self.start_button,
             self.shutdown_button,
             self.console_button,
@@ -688,7 +722,7 @@ class MainWindow(QMainWindow):
         self.test_remote_button.setEnabled(bool(self.remote_host_table.selectionModel().selectedRows()))
 
     def registry_url(self) -> str:
-        return os.environ.get("HYPERGERY_HUB_URL") or os.environ.get("HYPERGERY_REGISTRY_URL", "http://127.0.0.1:8765")
+        return effective_value("hub_url")
 
     def refresh_remote_hosts(self) -> None:
         self.run_operation(
@@ -730,7 +764,27 @@ class MainWindow(QMainWindow):
             self.remote_detail.setPlainText(
                 "Hub is reachable but has no hosts. Start a HyperGery agent on each participating host."
             )
+        self.render_hub_status(hosts, reachable=True)
         self.update_actions()
+
+    def render_hub_status(self, hosts: list[dict[str, Any]], *, reachable: bool) -> None:
+        config = effective_config()
+        nas_path = os.path.expanduser(config["nas_staging_path"].value)
+        nas_label = f"{nas_path} writable={os.path.isdir(nas_path) and os.access(nas_path, os.W_OK)}"
+        vm_count = "unknown"
+        if reachable:
+            try:
+                from ..registry import RegistryClient
+
+                vm_count = str(len(RegistryClient(self.registry_url()).list_vms()))
+            except Exception:
+                vm_count = "unavailable"
+        self.hub_url_label.setText(self.registry_url())
+        self.hub_status_label.setText("online" if reachable else "offline")
+        self.hub_last_check_label.setText(now_iso())
+        self.hub_hosts_online_label.setText(str(sum(1 for host in hosts if host.get("status") == "online")))
+        self.hub_vm_count_label.setText(vm_count)
+        self.hub_nas_label.setText(nas_label)
 
     def test_selected_remote_host(self) -> None:
         indexes = self.remote_host_table.selectionModel().selectedRows()
@@ -819,6 +873,7 @@ class MainWindow(QMainWindow):
             self.remote_hosts = []
             self.remote_host_table.setRowCount(0)
             self.remote_status_label.setText("Hub unavailable")
+            self.render_hub_status([], reachable=False)
             self.remote_detail.setPlainText(
                 "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
                 f"Current Hub URL: {self.registry_url()}\n"
@@ -1386,6 +1441,13 @@ class MainWindow(QMainWindow):
         ):
             return
         self.run_operation(f"Creating {values['name']}", lambda: self.backend.create_vm(**values))
+
+    def app_settings(self) -> None:
+        dialog = AppSettingsDialog(self.backend, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        HyperGeryConfig(**dialog.values()).save()
+        self.status.showMessage("HyperGery settings saved", 5000)
 
     def settings_vm(self) -> None:
         if self.selected_vm is None:

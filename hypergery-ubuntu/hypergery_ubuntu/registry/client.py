@@ -9,13 +9,9 @@ from ..backend import HyperGeryError
 
 
 def default_hub_url() -> str:
-    import os
+    from ..config import effective_value
 
-    return (
-        os.environ.get("HYPERGERY_HUB_URL")
-        or os.environ.get("HYPERGERY_REGISTRY_URL")
-        or "http://127.0.0.1:8765"
-    )
+    return effective_value("hub_url")
 
 
 class RegistryClient:

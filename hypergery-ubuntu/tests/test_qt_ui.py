@@ -121,6 +121,45 @@ class QtUiTests(unittest.TestCase):
             dialog.close()
         self.assertIsNotNone(app)
 
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_hosts_panel_uses_hub_labels(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            self.assertEqual(window.remote_status_label.text(), "Hub not loaded")
+            self.assertIn("HyperGery Hub", window.remote_detail.placeholderText())
+            self.assertTrue(hasattr(window, "hub_status_label"))
+            window.close()
+        self.assertIsNotNone(app)
+
+    def test_live_migration_dialog_uses_config_defaults(self):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.config import HyperGeryConfig
+        from hypergery_ubuntu.backend import HyperGeryError
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            HyperGeryConfig(
+                hub_url="http://config-hub.local:8765",
+                host_id="source-from-config",
+                nas_staging_path=str(Path(tmp) / "nas"),
+            ).save(config_path)
+            env = {"HYPERGERY_CONFIG": str(config_path)}
+            backend = MigrationFakeBackend(Path(tmp))
+            with patch.dict(os.environ, env, clear=True), patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.side_effect = HyperGeryError("hub offline")
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+            self.assertEqual(dialog.registry_url.text(), "http://config-hub.local:8765")
+            self.assertEqual(dialog.source_host_id.text(), "source-from-config")
+            self.assertEqual(dialog.nas_path.text(), str(Path(tmp) / "nas"))
+            dialog.close()
+        self.assertIsNotNone(app)
+
 
 if __name__ == "__main__":
     unittest.main()
