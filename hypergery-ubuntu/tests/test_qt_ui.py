@@ -101,7 +101,7 @@ class QtUiTests(unittest.TestCase):
             dialog.close()
         self.assertIsNotNone(app)
 
-    def test_live_migration_dialog_shows_registry_unavailable(self):
+    def test_live_migration_dialog_shows_hub_unavailable(self):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.backend import HyperGeryError
         from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
@@ -114,7 +114,9 @@ class QtUiTests(unittest.TestCase):
                 dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
 
             self.assertFalse(dialog.package_button.isEnabled())
-            self.assertIn("Registry is not reachable or not configured", dialog.result_view.toPlainText())
+            self.assertIn("Hub not reachable", dialog.result_view.toPlainText())
+            self.assertIn("HYPERGERY_HUB_URL", dialog.result_view.toPlainText())
+            self.assertIn("docker compose", dialog.result_view.toPlainText())
             self.assertIn("registry offline", dialog.result_view.toPlainText())
             dialog.close()
         self.assertIsNotNone(app)
