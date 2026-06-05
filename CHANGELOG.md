@@ -31,6 +31,12 @@
 - Quick actions: Open VM, View Remote VM, Migrate VM. Lab actions: Start Lab (local backend + Hub→Agent for remote VMs, with “This will start N VMs across M hosts.” confirmation) and Shutdown Lab (ACPI to running VMs, confirmed). Partial failures are listed per VM in the feedback area and activity log.
 - Intentionally not included: lab-wide Force Off, lab-wide snapshots (button disabled, planned), remote delete (does not exist), guest IPs (no reliable source — not invented).
 
+### Added — Lab Power Actions + Polish (Fase 5, implemented)
+
+- Role-aware lab power ordering: Start Lab boots routers/firewalls → dns/ad → servers/db/web → clients (alphabetical within tier, unassigned last); Shutdown Lab reverses the order. Labs without roles fall back to alphabetical.
+- Activity feedback: remote power command completion (done/failed) is now recorded in the activity log alongside queue, lab action, and staging cleanup entries.
+- UI polish: Settings callouts no longer promise features “for v0.8” that moved out of scope (now “a future version”); Dashboard quick action and last-migration note mention Hub Transfer alongside NAS Clone.
+
 ### Planned (subject to change, not implemented yet)
 
 - Advanced Settings sections: Host Agent options, Console preferences, Appearance accent/density.
