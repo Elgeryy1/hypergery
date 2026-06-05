@@ -160,6 +160,21 @@ python -m hypergery_ubuntu.cli migrate status --migration-id <migration_id>
 
 See [docs/NAS_LIVE_MIGRATION.md](docs/NAS_LIVE_MIGRATION.md) for the package layout and safety model.
 
+### Remote Cluster Workflows (v0.8, in development)
+
+- **Remote VM Power Control**: Start / ACPI Shutdown / Force Off for VMs on other hosts, flowing App → Hub → target Agent → libvirt. Double allowlist (Hub and Agent); Force Off always asks for confirmation. No remote delete, no remote shell, no remote console.
+- **Remote VM Details**: Remote Hosts → View VMs shows per-VM details from the Hub inventory (disks, ISOs, display, MACs, networks, last update) with a staleness warning.
+- **Command Queue page**: read-only view of the Hub command queue with status, age, payload/result summaries, and filters. Nothing can be requeued or deleted from it.
+- **Hub staging maintenance**: `GET /packages` + `POST /packages/cleanup` (dry-run by default), `hub packages` / `hub cleanup-staging` CLI (real deletion requires `--confirm`), and a Migrations → Hub Staging Maintenance panel. Only temporary staging packages are ever deleted — never VMs or imported disks.
+- **Labs workspace**: dedicated Labs page with per-lab cards, a unified local+remote VM table, host distribution, optional per-VM roles, and confirmed Start Lab / Shutdown Lab actions with role-aware ordering (infrastructure first on start, clients first on shutdown).
+
+```bash
+# v0.8 CLI additions
+python -m hypergery_ubuntu.cli hub packages
+python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --dry-run
+python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --confirm
+```
+
 ### Not yet implemented
 
 - True live RAM migration with custom dirty-page transfer.
@@ -168,6 +183,9 @@ See [docs/NAS_LIVE_MIGRATION.md](docs/NAS_LIVE_MIGRATION.md) for the package lay
 - Android Hub.
 - IsardVDI.
 - SPICE integrated console.
+- Remote console (remote VM consoles are intentionally not exposed yet).
+- Remote VM delete/undefine (intentionally not supported).
+- Hub authentication (the Hub is LAN-only; do not expose it beyond the lab network).
 - Lab topology zoom/pan and PNG/SVG export.
 - VM role badges on topology nodes.
 - Per-VM progress during lab instantiation.
@@ -296,7 +314,7 @@ System Python (no PySide6 — Qt tests are skipped cleanly):
 cd hypergery-ubuntu && python3 -m unittest discover -s tests
 ```
 
-Full suite inside the venv (all 249 tests pass including Qt tests):
+Full suite inside the venv (all 315 tests pass including Qt offscreen tests):
 
 ```bash
 cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
@@ -321,7 +339,7 @@ The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime fo
 - v0.5.0 — Lab Topology view, planned VM editor, ISO reuse, resource overview, CLI update/instantiate ✓
 - v0.6.0 — NAS Live Migration: registry, agents, host discovery, NAS staging, migration package export/import, UI action, CLI helpers ✓
 - v0.7.0 — Visual Refresh & UX Stabilization: PySide6/QSS UI redesign, Hub on the NAS, Hub Transfer migrations, migrations history, agent user service ✓
-- v0.8.0 — Remote VM power control via Hub→Agent (in development), Lab visual workspace, extra Settings sections (agent options, console preferences, appearance), further UX
+- v0.8.0 — Remote cluster workflows (in development): remote VM power control via Hub→Agent ✓, remote VM details ✓, command queue view ✓, Hub staging cleanup ✓, Labs workspace with lab power actions ✓; extra Settings sections moved to a later version
 - v1.0.0 — stable classroom-ready release
 
 ## License

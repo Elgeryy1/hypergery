@@ -153,7 +153,12 @@ Hub staging details:
   which lands on the NAS storage).
 - A failed migration may leave its package staged on the Hub for inspection;
   nothing deletes it automatically. Remove it manually with
-  `DELETE /packages/<migration_id>` once diagnosed.
+  `DELETE /packages/<migration_id>` once diagnosed, or use the v0.8 staging
+  maintenance: `hub packages` / `hub cleanup-staging` (dry-run by default,
+  `--confirm` to delete) or Migrations → Hub Staging Maintenance in the app.
+  Cleanup only ever removes temporary staging packages — never VMs or
+  imported disks — and always skips active migrations and recent packages.
+  See [HYPERGERY_HUB.md](HYPERGERY_HUB.md) for the rules.
 
 Choosing a mode:
 

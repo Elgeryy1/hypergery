@@ -395,3 +395,38 @@ available remotely in v0.8 Fase 1. ACPI Shutdown needs guest cooperation, so
 the VM may legitimately still be `running` right after the command reports
 done; the inventory refresh will show the final state once the guest powers
 off (use Force Off only as a last resort — it can corrupt guest data).
+
+## Hub Staging Cleanup Finds No Candidates
+
+`hub cleanup-staging` (and the Migrations → Hub Staging Maintenance panel)
+only ever targets packages that are **older than the threshold** (1 hour
+minimum, even if you ask for less) and whose migration is **not active**
+(`created` … `defining_vm` are always kept). Packages of `failed` /
+`rolled_back` migrations need `--include-failed`. If `hub packages` lists a
+package but cleanup skips it, the `skipped` output tells you exactly why.
+Real deletion always requires `--confirm` (CLI) or the confirmation dialog
+(UI); everything else is a dry run by design.
+
+## Commands Page Empty or Not Loading
+
+The Commands page reads `GET /commands` on the Hub. If it shows "Hub not
+reachable", verify `curl http://192.168.1.150:8765/commands`. If it loads but
+stays empty, no commands were recorded yet — queue a host test (Remote Hosts
+→ Test Host) and refresh. The page is read-only: it never requeues, deletes,
+or executes anything. Note that an old Hub (v0.7) does not implement
+`GET /commands`; redeploy the Hub container to use this page.
+
+## Labs Workspace Shows a VM as "not created"
+
+The lab manifest lists the VM but it does not exist in libvirt locally and no
+remote agent reports it. Either create it (New VM in Lab / instantiate the
+template) or remove it from the manifest. If the VM actually lives on another
+host, make sure that host's agent is online so the Hub inventory includes it.
+
+## Start Lab / Shutdown Lab Reports Partial Failure
+
+Each VM is handled independently: local VMs through libvirt, remote VMs as
+Hub→Agent commands. The feedback area lists per-VM errors verbatim; the
+remaining VMs are still processed. Re-run the action after fixing the failing
+VM — already-running (or already-off) VMs are skipped automatically because
+targets are selected by state.

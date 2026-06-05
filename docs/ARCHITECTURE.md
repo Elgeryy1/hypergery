@@ -2,6 +2,33 @@
 
 HyperGery is a real Ubuntu desktop VM manager built around a Python backend and a modern PySide6/Qt desktop UI. v0.3.0 adds a Lab Manager and a Templates Manager.
 
+## Remote Cluster Workflows (v0.8)
+
+v0.8 turns the Hub from a migration coordinator into a small cluster control
+plane. All remote operations keep the same shape:
+
+```text
+App (Qt/CLI) → Hub (NAS, HTTP JSON) → target Agent (poll) → libvirt
+```
+
+- **Remote VM power control**: `vm_start` / `vm_shutdown` / `vm_force_off`
+  commands, allowlisted on both the Hub and the Agent. The agent validates VM
+  existence, HyperGery management, and current state before acting, then
+  re-reports inventory. No delete, undefine, disk deletion, XML edits, shell,
+  or console commands exist remotely.
+- **Remote VM details**: agents report per-VM `disk_paths`, `iso_paths`,
+  `display`, `networks`, and `macs` (parsed from domain XML) on each
+  heartbeat; the UI shows them with staleness warnings.
+- **Command observability**: `GET /commands` lists the queue read-only with
+  filters; the Commands sidebar page surfaces it for debugging.
+- **Hub staging maintenance**: `GET /packages` and `POST /packages/cleanup`
+  manage leftover Hub Transfer packages. Dry-run by default; deletion is
+  restricted to staging directories, never follows symlinks, and always skips
+  active migrations and recent packages.
+- **Labs workspace**: the UI aggregates local libvirt VMs plus Hub remote
+  inventory per lab (`unify_lab_vms`), with role-aware start/shutdown
+  ordering executed as local backend calls plus queued remote commands.
+
 ## HyperGery Hub
 
 v0.6.0 introduces HyperGery Hub as the NAS control plane. The Hub runs as a Docker service on the NAS, exposes HTTP JSON on port `8765`, and coordinates host registration, heartbeats, VM inventory, command queue, migration status, and events.
