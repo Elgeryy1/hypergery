@@ -43,7 +43,9 @@ def config_path() -> Path:
 
 def default_config_values() -> dict[str, str]:
     return {
-        "hub_url": "http://127.0.0.1:8765",
+        # The Hub runs in Container Station on the NAS; point at it directly
+        # so fresh installs on any LAN host work without extra configuration.
+        "hub_url": "http://192.168.1.150:8765",
         "host_id": socket.gethostname(),
         "host_name": socket.gethostname(),
         "nas_staging_path": str(Path.home() / "hypergery-nas" / "migrations"),
