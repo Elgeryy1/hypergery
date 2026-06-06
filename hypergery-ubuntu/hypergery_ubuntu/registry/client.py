@@ -5,13 +5,21 @@ import shutil
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from ..backend import HyperGeryError
 
 TRANSFER_CHUNK_BYTES = 1024 * 1024
 TRANSFER_TIMEOUT_SECONDS = 600
+
+# UI/CLI-facing action names → Hub command types. Only safe power actions;
+# delete/undefine/console are intentionally not remote-controllable.
+VM_POWER_ACTIONS = {
+    "start": "vm_start",
+    "shutdown": "vm_shutdown",
+    "force_off": "vm_force_off",
+}
 
 
 def default_hub_url() -> str:
@@ -77,8 +85,50 @@ class RegistryClient:
     def pending_commands(self, host_id: str) -> list[dict[str, Any]]:
         return self.request("GET", f"/commands/{host_id}").get("commands", [])
 
+    def list_commands(
+        self,
+        *,
+        target_host_id: str | None = None,
+        status: str | None = None,
+        command_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read-only command queue listing, newest first, with optional filters."""
+        params = {
+            key: value
+            for key, value in (
+                ("target_host_id", target_host_id),
+                ("status", status),
+                ("command_type", command_type),
+                ("limit", limit),
+            )
+            if value
+        }
+        path = "/commands" + (f"?{urlencode(params)}" if params else "")
+        return self.request("GET", path).get("commands", [])
+
     def command(self, command_id: str) -> dict[str, Any]:
         return self.request("GET", f"/commands/id/{command_id}")
+
+    def queue_vm_power_command(self, host_id: str, vm_name: str, action: str) -> dict[str, Any]:
+        command_type = VM_POWER_ACTIONS.get(action)
+        if command_type is None:
+            allowed = ", ".join(sorted(VM_POWER_ACTIONS))
+            raise HyperGeryError(f"Unsupported remote power action: {action}. Allowed: {allowed}.")
+        if not str(vm_name or "").strip():
+            raise HyperGeryError("vm_name is required for remote power commands.")
+        if not str(host_id or "").strip():
+            raise HyperGeryError("host_id is required for remote power commands.")
+        return self.create_command(host_id, command_type, {"vm_name": str(vm_name).strip()})
+
+    def start_remote_vm(self, host_id: str, vm_name: str) -> dict[str, Any]:
+        return self.queue_vm_power_command(host_id, vm_name, "start")
+
+    def shutdown_remote_vm(self, host_id: str, vm_name: str) -> dict[str, Any]:
+        return self.queue_vm_power_command(host_id, vm_name, "shutdown")
+
+    def force_off_remote_vm(self, host_id: str, vm_name: str) -> dict[str, Any]:
+        return self.queue_vm_power_command(host_id, vm_name, "force_off")
 
     def set_command_result(self, command_id: str, status: str, result: dict[str, Any]) -> dict[str, Any]:
         return self.request("POST", f"/commands/{command_id}/result", {"status": status, "result": result})
@@ -170,3 +220,26 @@ class RegistryClient:
 
     def delete_package(self, migration_id: str) -> dict[str, Any]:
         return self.request("DELETE", f"/packages/{quote(migration_id, safe='')}")
+
+    def list_staged_packages(self) -> dict[str, Any]:
+        return self.request("GET", "/packages")
+
+    def cleanup_staging(
+        self,
+        *,
+        older_than_hours: float = 24.0,
+        dry_run: bool = True,
+        include_failed: bool = False,
+        include_orphans: bool = True,
+    ) -> dict[str, Any]:
+        """Preview (dry_run=True, the default) or delete leftover staging packages."""
+        return self.request(
+            "POST",
+            "/packages/cleanup",
+            {
+                "older_than_hours": older_than_hours,
+                "dry_run": bool(dry_run),
+                "include_failed": bool(include_failed),
+                "include_orphans": bool(include_orphans),
+            },
+        )

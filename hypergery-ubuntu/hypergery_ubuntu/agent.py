@@ -7,6 +7,7 @@ import shutil
 import socket
 import sys
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,15 @@ from .registry import ALLOWED_COMMAND_TYPES, RegistryClient
 
 
 CONFIG_PATH = Path(os.environ.get("HYPERGERY_AGENT_CONFIG", Path.home() / ".config" / "hypergery" / "agent.json"))
+
+# Remote power commands → (action label, backend method, states the action is
+# allowed from). Anything not listed here (delete, undefine, shell, ...) is
+# rejected by the allowlist check in execute_command.
+VM_POWER_COMMANDS = {
+    "vm_start": ("start", "start_vm", {"shut off", "shutoff"}),
+    "vm_shutdown": ("shutdown", "shutdown_vm", {"running", "paused"}),
+    "vm_force_off": ("force_off", "force_off_vm", {"running", "paused", "unknown"}),
+}
 
 
 @dataclass
@@ -82,6 +92,28 @@ def read_cpu_model() -> str:
     except OSError:
         pass
     return ""
+
+
+def vm_interfaces_from_xml(xml: str) -> tuple[list[str], list[str]]:
+    """Extract (networks, MAC addresses) from a libvirt domain XML, best effort."""
+    networks: list[str] = []
+    macs: list[str] = []
+    if not xml:
+        return networks, macs
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return networks, macs
+    for interface in root.findall("./devices/interface"):
+        source = interface.find("source")
+        if source is not None:
+            network = source.attrib.get("network") or source.attrib.get("bridge") or ""
+            if network:
+                networks.append(network)
+        mac = interface.find("mac")
+        if mac is not None and mac.attrib.get("address"):
+            macs.append(mac.attrib["address"])
+    return networks, macs
 
 
 def disk_free_mib(path: str) -> int:
@@ -167,6 +199,9 @@ class HyperGeryAgent:
             iso_paths = []
             if getattr(vm, "iso_path", ""):
                 iso_paths.append(vm.iso_path)
+            networks, macs = vm_interfaces_from_xml(getattr(vm, "xml", ""))
+            if not networks and getattr(vm, "network", ""):
+                networks = [vm.network]
             vms.append(
                 {
                     "vm_name": vm.name,
@@ -177,6 +212,8 @@ class HyperGeryAgent:
                     "vcpus": vm.vcpus,
                     "disk_paths": disk_paths,
                     "iso_paths": iso_paths,
+                    "networks": networks,
+                    "macs": macs,
                 }
             )
         return {"host_id": self.config.host_id, "vms": vms}
@@ -220,6 +257,8 @@ class HyperGeryAgent:
             ]
             worst = "done" if not any(item["status"] == "Error" for item in items) else "failed"
             return worst, {"items": items}
+        if command_type in VM_POWER_COMMANDS:
+            return self.execute_vm_power_command(command_type, payload)
         if command_type == "list_vms":
             return "done", {
                 "vms": [
@@ -307,6 +346,34 @@ class HyperGeryAgent:
                     result["hub_package_delete_error"] = str(exc)
             report("done", result["target_vm_name"], result)
             return "done", result
+        if command_type == "restore_vm_state_package":
+            from .migration import hub_transfer_staging_dir
+            from .v1.state_migration import import_vm_state_package
+
+            migration_id = str(payload.get("migration_id") or "")
+            if not migration_id:
+                raise HyperGeryError("restore_vm_state_package requires a migration_id.")
+            downloaded_dir = hub_transfer_staging_dir(self.backend) / "incoming-state" / migration_id
+            self.client.download_package(migration_id, downloaded_dir)
+            try:
+                result = import_vm_state_package(
+                    self.backend,
+                    downloaded_dir,
+                    target_lab_id=str(payload.get("target_lab_id") or ""),
+                )
+                try:
+                    self.client.delete_package(migration_id)
+                    result["hub_package_deleted"] = True
+                except Exception as exc:
+                    result["hub_package_deleted"] = False
+                    result["hub_package_delete_error"] = str(exc)
+            finally:
+                shutil.rmtree(downloaded_dir, ignore_errors=True)
+            try:
+                self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
+            except Exception:
+                pass
+            return "done", result
         if command_type == "migration_status":
             from .migration import list_migration_packages, validate_vm_package
 
@@ -327,6 +394,58 @@ class HyperGeryAgent:
                 "package": match,
             }
         return "failed", {"error": f"Unhandled command_type: {command_type}"}
+
+    def execute_vm_power_command(self, command_type: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        action, backend_method, allowed_states = VM_POWER_COMMANDS[command_type]
+        vm_name = str(payload.get("vm_name") or "").strip()
+
+        def failure(message: str, previous_state: str = "unknown") -> tuple[str, dict[str, Any]]:
+            return "failed", {
+                "vm_name": vm_name,
+                "action": action,
+                "previous_state": previous_state,
+                "new_state": previous_state,
+                "message": message,
+                "error": message,
+                "host_id": self.config.host_id,
+            }
+
+        if not vm_name:
+            return failure("vm_name is required for remote power commands.")
+        # The VM must exist locally and be HyperGery-managed before acting.
+        try:
+            summary = self.backend.get_vm(vm_name)
+        except Exception as exc:
+            return failure(f"VM {vm_name} is not available on this host: {exc}")
+        previous_state = str(summary.state or "unknown").lower()
+        if previous_state not in allowed_states:
+            return failure(
+                f"Cannot {action.replace('_', ' ')} {vm_name}: VM state is '{previous_state}'. "
+                f"Allowed states: {', '.join(sorted(allowed_states))}.",
+                previous_state,
+            )
+        try:
+            getattr(self.backend, backend_method)(vm_name)
+        except Exception as exc:
+            return failure(f"Backend failed to {action.replace('_', ' ')} {vm_name}: {exc}", previous_state)
+        try:
+            new_state = self.backend.vm_state(vm_name)
+        except Exception:
+            new_state = "unknown"
+        # Same pattern as heartbeat: refresh the Hub inventory after acting so
+        # the UI sees the new state without waiting for the next heartbeat.
+        try:
+            self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
+        except Exception:
+            pass
+        return "done", {
+            "vm_name": vm_name,
+            "action": action,
+            "previous_state": previous_state,
+            "new_state": new_state,
+            "message": f"{action.replace('_', ' ')} executed on {vm_name} ({previous_state} -> {new_state}).",
+            "host_id": self.config.host_id,
+        }
 
     def run_once(self) -> dict[str, Any]:
         host = self.heartbeat()

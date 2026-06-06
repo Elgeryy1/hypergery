@@ -1,5 +1,37 @@
 # HyperGery Validation
 
+## v0.8.0 — Remote Cluster Workflows (in development, overnight run 2026-06-05)
+
+Automated validation after implementing Fases 2–5 (Hub staging cleanup,
+Remote VM details + Command Queue UI, Labs workspace, Lab power actions +
+polish), on top of the already-validated Fase 1 (Remote VM Power Control,
+260 tests, real PC ↔ Lenovo smoke):
+
+- [x] `QT_QPA_PLATFORM=offscreen ~/.venvs/hypergery/bin/python -m unittest discover -s tests` — 315 tests OK.
+- [x] `python3 -m unittest discover -s tests` — 315 tests OK (Qt tests skipped cleanly without PySide6).
+- [x] `python3 -m compileall hypergery-ubuntu` OK.
+- [x] `bash -n` on all 9 shell scripts OK.
+- [x] `docker compose config` OK.
+- [x] Final audit grep: no secrets, passwords, private keys, TODO/FIXME, or stale "planned for v0.8" promises in code/docs (settings callouts re-worded; remaining "arrives in v0.8" mentions are historical v0.7 notes or refer to post-v0.8 features).
+- [x] Removed stale `MagicMock/` test-pollution directory from the repo root; confirmed the current suite does not recreate it.
+
+New v0.8 test coverage includes: staging cleanup rules (dry-run default,
+active/recent/symlink protection, traversal), cleanup CLI confirm flow,
+command listing filters/limits (store + HTTP + client), agent XML
+interface parsing and inventory fallback, remote VM details panel with
+staleness warning, Commands page rendering/filters/copy/read-only checks,
+lab manifest `vm_roles` migration, lab workspace aggregation
+(local + remote + manifest-only), lab power planning and role ordering, lab
+action confirmations and partial-failure reporting, and Hub-offline /
+empty-state rendering for every new page.
+
+Pending for tomorrow (manual smoke, PC ↔ Lenovo, see §13.4 of the v0.8
+plan): remote inventory/start/shutdown/force-off in real hardware, Command
+Queue with real commands, staging cleanup dry-run + confirm over a fake
+orphan package, Labs workspace with real VMs, Start/Shutdown Lab, console
+local VNC/SPICE, Diagnostics, Settings. No release, no tag, no merge to
+main until the user confirms "smoke OK".
+
 ## v0.7.0 — Visual Refresh & Hub Transfer close-out (2026-06-05)
 
 - [x] `QT_QPA_PLATFORM=offscreen ~/.venvs/hypergery/bin/python -m unittest discover -s tests` ran 249 tests OK.

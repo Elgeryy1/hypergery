@@ -843,6 +843,37 @@ class HyperGeryBackend:
         self.virsh(["start", validate_vm_name(name)])
         logging.info("started vm: %s", name)
 
+    def save_vm(self, name: str, state_path: str | Path) -> Path:
+        """Freeze a running VM and dump its full RAM+CPU state to a file.
+
+        State-preserving migration: after this the VM is shut off but its exact
+        running state lives in `state_path` and can be restored to continue
+        where it left off (not a reboot). Requires the VM to be running.
+        """
+        name = validate_vm_name(name)
+        target = Path(state_path).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = self.virsh(["save", name, str(target)], check=False, timeout=600)
+        if result.returncode != 0:
+            raise HyperGeryError(f"Cannot save state for {name}: {result.stderr.strip() or result.stdout.strip()}")
+        logging.info("saved vm state: %s -> %s", name, target)
+        return target
+
+    def restore_vm(self, state_path: str | Path, xml_path: str | Path | None = None) -> None:
+        """Restore a VM from a saved state file — it CONTINUES from that exact
+        state. Optional xml_path overrides the domain XML (e.g. to fix the disk
+        path / network on a different host) without losing the RAM state."""
+        source = Path(state_path).expanduser()
+        if not source.is_file():
+            raise HyperGeryError(f"Saved state file not found: {source}")
+        args = ["restore", str(source)]
+        if xml_path is not None:
+            args += ["--xml", str(Path(xml_path).expanduser())]
+        result = self.virsh(args, check=False, timeout=600)
+        if result.returncode != 0:
+            raise HyperGeryError(f"Cannot restore state from {source}: {result.stderr.strip() or result.stdout.strip()}")
+        logging.info("restored vm state from: %s", source)
+
     def vm_state(self, name: str) -> str:
         result = self.virsh(["domstate", validate_vm_name(name)], check=False)
         if result.returncode != 0:

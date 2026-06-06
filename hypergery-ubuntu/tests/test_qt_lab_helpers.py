@@ -1,7 +1,17 @@
 import unittest
 
-from hypergery_ubuntu.backend import VmSummary
-from hypergery_ubuntu.ui_qt.lab_helpers import build_lab_preview, build_lab_topology, filter_vms_for_lab, topology_to_json, vm_count_for_lab
+from hypergery_ubuntu.backend import HyperGeryError, VmSummary
+from hypergery_ubuntu.ui_qt.lab_helpers import (
+    build_lab_preview,
+    build_lab_topology,
+    filter_vms_for_lab,
+    lab_status_summary,
+    order_lab_vms_for_action,
+    plan_lab_power_action,
+    topology_to_json,
+    unify_lab_vms,
+    vm_count_for_lab,
+)
 
 
 class QtLabHelperTests(unittest.TestCase):
@@ -105,6 +115,107 @@ class LabTopologyTests(unittest.TestCase):
         loaded = json.loads(dumped)
         self.assertEqual(loaded["lab_id"], "asr-lab")
         self.assertEqual(len(loaded["vms"]), 1)
+
+
+class LabWorkspaceHelperTests(unittest.TestCase):
+    LAB = {
+        "lab_id": "asr-lab",
+        "name": "ASR Lab",
+        "vms": ["alpha", "ghost"],
+        "vm_roles": {"alpha": "server", "remote-db": "db"},
+    }
+    LOCAL_VMS = [
+        VmSummary(name="alpha", state="shut off", lab_id="asr-lab", ram_mib=2048, vcpus=2),
+        VmSummary(name="other", state="running", lab_id="par-lab"),
+    ]
+    REMOTE_VMS = [
+        {"host_id": "lenovo", "vm_name": "remote-db", "state": "running", "lab_id": "asr-lab", "ram_mib": 4096, "vcpus": 4},
+        {"host_id": "lenovo", "vm_name": "remote-other", "state": "running", "lab_id": "par-lab"},
+        # The local host's own inventory must be skipped (duplicates local VMs).
+        {"host_id": "local-host", "vm_name": "alpha", "state": "shut off", "lab_id": "asr-lab"},
+    ]
+
+    def unified(self):
+        return unify_lab_vms(self.LAB, self.LOCAL_VMS, self.REMOTE_VMS, "local-host")
+
+    def test_unify_combines_local_remote_and_manifest_vms(self):
+        unified = self.unified()
+        by_name = {vm["name"]: vm for vm in unified}
+        self.assertEqual(set(by_name), {"alpha", "ghost", "remote-db"})
+        self.assertFalse(by_name["alpha"]["remote"])
+        self.assertEqual(by_name["alpha"]["host_id"], "local-host")
+        self.assertEqual(by_name["alpha"]["role"], "server")
+        self.assertTrue(by_name["remote-db"]["remote"])
+        self.assertEqual(by_name["remote-db"]["host_id"], "lenovo")
+        self.assertEqual(by_name["remote-db"]["role"], "db")
+        self.assertEqual(by_name["ghost"]["state"], "not created")
+
+    def test_unify_normalizes_shutoff_state(self):
+        unified = unify_lab_vms(
+            {"lab_id": "asr-lab", "vms": []},
+            [],
+            [{"host_id": "lenovo", "vm_name": "vm1", "state": "shutoff", "lab_id": "asr-lab"}],
+            "local-host",
+        )
+        self.assertEqual(unified[0]["state"], "shut off")
+
+    def test_status_summary_counts_and_host_distribution(self):
+        summary = lab_status_summary(self.unified())
+        self.assertEqual(summary["counts"]["total"], 3)
+        self.assertEqual(summary["counts"]["running"], 1)
+        self.assertEqual(summary["counts"]["shut_off"], 1)
+        self.assertEqual(summary["counts"]["not_created"], 1)
+        self.assertEqual(summary["hosts"], {"local-host": ["alpha"], "lenovo": ["remote-db"]})
+
+    def test_plan_start_targets_only_shut_off_vms(self):
+        plan = plan_lab_power_action(self.unified(), "start")
+        self.assertEqual([vm["name"] for vm in plan["targets"]], ["alpha"])
+        self.assertEqual(plan["host_count"], 1)
+        skipped_names = {item["name"] for item in plan["skipped"]}
+        self.assertEqual(skipped_names, {"ghost", "remote-db"})
+
+    def test_plan_shutdown_targets_only_running_vms(self):
+        plan = plan_lab_power_action(self.unified(), "shutdown")
+        self.assertEqual([vm["name"] for vm in plan["targets"]], ["remote-db"])
+        self.assertTrue(plan["targets"][0]["remote"])
+
+    def test_plan_rejects_unknown_actions(self):
+        for action in ("force_off", "delete", "destroy"):
+            with self.assertRaises(HyperGeryError):
+                plan_lab_power_action(self.unified(), action)
+
+    @staticmethod
+    def _role_vm(name, role, state="shut off"):
+        return {"name": name, "state": state, "host_id": "h", "ram_mib": 0, "vcpus": 0, "remote": False, "role": role}
+
+    def role_fleet(self, state):
+        return [
+            self._role_vm("zz-client", "client", state),
+            self._role_vm("a-noro", "", state),
+            self._role_vm("web1", "web", state),
+            self._role_vm("dc1", "ad", state),
+            self._role_vm("edge", "router", state),
+            self._role_vm("fw", "firewall", state),
+            self._role_vm("db1", "db", state),
+            self._role_vm("dns1", "dns", state),
+        ]
+
+    def test_start_order_boots_infrastructure_first(self):
+        plan = plan_lab_power_action(self.role_fleet("shut off"), "start")
+        names = [vm["name"] for vm in plan["targets"]]
+        self.assertEqual(names, ["edge", "fw", "dc1", "dns1", "db1", "web1", "zz-client", "a-noro"])
+
+    def test_shutdown_order_stops_clients_first(self):
+        plan = plan_lab_power_action(self.role_fleet("running"), "shutdown")
+        names = [vm["name"] for vm in plan["targets"]]
+        self.assertEqual(names, ["a-noro", "zz-client", "db1", "web1", "dc1", "dns1", "edge", "fw"])
+
+    def test_order_without_roles_is_alphabetical(self):
+        vms = [self._role_vm(name, "") for name in ("charlie", "alpha", "bravo")]
+        ordered = order_lab_vms_for_action(vms, "start")
+        self.assertEqual([vm["name"] for vm in ordered], ["alpha", "bravo", "charlie"])
+        ordered = order_lab_vms_for_action(vms, "shutdown")
+        self.assertEqual([vm["name"] for vm in ordered], ["alpha", "bravo", "charlie"])
 
 
 if __name__ == "__main__":

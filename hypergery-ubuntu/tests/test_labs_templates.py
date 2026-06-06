@@ -47,6 +47,30 @@ class LabStoreTests(unittest.TestCase):
         self.assertFalse((self.root / "labs" / "security-lab").exists())
         self.assertTrue((self.root / "labs" / "blue-team-lab" / "lab.json").exists())
 
+    def test_vm_roles_default_and_set_role(self):
+        lab = self.store.create_lab("Security Lab")
+        self.assertEqual(lab["vm_roles"], {})
+        lab["vms"].append("vm1")
+        self.store.write_lab(lab)
+
+        updated = self.store.set_vm_role("security-lab", "vm1", "router")
+        self.assertEqual(updated["vm_roles"], {"vm1": "router"})
+        # Roles survive a read/write roundtrip through manifest migration.
+        self.assertEqual(self.store.get_lab("security-lab")["vm_roles"], {"vm1": "router"})
+
+        cleared = self.store.set_vm_role("security-lab", "vm1", "")
+        self.assertEqual(cleared["vm_roles"], {})
+
+        with self.assertRaises(HyperGeryError):
+            self.store.set_vm_role("security-lab", "vm1", "hypervisor")
+
+    def test_vm_roles_migration_drops_invalid_roles(self):
+        lab = self.store.create_lab("Security Lab")
+        manifest = dict(lab)
+        manifest["vm_roles"] = {"vm1": "router", "vm2": "not-a-role"}
+        self.store.write_lab(manifest)
+        self.assertEqual(self.store.get_lab("security-lab")["vm_roles"], {"vm1": "router"})
+
     def test_delete_lab_does_not_delete_vms_by_default(self):
         lab = self.store.create_lab("Security Lab")
         lab["vms"].append("vm1")

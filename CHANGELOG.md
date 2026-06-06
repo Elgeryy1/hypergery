@@ -1,5 +1,112 @@
 # Changelog
 
+## v1.0-rc1 - Release Candidate 1 (2026-06-06)
+
+First release candidate for v1.0: the closed v0.8 base plus the v0.9/v1.0
+service layer below, gated on a successful **real two-physical-host smoke**
+(desktop + laptop + NAS Hub): **23 PASS · 0 FAIL · 1 BLOCKED (save_restore
+cross-host on stock `qemu:///system`, known environment limitation) · 1 SKIP
+(manual GUI check, covered by the green offscreen Qt suite)**. Highlights of
+the smoke: real host→host teleport between two physical machines via Hub
+Transfer (target running, UUID/MAC regenerated, source intact, Hub staging
+cleaned), real NAS commit/restore with verified checksums, API v1 envelope and
+confirm guard, host offline/online detection, and save_restore safe local
+resume on a real running VM.
+
+See [RELEASE_NOTES_v1.0-rc1.md](RELEASE_NOTES_v1.0-rc1.md) and
+[V1_MANUAL_SMOKE_RESULT.md](V1_MANUAL_SMOKE_RESULT.md). Version metadata bumped
+to `1.0.0rc1` (PEP 440; UI shows `v1.0-rc1`) — no other runtime changes in the
+RC cut. **Not v1.0 final**: v1.1 (bugfix/UX) and v1.2 (security hardening)
+remain planned.
+
+## v0.9.0 / v1.0 - develop (overnight build 2026-06-06, rolled into v1.0-rc1)
+
+New `hypergery_ubuntu/v1/` service layer on top of the closed v0.8 base
+(everything dry-run-first, injectable, and fully tested — 149 new tests,
+suite at 463 passed +1 hardware skip). See V09_REPORT.md, V10_REPORT.md,
+ARCHITECTURE_V1.md, and TEST_RESULTS_V1.md for detail.
+
+### v0.9 — Core stabilization
+- Structured JSONL logging with categories and operation ids; stable error
+  hierarchy with machine codes; central typed `V1Settings` (battery/RAM
+  thresholds, offline & dry-run modes, experimental flags, API binding).
+- Unified host registry (local + Hub + loopback, roles & capabilities) with
+  non-destructive health checks; real telemetry (psutil + /proc //sys
+  fallback, sysfs battery, history, staleness) and pure alert evaluation.
+- Labs workspace v0.9: subject/owner/tags/favorite/archived manifest fields
+  with safe migration, lab validation (names, roles, subnet overlaps),
+  filters; VM provider abstraction (Local libvirt incl. pause/resume,
+  Agent via Hub allowlist, Simulated for tests).
+- NAS commit/restore: checksum-verified lab packages, atomic staging,
+  dry-run by default, hash-validated restore that never overwrites.
+
+### v1.0 — Visión completa (versión funcional bruta)
+- Auto-Boost orchestrator: explainable placement plans (battery tiers, RAM
+  headroom, VM weights, host roles, guest/offline restrictions); never
+  executes by itself.
+- Battery manager on the real battery: tiers 50/30/20/10 (configurable),
+  transition events, modes disabled/recommend_only/auto_prepare/
+  auto_execute_safe (only data-safe actions ever auto-execute).
+- Teleport engine over the v0.8 migration pipeline: dry_run,
+  local_loopback (validated E2E), suspend_copy_start (suspend → package →
+  Hub → import → start, resume-on-failure rollback), experimental_memdiff.
+- MemDiff experimental block-delta engine with mandatory verification and
+  corruption-detecting persistence.
+- Per-lab network manager (CIDR/gateway/DHCP conflicts, blocked cross-lab
+  links); local RBAC (4 roles, guest hard limits, audit log); external node
+  connector (manual registration, health, orchestrator integration).
+- Android-ready local API (uniform ok/data/error envelope, 15 GET + 3 POST,
+  confirm-guarded teleport start) documented in docs/API_V1.md; `v1` CLI
+  group for every workflow; Control Center UI page (8 tabs over real
+  services, read-only/dry-run, export report).
+- Not included (honest scope): true live-RAM migration, API/Hub
+  authentication (v1.2 plan in NEXT_STEPS_V12_SECURITY.md), rich per-module
+  UI screens (v1.1 plan in NEXT_STEPS_V11.md).
+
+## v0.8.0 - Unreleased / Planned
+
+### Added — Remote VM Power Control (Fase 1, implemented)
+
+- New allowlisted Hub→Agent commands: `vm_start`, `vm_shutdown` (ACPI), `vm_force_off`. Everything flows App → Hub → target Agent → libvirt; the app never touches a remote libvirt directly.
+- Agent validates each command against its own allowlist, requires a non-empty `vm_name`, checks the VM exists locally and is HyperGery-managed, checks the current state allows the action, and returns a structured result (`vm_name`, `action`, `previous_state`, `new_state`, `message`, `host_id`). Failures come back as `failed` with a clear error; the agent re-reports its VM inventory to the Hub right after each action.
+- `RegistryClient` helpers: `queue_vm_power_command(host_id, vm_name, action)` plus `start_remote_vm` / `shutdown_remote_vm` / `force_off_remote_vm`, reusing the existing `/commands` queue (no parallel protocol).
+- Remote Hosts → View VMs now shows power controls: Start / ACPI Shutdown / Force Off (danger style, always asks for confirmation) / Refresh. Buttons enable/disable based on the selected VM's state; the dialog shows the queued `command_id`, polls its status, and refreshes the inventory when the command finishes.
+- Security: remote delete, undefine, delete-disks, XML edits, and shell commands are intentionally NOT remote-controllable (rejected by both the Hub and Agent allowlists). `vm_reboot`/`vm_reset` is not included because the backend has no safe reboot method yet.
+
+### Added — Hub staging cleanup / maintenance (Fase 2, implemented)
+
+- New Hub endpoints: `GET /packages` (staged packages with size, file count, age, linked migration status, orphan flag) and `POST /packages/cleanup` (dry-run by default; `older_than_hours` with a 1h safety floor, `include_failed`, `include_orphans`).
+- Cleanup safety: only directories inside `HYPERGERY_HUB_STAGING` are removed — never VMs or imported disks; packages of active migrations and recent packages are always skipped; symlinks are never followed; every deletion and error is reported.
+- CLI: `hub packages` and `hub cleanup-staging --older-than-hours N [--dry-run] [--confirm] [--include-failed] [--no-orphans]`. Without `--confirm` nothing is ever deleted; real cleanup errors exit non-zero.
+- UI: Migrations → Hub Staging Maintenance panel with staging stats (path, packages, total size, orphans, oldest), Dry Run Cleanup, and Cleanup Confirmed (confirmation dialog). Hub-offline errors render inline without crashing.
+
+### Added — Remote VM Details + Command Queue UI (Fase 3, implemented)
+
+- Agents now report `networks` and `macs` per VM (parsed from the domain XML, best effort) alongside disks/ISOs/display. Backwards compatible: old agents keep working with empty lists.
+- Remote Hosts → View VMs gains a details panel for the selected remote VM: name, host id/name, state, lab, RAM, vCPUs, disk paths, ISO paths, display, MACs, networks, last inventory update, inventory source, and a staleness warning when the data is old. Remote console shows as a disabled button (“arrives later”); remote delete remains intentionally unsupported (no button exists).
+- New Hub endpoint `GET /commands` (read-only listing, newest first) with `target_host_id`, `status`, `command_type`, and `limit` filters; `RegistryClient.list_commands()`.
+- New read-only **Commands** page in the sidebar: command id, host, type, status colors, created/age, payload and result summaries; filters (all/pending/running/done/failed/power/migration); Copy Command ID / Copy Result. No requeue, delete, or execute actions.
+
+### Added — Labs Workspace (Fase 4, implemented)
+
+- The sidebar Labs entry is now a real workspace page (the v0.7 “shares this view” banner is gone): cards per lab with live VM counts, plus a detail panel combining local libvirt VMs and remote Hub-inventory VMs (name, role, state, host, RAM, vCPUs, location), global status, and host distribution.
+- Optional per-VM roles in the lab manifest (`vm_roles`: router/firewall/dns/ad/server/db/web/client) with safe migration — old manifests keep working; invalid roles are dropped. New `LabStore.set_vm_role()` and a “Set VM Role…” action.
+- Quick actions: Open VM, View Remote VM, Migrate VM. Lab actions: Start Lab (local backend + Hub→Agent for remote VMs, with “This will start N VMs across M hosts.” confirmation) and Shutdown Lab (ACPI to running VMs, confirmed). Partial failures are listed per VM in the feedback area and activity log.
+- Intentionally not included: lab-wide Force Off, lab-wide snapshots (button disabled, planned), remote delete (does not exist), guest IPs (no reliable source — not invented).
+
+### Added — Lab Power Actions + Polish (Fase 5, implemented)
+
+- Role-aware lab power ordering: Start Lab boots routers/firewalls → dns/ad → servers/db/web → clients (alphabetical within tier, unassigned last); Shutdown Lab reverses the order. Labs without roles fall back to alphabetical.
+- Activity feedback: remote power command completion (done/failed) is now recorded in the activity log alongside queue, lab action, and staging cleanup entries.
+- UI polish: Settings callouts no longer promise features “for v0.8” that moved out of scope (now “a future version”); Dashboard quick action and last-migration note mention Hub Transfer alongside NAS Clone.
+
+### Planned (subject to change, not implemented yet)
+
+- Advanced Settings sections: Host Agent options, Console preferences, Appearance accent/density.
+- Topology view improvements.
+- Optional real-time migration updates beyond the current auto-poll.
+- Research only, still not committed: true live RAM migration / HG-MEMDIFF.
+
 ## v0.7.0 - Visual Refresh & Hub Transfer (2026-06-05)
 
 Visual Refresh & UX Stabilization plus Hub Transfer migrations. Validated with

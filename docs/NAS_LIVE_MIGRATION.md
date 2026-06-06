@@ -2,7 +2,7 @@
 
 HyperGery v0.6.0 uses the product label **Live Migration**, but the safe shipped implementation is NAS Clone Migration.
 
-Final release status: local NAS Clone Migration E2E passed with two logical agents on one libvirt host, and a real two-physical-host NAS Clone Migration smoke passed with `hg-source` and `hg-target` through Hub `http://192.168.1.44:8765`.
+Final release status: local NAS Clone Migration E2E passed with two logical agents on one libvirt host, and a real two-physical-host NAS Clone Migration smoke passed with `hg-source` and `hg-target` through Hub `http://192.168.1.44:8765` (historical v0.6 smoke address — the current reference Hub is the NAS at `http://192.168.1.150:8765`, see below).
 
 The source VM, source disks, source lab manifest, and source templates are not deleted or modified by migration packaging.
 
@@ -153,7 +153,12 @@ Hub staging details:
   which lands on the NAS storage).
 - A failed migration may leave its package staged on the Hub for inspection;
   nothing deletes it automatically. Remove it manually with
-  `DELETE /packages/<migration_id>` once diagnosed.
+  `DELETE /packages/<migration_id>` once diagnosed, or use the v0.8 staging
+  maintenance: `hub packages` / `hub cleanup-staging` (dry-run by default,
+  `--confirm` to delete) or Migrations → Hub Staging Maintenance in the app.
+  Cleanup only ever removes temporary staging packages — never VMs or
+  imported disks — and always skips active migrations and recent packages.
+  See [HYPERGERY_HUB.md](HYPERGERY_HUB.md) for the rules.
 
 Choosing a mode:
 

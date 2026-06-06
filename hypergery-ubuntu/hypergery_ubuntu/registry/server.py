@@ -3,15 +3,25 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from ..backend import HyperGeryError
-from .store import RegistryStore
+from .store import MIGRATION_STATUSES, RegistryStore
 
 TRANSFER_CHUNK_BYTES = 1024 * 1024
+
+# Migrations in these states may still need their staged package; cleanup
+# always skips them, regardless of age or flags.
+ACTIVE_MIGRATION_STATUSES = MIGRATION_STATUSES - {"done", "failed", "rolled_back"}
+
+# Cleanup never touches packages newer than this, even if the caller asks
+# for a smaller threshold — an upload could still be in progress.
+MIN_CLEANUP_AGE_HOURS = 1.0
 
 
 def default_staging_dir(db_path: str | Path | None = None) -> Path:
@@ -38,6 +48,155 @@ def _safe_package_path(staging_dir: Path, migration_id: str, rel_path: str = "")
     if base not in candidate.parents and candidate != base:
         raise HyperGeryError(f"Invalid package file path: {rel_path!r}")
     return candidate
+
+
+def _mtime_iso(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).replace(microsecond=0).isoformat()
+
+
+def _package_stats(package_dir: Path) -> tuple[int, int, float]:
+    """Return (size_bytes, file_count, newest_mtime) without following symlinks."""
+    size_bytes = 0
+    file_count = 0
+    newest = package_dir.stat().st_mtime
+    for item in package_dir.rglob("*"):
+        if item.is_symlink():
+            continue
+        if item.is_file():
+            stat = item.stat()
+            size_bytes += stat.st_size
+            file_count += 1
+            newest = max(newest, stat.st_mtime)
+    return size_bytes, file_count, newest
+
+
+def list_staged_packages(staging_dir: str | Path, store: RegistryStore) -> dict[str, Any]:
+    """List Hub staging packages with size, age, and linked migration status."""
+    staging = Path(staging_dir).expanduser()
+    packages: list[dict[str, Any]] = []
+    total_size = 0
+    orphans = 0
+    if staging.is_dir():
+        for entry in sorted(staging.iterdir()):
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            size_bytes, file_count, newest_mtime = _package_stats(entry)
+            age_hours = max(0.0, (time.time() - newest_mtime) / 3600)
+            try:
+                migration_status = str(store.get_migration(entry.name).get("status") or "")
+            except HyperGeryError:
+                migration_status = ""
+            orphan = not migration_status
+            if orphan:
+                orphans += 1
+            total_size += size_bytes
+            packages.append(
+                {
+                    "migration_id": entry.name,
+                    "path": entry.name,
+                    "size_bytes": size_bytes,
+                    "file_count": file_count,
+                    "created_at": _mtime_iso(entry.stat().st_mtime),
+                    "modified_at": _mtime_iso(newest_mtime),
+                    "age_hours": round(age_hours, 2),
+                    "migration_status": migration_status,
+                    "orphan": orphan,
+                }
+            )
+    return {
+        "staging_dir": str(staging),
+        "count": len(packages),
+        "orphan_count": orphans,
+        "total_size_bytes": total_size,
+        "packages": packages,
+    }
+
+
+def cleanup_staged_packages(
+    staging_dir: str | Path,
+    store: RegistryStore,
+    *,
+    older_than_hours: float = 24.0,
+    dry_run: bool = True,
+    include_failed: bool = False,
+    include_orphans: bool = True,
+) -> dict[str, Any]:
+    """Delete (or preview) leftover Hub staging packages.
+
+    Only temporary staging package directories are ever removed: never VM
+    definitions, never imported disks, never anything outside staging_dir.
+    Packages of active migrations and packages newer than the threshold are
+    always skipped.
+    """
+    try:
+        threshold_hours = float(older_than_hours)
+    except (TypeError, ValueError) as exc:
+        raise HyperGeryError(f"older_than_hours must be a number, got: {older_than_hours!r}") from exc
+    if threshold_hours < 0:
+        raise HyperGeryError("older_than_hours cannot be negative.")
+    threshold_hours = max(threshold_hours, MIN_CLEANUP_AGE_HOURS)
+
+    staging = Path(staging_dir).expanduser()
+    listing = list_staged_packages(staging, store)
+    candidates: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    def skip(package: dict[str, Any], reason: str) -> None:
+        skipped.append({"migration_id": package["migration_id"], "reason": reason})
+
+    for package in listing["packages"]:
+        status = package["migration_status"]
+        if status in ACTIVE_MIGRATION_STATUSES:
+            skip(package, f"migration is active (status: {status})")
+            continue
+        if package["age_hours"] < threshold_hours:
+            skip(package, f"too recent ({package['age_hours']}h < {threshold_hours}h)")
+            continue
+        if package["orphan"]:
+            if include_orphans:
+                candidates.append({**package, "reason": "no migration record on the Hub (orphan)"})
+            else:
+                skip(package, "orphan package (include_orphans disabled)")
+        elif status == "done":
+            candidates.append({**package, "reason": "migration done; leftover staging package"})
+        elif status in {"failed", "rolled_back"}:
+            if include_failed:
+                candidates.append({**package, "reason": f"migration {status}"})
+            else:
+                skip(package, f"migration {status} (include_failed disabled)")
+        else:
+            skip(package, f"unrecognized migration status: {status}")
+
+    deleted: list[dict[str, Any]] = []
+    deleted_size = 0
+    if not dry_run:
+        for candidate in candidates:
+            migration_id = candidate["migration_id"]
+            try:
+                # Re-validate against traversal even though ids come from
+                # directory names we listed ourselves.
+                package_dir = _safe_package_path(staging, migration_id)
+                shutil.rmtree(package_dir)
+                deleted.append({"migration_id": migration_id, "size_bytes": candidate["size_bytes"]})
+                deleted_size += candidate["size_bytes"]
+            except (HyperGeryError, OSError) as exc:
+                errors.append({"migration_id": migration_id, "error": str(exc)})
+
+    return {
+        "staging_dir": str(staging),
+        "dry_run": bool(dry_run),
+        "older_than_hours": threshold_hours,
+        "include_failed": bool(include_failed),
+        "include_orphans": bool(include_orphans),
+        "candidates": candidates,
+        "total_size_bytes": sum(item["size_bytes"] for item in candidates),
+        "deleted_count": len(deleted),
+        "deleted_size_bytes": deleted_size,
+        "deleted": deleted,
+        "skipped": skipped,
+        "errors": errors,
+    }
 
 
 def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -173,6 +332,9 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         try:
+            if [part for part in urlparse(self.path).path.split("/") if part] == ["packages"]:
+                self._send_json(200, list_staged_packages(self.server.staging_dir, self.server.store))
+                return
             package = self._package_parts()
             if package is not None:
                 migration_id, rel_path = package
@@ -196,6 +358,25 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
                 return
             if len(path) == 2 and path[0] == "vms":
                 self._send_json(200, {"host_id": path[1], "vms": self.server.store.list_vms(path[1])})
+                return
+            if path == ["commands"]:
+                query = parse_qs(urlparse(self.path).query)
+
+                def first(key: str) -> str | None:
+                    values = query.get(key) or []
+                    return values[0] if values else None
+
+                self._send_json(
+                    200,
+                    {
+                        "commands": self.server.store.list_commands(
+                            target_host_id=first("target_host_id"),
+                            status=first("status"),
+                            command_type=first("command_type"),
+                            limit=first("limit") or 100,
+                        )
+                    },
+                )
                 return
             if len(path) == 3 and path[0] == "commands" and path[1] == "id":
                 self._send_json(200, self.server.store.get_command(path[2]))
@@ -255,6 +436,19 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == ["events"]:
                 self._send_json(201, self.server.store.create_event(body))
+                return
+            if path == ["packages", "cleanup"]:
+                self._send_json(
+                    200,
+                    cleanup_staged_packages(
+                        self.server.staging_dir,
+                        self.server.store,
+                        older_than_hours=body.get("older_than_hours", 24.0),
+                        dry_run=bool(body.get("dry_run", True)),
+                        include_failed=bool(body.get("include_failed", False)),
+                        include_orphans=bool(body.get("include_orphans", True)),
+                    ),
+                )
                 return
             self._send_error(404, "not found")
         except HyperGeryError as exc:

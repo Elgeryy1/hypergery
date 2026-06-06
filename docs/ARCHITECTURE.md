@@ -2,6 +2,33 @@
 
 HyperGery is a real Ubuntu desktop VM manager built around a Python backend and a modern PySide6/Qt desktop UI. v0.3.0 adds a Lab Manager and a Templates Manager.
 
+## Remote Cluster Workflows (v0.8)
+
+v0.8 turns the Hub from a migration coordinator into a small cluster control
+plane. All remote operations keep the same shape:
+
+```text
+App (Qt/CLI) → Hub (NAS, HTTP JSON) → target Agent (poll) → libvirt
+```
+
+- **Remote VM power control**: `vm_start` / `vm_shutdown` / `vm_force_off`
+  commands, allowlisted on both the Hub and the Agent. The agent validates VM
+  existence, HyperGery management, and current state before acting, then
+  re-reports inventory. No delete, undefine, disk deletion, XML edits, shell,
+  or console commands exist remotely.
+- **Remote VM details**: agents report per-VM `disk_paths`, `iso_paths`,
+  `display`, `networks`, and `macs` (parsed from domain XML) on each
+  heartbeat; the UI shows them with staleness warnings.
+- **Command observability**: `GET /commands` lists the queue read-only with
+  filters; the Commands sidebar page surfaces it for debugging.
+- **Hub staging maintenance**: `GET /packages` and `POST /packages/cleanup`
+  manage leftover Hub Transfer packages. Dry-run by default; deletion is
+  restricted to staging directories, never follows symlinks, and always skips
+  active migrations and recent packages.
+- **Labs workspace**: the UI aggregates local libvirt VMs plus Hub remote
+  inventory per lab (`unify_lab_vms`), with role-aware start/shutdown
+  ordering executed as local backend calls plus queued remote commands.
+
 ## HyperGery Hub
 
 v0.6.0 introduces HyperGery Hub as the NAS control plane. The Hub runs as a Docker service on the NAS, exposes HTTP JSON on port `8765`, and coordinates host registration, heartbeats, VM inventory, command queue, migration status, and events.
@@ -92,6 +119,10 @@ Running VM copy is not treated as safe by default. If HyperGery cannot use a rea
 v0.7.0 adds a second transfer mode on top of NAS Clone Migration. With `--transfer hub` (the UI default), the source packages the VM locally, uploads it to the Hub's staging area over HTTP (`/packages` endpoints, streamed in chunks), and the target downloads, validates, and imports it. After a successful import the target deletes both its local temporary copy and the Hub staging copy. Hosts no longer need a shared mount or identical paths — only the Hub URL. The shared-NAS mode remains available with `--transfer nas`. The safety model is unchanged: the source VM is never touched and target imports regenerate UUID/MAC.
 
 The registry command queue is not a shell execution mechanism. Supported command types are explicit and limited to safe operations such as `ping`, `preflight`, `list_vms`, `receive_vm_package`, `import_vm_package`, and `migration_status`. Package validation/import commands only accept package directories inside the agent's configured `nas_staging_path` or its `migrations/` child.
+
+## Remote VM Power Control (v0.8)
+
+v0.8 Fase 1 extends the same command queue with three power commands: `vm_start`, `vm_shutdown` (ACPI), and `vm_force_off`. The flow is App → Hub `/commands` → target Agent → `HyperGeryBackend` (`start_vm` / `shutdown_vm` / `force_off_vm`) → libvirt; the app never talks to a remote libvirt directly. The allowlist is enforced twice — by the Hub when queueing and by the Agent before executing — so a compromised Hub cannot make agents run arbitrary commands. The Agent verifies the VM exists locally and is HyperGery-managed (`get_vm`), checks the current state allows the action, executes, records `previous_state`/`new_state` in the structured command result, and re-reports its inventory to the Hub. Remote delete, undefine, disk deletion, XML edits, console, and reboot/reset (no safe backend method yet) are intentionally excluded.
 
 The first migration implementation lives in `hypergery_ubuntu.migration` and is intentionally offline-first:
 

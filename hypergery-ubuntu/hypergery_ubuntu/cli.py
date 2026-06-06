@@ -255,6 +255,57 @@ def registry_action(args: argparse.Namespace) -> int:
     return 2
 
 
+def format_size(size_bytes: int) -> str:
+    size = float(size_bytes or 0)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{int(size)} B"
+
+
+def print_staged_packages(listing: dict) -> int:
+    packages = listing.get("packages") or []
+    print(f"staging_dir: {listing.get('staging_dir', '')}")
+    print(f"packages: {listing.get('count', 0)}  orphans: {listing.get('orphan_count', 0)}  total: {format_size(listing.get('total_size_bytes', 0))}")
+    if not packages:
+        print("No staged packages found.")
+        return 0
+    print(f"{'MIGRATION ID':36} {'SIZE':>10} {'FILES':>5} {'AGE(H)':>7} {'STATUS':14} ORPHAN")
+    for package in packages:
+        print(
+            f"{package.get('migration_id', ''):36} "
+            f"{format_size(package.get('size_bytes', 0)):>10} "
+            f"{package.get('file_count', 0):>5} "
+            f"{package.get('age_hours', 0):>7} "
+            f"{(package.get('migration_status') or '-'):14} "
+            f"{'yes' if package.get('orphan') else 'no'}"
+        )
+    return 0
+
+
+def print_cleanup_result(result: dict) -> int:
+    mode = "DRY RUN (nothing deleted)" if result.get("dry_run") else "CLEANUP EXECUTED"
+    print(f"mode: {mode}")
+    print(f"staging_dir: {result.get('staging_dir', '')}")
+    print(f"older_than_hours: {result.get('older_than_hours', '')}")
+    candidates = result.get("candidates") or []
+    print(f"candidates: {len(candidates)}  total: {format_size(result.get('total_size_bytes', 0))}")
+    for candidate in candidates:
+        print(f"  - {candidate.get('migration_id', '')} ({format_size(candidate.get('size_bytes', 0))}): {candidate.get('reason', '')}")
+    skipped = result.get("skipped") or []
+    print(f"skipped: {len(skipped)}")
+    for item in skipped:
+        print(f"  - {item.get('migration_id', '')}: {item.get('reason', '')}")
+    if not result.get("dry_run"):
+        print(f"deleted: {result.get('deleted_count', 0)}  freed: {format_size(result.get('deleted_size_bytes', 0))}")
+    errors = result.get("errors") or []
+    for error in errors:
+        print(f"ERROR: {error.get('migration_id', '')}: {error.get('error', '')}", file=sys.stderr)
+    print("Only temporary Hub staging packages are deleted. VMs and imported disks are never touched.")
+    return 1 if errors else 0
+
+
 def hub_action(args: argparse.Namespace) -> int:
     from .registry import RegistryClient, RegistryStore, serve_registry
 
@@ -275,6 +326,19 @@ def hub_action(args: argparse.Namespace) -> int:
         return print_json(client.health())
     if args.hub_command == "vms":
         return print_json({"vms": client.list_vms(args.host_id or None)})
+    if args.hub_command == "packages":
+        return print_staged_packages(client.list_staged_packages())
+    if args.hub_command == "cleanup-staging":
+        # Safety: without --confirm this is always a dry run, even if the
+        # user also passed --dry-run or nothing at all.
+        dry_run = not args.confirm
+        result = client.cleanup_staging(
+            older_than_hours=args.older_than_hours,
+            dry_run=dry_run,
+            include_failed=args.include_failed,
+            include_orphans=not args.no_orphans,
+        )
+        return print_cleanup_result(result)
     return 2
 
 
@@ -526,6 +590,18 @@ def main(argv: list[str] | None = None) -> int:
     hub_vms = hub_sub.add_parser("vms")
     hub_vms.add_argument("host_id", nargs="?")
     hub_vms.add_argument("--hub-url", default=default_hub_url())
+    hub_packages = hub_sub.add_parser("packages", help="List Hub staging packages with size, age, and migration status.")
+    hub_packages.add_argument("--hub-url", default=default_hub_url())
+    hub_cleanup = hub_sub.add_parser(
+        "cleanup-staging",
+        help="Preview or delete leftover Hub staging packages. Dry-run unless --confirm is given.",
+    )
+    hub_cleanup.add_argument("--older-than-hours", type=float, default=24.0)
+    hub_cleanup.add_argument("--dry-run", action="store_true", help="Preview only (default behavior without --confirm).")
+    hub_cleanup.add_argument("--confirm", action="store_true", help="Actually delete the cleanup candidates.")
+    hub_cleanup.add_argument("--include-failed", action="store_true", help="Also clean packages of failed/rolled back migrations.")
+    hub_cleanup.add_argument("--no-orphans", action="store_true", help="Do not clean packages without a Hub migration record.")
+    hub_cleanup.add_argument("--hub-url", default=default_hub_url())
     agent_parser = sub.add_parser("agent", help="Run the HyperGery host agent.")
     agent_sub = agent_parser.add_subparsers(dest="agent_command", required=True)
     agent_run = agent_sub.add_parser("run")
@@ -590,6 +666,9 @@ def main(argv: list[str] | None = None) -> int:
     migrate_remote.add_argument("--no-snapshots", action="store_true")
     migrate_remote.add_argument("--start-after-import", action="store_true")
     migrate_remote.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
+    from .v1.cli_v1 import add_v1_parser
+
+    add_v1_parser(sub)
     args = parser.parse_args(argv)
 
     try:
@@ -605,6 +684,10 @@ def main(argv: list[str] | None = None) -> int:
             return agent_action(args)
         if args.command == "host":
             return host_action(args)
+        if args.command == "v1":
+            from .v1.cli_v1 import v1_action
+
+            return v1_action(args)
         if args.command == "doctor":
             return doctor_action()
         backend = HyperGeryBackend()

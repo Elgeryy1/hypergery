@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QInputDialog,
     QScrollArea,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -37,7 +40,7 @@ from PySide6.QtWidgets import (
 
 from ..backend import HyperGeryBackend, HyperGeryError, VmSummary, now_iso
 from ..config import HyperGeryConfig, effective_config, effective_value
-from ..labs import LabStore
+from ..labs import LAB_VM_ROLES, LabStore
 from ..templates import TemplateStore
 from .dialogs import (
     AppSettingsDialog,
@@ -63,7 +66,14 @@ from .dialogs import (
 )
 from .console import VmConsoleWindow
 from .console_helpers import should_autoconnect_console
-from .lab_helpers import build_lab_topology, filter_vms_for_lab, vm_count_for_lab
+from .lab_helpers import (
+    build_lab_topology,
+    filter_vms_for_lab,
+    lab_status_summary,
+    plan_lab_power_action,
+    unify_lab_vms,
+    vm_count_for_lab,
+)
 from .topology import LabTopologyWidget
 from .styles import (
     APP_DISPLAY_VERSION,
@@ -93,6 +103,7 @@ class MainWindow(QMainWindow):
         self.selected_vm_template: dict | None = None
         self.selected_lab_template: dict | None = None
         self.remote_hosts: list[dict[str, Any]] = []
+        self.remote_vms_inventory: list[dict[str, Any]] = []
         self.console_windows: dict[str, VmConsoleWindow] = {}
         self.jobs: list[BackendJob] = []
         self.completed_jobs: list[BackendJob] = []
@@ -135,6 +146,8 @@ class MainWindow(QMainWindow):
         "Templates",
         "Remote Hosts",
         "Migrations",
+        "Commands",
+        "Control Center",
         "Diagnostics",
         "Settings",
     )
@@ -169,22 +182,26 @@ class MainWindow(QMainWindow):
         page_map = {
             "Dashboard": self.dashboard_page_index,
             "Virtual Machines": 0,
-            "Labs": 0,
+            "Labs": self.labs_page_index,
             "Templates": 1,
             "Remote Hosts": 2,
             "Migrations": self.migrations_page_index,
+            "Commands": self.commands_page_index,
+            "Control Center": self.control_center_page_index,
             "Diagnostics": self.diagnostics_page_index,
         }
         self.main_tabs.setCurrentIndex(page_map[section])
         if section == "Migrations" and not getattr(self, "_migrations_loaded", False):
             self.refresh_migrations()
-        self.right_panel.setVisible(section in {"Virtual Machines", "Labs"})
-        self.labs_mode_banner.setVisible(section == "Labs")
-        self.vm_page_title.setText("Labs" if section == "Labs" else "Virtual Machines")
-        self.vm_page_subtitle.setText(
-            "Isolated lab networks and their workloads" if section == "Labs"
-            else "Local KVM/libvirt machines and lab workloads"
-        )
+            self.refresh_hub_staging()
+        if section == "Commands" and not getattr(self, "_commands_loaded", False):
+            self.refresh_commands()
+        if section == "Control Center" and not getattr(self, "_v1_loaded", False):
+            self._v1_loaded = True
+            self.refresh_v1_all()
+        if section == "Labs":
+            self.render_labs_workspace()
+        self.right_panel.setVisible(section == "Virtual Machines")
 
     def _build_top_bar(self) -> QWidget:
         bar = QFrame()
@@ -304,14 +321,6 @@ class MainWindow(QMainWindow):
         header.addWidget(self.vm_filter)
         header.addWidget(self.vm_count_label)
         layout.addLayout(header)
-        self.labs_mode_banner = QLabel(
-            "Labs share this view for now — a lab-specific visual workspace arrives in v0.8. "
-            "Use the Labs table and lab actions below."
-        )
-        self.labs_mode_banner.setObjectName("calloutInfo")
-        self.labs_mode_banner.setWordWrap(True)
-        self.labs_mode_banner.setVisible(False)
-        layout.addWidget(self.labs_mode_banner)
         layout.addWidget(self._build_vm_actions_bar())
 
         self.vm_table = QTableWidget(0, 7)
@@ -485,7 +494,10 @@ class MainWindow(QMainWindow):
         self.main_tabs.addTab(self._build_remote_hosts_page(), "Remote Hosts")
 
         self.dashboard_page_index = self.main_tabs.addTab(self._build_dashboard_page(), "Dashboard")
+        self.labs_page_index = self.main_tabs.addTab(self._build_labs_page(), "Labs")
         self.migrations_page_index = self.main_tabs.addTab(self._build_migrations_page(), "Migrations")
+        self.commands_page_index = self.main_tabs.addTab(self._build_commands_page(), "Commands")
+        self.control_center_page_index = self.main_tabs.addTab(self._build_control_center_page(), "Control Center")
         self.diagnostics_page_index = self.main_tabs.addTab(self._build_diagnostics_page(), "Diagnostics")
         self.main_tabs.tabBar().hide()
 
@@ -745,19 +757,95 @@ class MainWindow(QMainWindow):
         title.setObjectName("pageTitle")
         layout.addWidget(title)
         note = QLabel(
-            "Read-only inventory reported by that host's agent. Manage these VMs from HyperGery on that "
-            "host; remote VM control arrives in v0.8. Use Live Migration to move VMs between hosts."
+            "Inventory reported by that host's agent. Remote power commands are executed by the target "
+            "host agent (App → Hub → Agent → libvirt). Remote console arrives in v0.8.x/v0.9; remote "
+            "delete is intentionally not supported. Reboot/Reset is not available yet (no safe backend)."
         )
         note.setObjectName("calloutInfo")
         note.setWordWrap(True)
         layout.addWidget(note)
-        table = QTableWidget(len(vms), 5)
+        table = QTableWidget(len(vms), 6)
         table.setObjectName("remoteVmsTable")
-        table.setHorizontalHeaderLabels(["Name", "State", "Lab", "RAM (MiB)", "vCPUs"])
+        table.setHorizontalHeaderLabels(["Name", "State", "Lab", "RAM (MiB)", "vCPUs", "Host"])
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(table, 1)
+        empty = QLabel("No VM inventory reported for this host yet (the agent reports it on each heartbeat).")
+        empty.setObjectName("mutedLabel")
+        empty.setWordWrap(True)
+        layout.addWidget(empty)
+
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        detail.setMaximumHeight(190)
+        detail.setPlaceholderText("Select a remote VM to see its details.")
+        layout.addWidget(detail)
+
+        power_status = QLabel("Select a VM to enable remote power actions.")
+        power_status.setObjectName("mutedLabel")
+        power_status.setWordWrap(True)
+        layout.addWidget(power_status)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        start_button = QPushButton("Start")
+        shutdown_button = QPushButton("ACPI Shutdown")
+        force_off_button = QPushButton("Force Off")
+        force_off_button.setObjectName("dangerButton")
+        refresh_button = QPushButton("Refresh")
+        console_button = QPushButton("Console")
+        console_button.setEnabled(False)
+        console_button.setToolTip("Remote console arrives later — not available in v0.8.")
+        for button in (start_button, shutdown_button, force_off_button):
+            button.setEnabled(False)
+        actions.addWidget(start_button)
+        actions.addWidget(shutdown_button)
+        actions.addWidget(force_off_button)
+        actions.addWidget(refresh_button)
+        actions.addWidget(console_button)
+        actions.addStretch()
+        close_button = QPushButton("Close")
+        actions.addWidget(close_button)
+        layout.addLayout(actions)
+
+        dialog.host_id = host_id
+        self._remote_vms_dialog = dialog
+        self.remote_vms_table = table
+        self.remote_vm_detail = detail
+        self.remote_power_status = power_status
+        self.remote_vm_start_button = start_button
+        self.remote_vm_shutdown_button = shutdown_button
+        self.remote_vm_force_off_button = force_off_button
+        self.remote_vm_refresh_button = refresh_button
+        self._remote_vms = []
+        self._remote_power_poll_timer = QTimer(dialog)
+        self._remote_power_poll_timer.setInterval(3000)
+        self._remote_power_poll_timer.timeout.connect(self._poll_remote_power_command)
+        self._remote_power_command_id = ""
+        self._remote_power_poll_running = False
+
+        table.itemSelectionChanged.connect(self._update_remote_power_buttons)
+        start_button.clicked.connect(lambda: self._queue_remote_power_action("start"))
+        shutdown_button.clicked.connect(lambda: self._queue_remote_power_action("shutdown"))
+        force_off_button.clicked.connect(lambda: self._queue_remote_power_action("force_off"))
+        refresh_button.clicked.connect(self._refresh_remote_vms)
+        close_button.clicked.connect(dialog.accept)
+        dialog.finished.connect(self._remote_power_poll_timer.stop)
+
+        self._populate_remote_vms_table(vms)
+        dialog.resize(720, 460)
+        dialog.show()
+
+    def _populate_remote_vms_table(self, vms: list[dict[str, Any]]) -> None:
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        if dialog is None:
+            return
+        table = self.remote_vms_table
+        self._remote_vms = list(vms)
+        host_id = str(getattr(dialog, "host_id", ""))
+        table.setRowCount(len(vms))
         for row, vm in enumerate(vms):
             state = str(vm.get("state") or "unknown")
             cells = (
@@ -766,24 +854,226 @@ class MainWindow(QMainWindow):
                 str(vm.get("lab_id") or ""),
                 str(vm.get("ram_mib") or ""),
                 str(vm.get("vcpus") or ""),
+                host_id,
             )
             for column, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if column == 1:
                     item.setForeground(QColor(STATE_COLORS.get(state.replace(" ", ""), "#94A3B8")))
                 table.setItem(row, column, item)
-        layout.addWidget(table, 1)
-        if not vms:
-            empty = QLabel("No VM inventory reported for this host yet (the agent reports it on each heartbeat).")
-            empty.setObjectName("mutedLabel")
-            empty.setWordWrap(True)
-            layout.addWidget(empty)
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(dialog.accept)
-        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
-        dialog.resize(640, 420)
-        dialog.show()
-        self._remote_vms_dialog = dialog
+        # The empty-state hint is the widget right below the table.
+        for label in dialog.findChildren(QLabel):
+            if label.text().startswith("No VM inventory reported"):
+                label.setVisible(not vms)
+        self._update_remote_power_buttons()
+
+    def _selected_remote_vm(self) -> dict[str, Any] | None:
+        table = getattr(self, "remote_vms_table", None)
+        if table is None:
+            return None
+        row = table.currentRow()
+        if row < 0 or row >= len(self._remote_vms):
+            return None
+        return self._remote_vms[row]
+
+    REMOTE_INVENTORY_STALE_SECONDS = 180
+
+    @staticmethod
+    def _iso_age_seconds(timestamp: str) -> float | None:
+        try:
+            parsed = datetime.fromisoformat(str(timestamp))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0.0, (datetime.now(UTC) - parsed).total_seconds())
+
+    def _remote_host_name(self, host_id: str) -> str:
+        for host in self.remote_hosts:
+            if str(host.get("host_id") or "") == host_id:
+                return str(host.get("name") or host.get("hostname") or "")
+        return ""
+
+    def _render_remote_vm_details(self) -> None:
+        detail = getattr(self, "remote_vm_detail", None)
+        if detail is None:
+            return
+        vm = self._selected_remote_vm()
+        if vm is None:
+            detail.setPlainText("")
+            return
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        host_id = str(getattr(dialog, "host_id", "")) if dialog is not None else ""
+        updated_at = str(vm.get("updated_at") or "")
+        age_seconds = self._iso_age_seconds(updated_at)
+        lines: list[str] = []
+        if age_seconds is None or age_seconds > self.REMOTE_INVENTORY_STALE_SECONDS:
+            age_text = f"{int(age_seconds // 60)} min old" if age_seconds is not None else "of unknown age"
+            lines.append(
+                f"⚠ Inventory data may be stale ({age_text}). "
+                "The agent refreshes it on each heartbeat — check that the agent is running."
+            )
+        disk_paths = [str(item) for item in (vm.get("disk_paths") or []) if item]
+        iso_paths = [str(item) for item in (vm.get("iso_paths") or []) if item]
+        networks = [str(item) for item in (vm.get("networks") or []) if item]
+        macs = [str(item) for item in (vm.get("macs") or []) if item]
+        lines.append(
+            details_block(
+                ("VM name", str(vm.get("vm_name") or vm.get("name") or "")),
+                ("Host ID", host_id),
+                ("Host name", self._remote_host_name(host_id) or "unknown"),
+                ("State", str(vm.get("state") or "unknown")),
+                ("Lab", str(vm.get("lab_id") or "unknown")),
+                ("RAM", format_mib(vm.get("ram_mib"))),
+                ("vCPUs", str(vm.get("vcpus") or "unknown")),
+                ("Disks", ", ".join(disk_paths) if disk_paths else "none reported"),
+                ("ISOs", ", ".join(iso_paths) if iso_paths else "none"),
+                ("Display", str(vm.get("display") or "unknown").upper()),
+                ("MACs", ", ".join(macs) if macs else "not reported"),
+                ("Networks", ", ".join(networks) if networks else "not reported"),
+                ("Last inventory update", updated_at or "unknown"),
+                ("Inventory source", "Hub (reported by the host agent on each heartbeat)"),
+            )
+        )
+        detail.setPlainText("\n".join(lines))
+
+    def _update_remote_power_buttons(self) -> None:
+        vm = self._selected_remote_vm()
+        self._render_remote_vm_details()
+        if vm is None:
+            for button in (self.remote_vm_start_button, self.remote_vm_shutdown_button, self.remote_vm_force_off_button):
+                button.setEnabled(False)
+            return
+        state = str(vm.get("state") or "unknown").lower()
+        running_like = state in {"running", "paused"}
+        shut_off = state in {"shut off", "shutoff"}
+        self.remote_vm_start_button.setEnabled(shut_off)
+        self.remote_vm_shutdown_button.setEnabled(running_like)
+        # Force Off also covers stuck/unknown states; it always asks first.
+        self.remote_vm_force_off_button.setEnabled(running_like or state == "unknown")
+
+    def _queue_remote_power_action(self, action: str) -> None:
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        vm = self._selected_remote_vm()
+        if dialog is None or vm is None:
+            return
+        host_id = str(getattr(dialog, "host_id", ""))
+        vm_name = str(vm.get("vm_name") or vm.get("name") or "")
+        if action == "force_off":
+            answer = QMessageBox.question(
+                dialog,
+                "Force Off VM",
+                f"Force Off may corrupt guest data on {vm_name}. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        url = self.registry_url()
+
+        def queue_command() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return RegistryClient(url).queue_vm_power_command(host_id, vm_name, action)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def on_queued(result: dict[str, Any]) -> None:
+            error = str((result or {}).get("error") or "")
+            if error:
+                self.remote_power_status.setText(f"Cannot queue {action} for {vm_name}: {error}")
+                return
+            command_id = str((result or {}).get("command_id") or "")
+            self._remote_power_command_id = command_id
+            self.remote_power_status.setText(
+                f"Command queued: {command_id} ({action} {vm_name}). Waiting for the target host agent..."
+            )
+            self.log_activity(f"Queued remote {action} for {vm_name} on {host_id}: {command_id}")
+            self._remote_power_poll_timer.start()
+
+        self.run_operation(
+            f"Queueing remote {action} for {vm_name} on {host_id}",
+            queue_command,
+            on_success=on_queued,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def _poll_remote_power_command(self) -> None:
+        command_id = self._remote_power_command_id
+        if not command_id or self._remote_power_poll_running:
+            return
+        self._remote_power_poll_running = True
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return RegistryClient(url).command(command_id)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def on_status(result: dict[str, Any]) -> None:
+            self._remote_power_poll_running = False
+            error = str((result or {}).get("error") or "")
+            if error:
+                self.remote_power_status.setText(f"Cannot read command {command_id}: {error}")
+                return
+            status = str((result or {}).get("status") or "")
+            if status not in {"done", "failed"}:
+                self.remote_power_status.setText(f"Command {command_id}: {status or 'pending'}...")
+                return
+            self._remote_power_poll_timer.stop()
+            self._remote_power_command_id = ""
+            payload = (result or {}).get("result") or {}
+            message = str(payload.get("message") or payload.get("error") or "")
+            if status == "done":
+                self.remote_power_status.setText(f"Command {command_id} done. {message}".strip())
+                self.log_activity(f"Remote command done: {command_id}. {message}".strip())
+            else:
+                self.remote_power_status.setText(f"Command {command_id} FAILED. {message}".strip())
+                self.log_activity(f"Remote command FAILED: {command_id}. {message}".strip())
+            self._refresh_remote_vms()
+
+        self.run_operation(
+            f"Checking remote command {command_id}",
+            fetch,
+            on_success=on_status,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def _refresh_remote_vms(self) -> None:
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        if dialog is None:
+            return
+        host_id = str(getattr(dialog, "host_id", ""))
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return {"vms": RegistryClient(url).list_vms(host_id)}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def on_loaded(result: dict[str, Any]) -> None:
+            error = str((result or {}).get("error") or "")
+            if error:
+                self.remote_power_status.setText(f"Cannot refresh inventory for {host_id}: {error}")
+                return
+            self._populate_remote_vms_table(list((result or {}).get("vms") or []))
+
+        self.run_operation(
+            f"Refreshing VM inventory for {host_id}",
+            fetch,
+            on_success=on_loaded,
+            refresh_after=False,
+            busy=False,
+        )
 
     def _render_host_cards(self, hosts: list[dict[str, Any]]) -> None:
         self._clear_remote_cards()
@@ -833,6 +1123,199 @@ class MainWindow(QMainWindow):
             self.log_activity(f"Queued remote host test for {host_id}: {result.get('command_id', '')}")
 
         self.run_operation(f"Testing remote host {host_id}", do_test, on_success=on_done, refresh_after=False)
+
+    # ------------------------------------------------------------------ #
+    # Control Center (v0.9/v1 services)                                   #
+    # ------------------------------------------------------------------ #
+
+    V1_TAB_KEYS = ("Telemetry", "Orchestrator", "Battery", "NAS", "Network", "Guests", "External Nodes", "Logs")
+
+    def _build_control_center_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        title = QLabel("Control Center")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("v1 services: telemetry, orchestrator, battery, NAS commits, networks, guests, external nodes, logs")
+        subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(title)
+        head_col.addWidget(subtitle)
+        header.addLayout(head_col)
+        header.addStretch()
+        self.v1_refresh_all_button = self._button("Refresh All", self.refresh_v1_all, primary=True)
+        self.v1_export_button = self._button("Export Report", self.export_v1_report)
+        header.addWidget(self.v1_refresh_all_button)
+        header.addWidget(self.v1_export_button)
+        layout.addLayout(header)
+
+        note = QLabel(
+            "Everything here is read-only or dry-run: plans and recommendations are never executed from this page. "
+            "Use the CLI (python -m hypergery_ubuntu.cli v1 …) for NAS commits and teleports."
+        )
+        note.setObjectName("calloutInfo")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.v1_tabs = QTabWidget()
+        self.v1_views: dict[str, QTextEdit] = {}
+        for key in self.V1_TAB_KEYS:
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            tab_layout.setContentsMargins(8, 8, 8, 8)
+            tab_layout.setSpacing(8)
+            bar = QHBoxLayout()
+            refresh = self._button("Refresh", lambda checked=False, k=key: self.refresh_v1_tab(k))
+            bar.addWidget(refresh)
+            bar.addStretch()
+            tab_layout.addLayout(bar)
+            view = QTextEdit()
+            view.setReadOnly(True)
+            view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+            view.setPlaceholderText(f"Press Refresh to load {key} from the v1 services.")
+            tab_layout.addWidget(view, 1)
+            self.v1_views[key] = view
+            self.v1_tabs.addTab(tab, key)
+        layout.addWidget(self.v1_tabs, 1)
+        self._v1_loaded = False
+        return page
+
+    def _v1_collect(self, key: str) -> str:
+        """Collect one Control Center tab's data (runs in a worker thread)."""
+        import json as _json
+
+        from ..v1.settings import V1Settings
+
+        try:
+            settings = V1Settings.load()
+        except Exception:
+            settings = V1Settings()
+        url = self.registry_url()
+
+        def hub_client():
+            from ..registry import RegistryClient
+
+            return RegistryClient(url)
+
+        def dump(payload: Any) -> str:
+            return _json.dumps(payload, indent=2, sort_keys=True, default=str)
+
+        if key == "Telemetry":
+            from ..v1.telemetry import TelemetryService, evaluate_alerts
+
+            service = TelemetryService(settings=settings)
+            sample = service.sample_local()
+            service.record(sample)
+            return dump({"local": sample.to_dict(), "alerts": evaluate_alerts(local_sample=sample, settings=settings)})
+        if key == "Orchestrator":
+            from ..v1.battery import BatteryService
+            from ..v1.hosts import HostRegistry
+            from ..v1.orchestrator import OrchestratorService
+            from ..v1.providers import LocalProvider
+            from ..v1.telemetry import TelemetryService
+
+            registry = HostRegistry(settings=settings, telemetry=TelemetryService(settings=settings), hub_client=hub_client())
+            hosts = registry.list_hosts()
+            try:
+                vms = LocalProvider(self.backend).list_vms()
+            except Exception:
+                vms = []
+            plans = OrchestratorService(settings=settings).plan(
+                hosts=hosts,
+                vms=vms,
+                battery=BatteryService(settings=settings).read(),
+                local_host_id=hosts[0].id if hosts else None,
+            )
+            return dump({"plans": [plan.to_dict() for plan in plans], "dry_run": True})
+        if key == "Battery":
+            from ..v1.battery import BatteryService
+
+            service = BatteryService(settings=settings)
+            state = service.read()
+            return dump({"battery": state.to_dict(), "actions": service.recommended_actions(state)})
+        if key == "NAS":
+            from ..v1.nas import NasService
+
+            service = NasService(settings=settings, lab_store=self.lab_store())
+            return dump({"health": service.health(), "commits": service.list_commits()[-10:]})
+        if key == "Network":
+            from ..v1.networks import network_from_lab, validate_networks
+
+            labs = self.lab_store().list_labs()
+            networks = [network_from_lab(lab) for lab in labs]
+            result = validate_networks(networks)
+            return dump({"networks": [network.to_dict() for network in networks], "validation": result})
+        if key == "Guests":
+            from ..v1.rbac import UserStore
+
+            users = UserStore().list_users()
+            return dump(
+                {"users": [{**user.to_dict(), "effective_permissions": sorted(user.permissions())} for user in users]}
+            )
+        if key == "External Nodes":
+            from ..v1.external_nodes import ExternalNodeStore, health_check
+
+            nodes = ExternalNodeStore().list_nodes()
+            return dump({"nodes": [{**node.to_dict(), "health": health_check(node)} for node in nodes]})
+        if key == "Logs":
+            from ..v1.hglog import get_logger
+
+            events = get_logger().query(limit=100, from_file=True)
+            return dump({"events": events[-100:]})
+        return "{}"
+
+    def _set_v1_view(self, key: str, text: str) -> None:
+        view = self.v1_views.get(key)
+        if view is not None:
+            view.setPlainText(text)
+
+    def refresh_v1_tab(self, key: str) -> None:
+        def fetch() -> str:
+            try:
+                return self._v1_collect(key)
+            except Exception as exc:
+                return f"{key} unavailable: {exc}"
+
+        self.run_operation(
+            f"Loading v1 {key}",
+            fetch,
+            on_success=lambda text, k=key: self._set_v1_view(k, str(text)),
+            refresh_after=False,
+            busy=False,
+        )
+
+    def refresh_v1_all(self) -> None:
+        for key in self.V1_TAB_KEYS:
+            self.refresh_v1_tab(key)
+
+    def export_v1_report(self) -> None:
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Control Center Report",
+            "hypergery-v1-report.json",
+            "Report (*.json);;All files (*)",
+            "",
+            FILE_DIALOG_OPTIONS,
+        )
+        if not path:
+            return
+        report = {
+            "generated_at": now_iso(),
+            "sections": {key: self.v1_views[key].toPlainText() for key in self.V1_TAB_KEYS},
+        }
+        try:
+            import json as _json
+
+            Path(path).expanduser().write_text(_json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            self.show_error(f"Cannot export report: {exc}")
+            return
+        self.log_activity(f"Exported Control Center report to {path}")
+        self.status.showMessage(f"Report exported to {path}", 5000)
 
     DOCTOR_GROUPS = (
         ("Local Virtualization", ("/dev/kvm", "user groups", "libvirt")),
@@ -1105,7 +1588,7 @@ class MainWindow(QMainWindow):
             ("New VM", "Create from a local ISO", self.new_vm, True),
             ("New Lab", "Isolated lab network", self.new_lab, False),
             ("Open Console", "Integrated VNC console", self._dashboard_go_vms, False),
-            ("Live Migration", "NAS Clone Migration", self._dashboard_go_vms, False),
+            ("Live Migration", "Hub Transfer or NAS Clone", self._dashboard_go_vms, False),
             ("Run Doctor", "Host and Hub diagnostics", self._dashboard_go_diagnostics, False),
             ("Settings", "Hub · NAS · VM defaults", self.app_settings, False),
         )
@@ -1143,7 +1626,7 @@ class MainWindow(QMainWindow):
         self.dash_migration_label = QLabel("No migrations recorded yet.")
         self.dash_migration_label.setObjectName("mutedLabel")
         self.dash_migration_label.setWordWrap(True)
-        migration_note = QLabel("NAS Clone Migration keeps the source VM untouched; UUID and MAC are regenerated on the target.")
+        migration_note = QLabel("Migrations (Hub Transfer or NAS Clone) keep the source VM untouched; UUID and MAC are regenerated on the target.")
         migration_note.setObjectName("mutedLabel")
         migration_note.setWordWrap(True)
         migration_layout.addWidget(migration_title)
@@ -1225,6 +1708,424 @@ class MainWindow(QMainWindow):
         vm_name = str(last.get("vm_name") or last.get("source_vm_name") or "?")
         self.dash_migration_label.setText(f"{migration_id}\n{vm_name} · status: {status}")
 
+    # ------------------------------------------------------------------ #
+    # Labs workspace (v0.8)                                               #
+    # ------------------------------------------------------------------ #
+
+    LAB_WS_TABLE_COLUMNS = ("Name", "Role", "State", "Host", "RAM", "vCPUs", "Location")
+
+    def _build_labs_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        head_col = QVBoxLayout()
+        head_col.setSpacing(2)
+        title = QLabel("Labs")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Lab workspaces: grouped VMs across local and remote hosts")
+        subtitle.setObjectName("mutedLabel")
+        head_col.addWidget(title)
+        head_col.addWidget(subtitle)
+        header.addLayout(head_col)
+        header.addStretch()
+        self.lab_ws_new_button = self._button("New Lab", self.new_lab, primary=True)
+        self.lab_ws_refresh_button = self._button("Refresh", self.refresh_all)
+        header.addWidget(self.lab_ws_new_button)
+        header.addWidget(self.lab_ws_refresh_button)
+        layout.addLayout(header)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        cards_scroll = QScrollArea()
+        cards_scroll.setWidgetResizable(True)
+        cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cards_body = QWidget()
+        self.lab_ws_cards_layout = QVBoxLayout(cards_body)
+        self.lab_ws_cards_layout.setContentsMargins(0, 0, 8, 0)
+        self.lab_ws_cards_layout.setSpacing(10)
+        cards_scroll.setWidget(cards_body)
+        splitter.addWidget(cards_scroll)
+
+        detail = QFrame()
+        detail.setObjectName("panel")
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(16, 14, 16, 14)
+        detail_layout.setSpacing(8)
+        self.lab_ws_title = QLabel("No lab selected")
+        self.lab_ws_title.setObjectName("sectionTitle")
+        self.lab_ws_meta = QLabel("")
+        self.lab_ws_meta.setObjectName("mutedLabel")
+        self.lab_ws_meta.setWordWrap(True)
+        self.lab_ws_status_label = QLabel("")
+        self.lab_ws_status_label.setObjectName("mutedLabel")
+        self.lab_ws_status_label.setWordWrap(True)
+        self.lab_ws_hosts_label = QLabel("")
+        self.lab_ws_hosts_label.setObjectName("mutedLabel")
+        self.lab_ws_hosts_label.setWordWrap(True)
+        detail_layout.addWidget(self.lab_ws_title)
+        detail_layout.addWidget(self.lab_ws_meta)
+        detail_layout.addWidget(self.lab_ws_status_label)
+        detail_layout.addWidget(self.lab_ws_hosts_label)
+
+        self.lab_ws_vm_table = QTableWidget(0, len(self.LAB_WS_TABLE_COLUMNS))
+        self.lab_ws_vm_table.setHorizontalHeaderLabels(list(self.LAB_WS_TABLE_COLUMNS))
+        self.lab_ws_vm_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.lab_ws_vm_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.lab_ws_vm_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.lab_ws_vm_table.setAlternatingRowColors(True)
+        self.lab_ws_vm_table.verticalHeader().setVisible(False)
+        self.lab_ws_vm_table.horizontalHeader().setStretchLastSection(True)
+        self.lab_ws_vm_table.itemSelectionChanged.connect(self._update_lab_ws_buttons)
+        detail_layout.addWidget(self.lab_ws_vm_table, 1)
+
+        vm_actions = QHBoxLayout()
+        vm_actions.setSpacing(8)
+        self.lab_ws_open_vm_button = self._button("Open VM", self.lab_ws_open_vm)
+        self.lab_ws_view_remote_button = self._button("View Remote VM", self.lab_ws_view_remote_vm)
+        self.lab_ws_migrate_button = self._button("Migrate VM", self.lab_ws_migrate_vm)
+        self.lab_ws_role_button = self._button("Set VM Role…", self.lab_ws_set_role)
+        for button in (
+            self.lab_ws_open_vm_button,
+            self.lab_ws_view_remote_button,
+            self.lab_ws_migrate_button,
+            self.lab_ws_role_button,
+        ):
+            vm_actions.addWidget(button)
+        vm_actions.addStretch()
+        detail_layout.addLayout(vm_actions)
+
+        lab_actions = QHBoxLayout()
+        lab_actions.setSpacing(8)
+        self.lab_ws_start_button = self._button("Start Lab", self.start_lab, primary=True)
+        self.lab_ws_shutdown_button = self._button("Shutdown Lab", self.shutdown_lab)
+        self.lab_ws_snapshot_button = QPushButton("Snapshot Lab")
+        self.lab_ws_snapshot_button.setEnabled(False)
+        self.lab_ws_snapshot_button.setToolTip(
+            "Planned — lab-wide snapshots are not available yet. Use per-VM Snapshots in Virtual Machines."
+        )
+        lab_actions.addWidget(self.lab_ws_start_button)
+        lab_actions.addWidget(self.lab_ws_shutdown_button)
+        lab_actions.addWidget(self.lab_ws_snapshot_button)
+        lab_actions.addStretch()
+        detail_layout.addLayout(lab_actions)
+
+        self.lab_ws_feedback = QLabel(
+            "Start Lab starts every shut off VM in the lab (local backend or Hub → Agent for remote VMs). "
+            "Shutdown Lab sends ACPI shutdown to every running VM. There is no lab-wide Force Off."
+        )
+        self.lab_ws_feedback.setObjectName("calloutInfo")
+        self.lab_ws_feedback.setWordWrap(True)
+        detail_layout.addWidget(self.lab_ws_feedback)
+
+        splitter.addWidget(detail)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, 1)
+
+        self._lab_ws_card_frames: list[QFrame] = []
+        self.selected_workspace_lab_id = ""
+        self._lab_ws_vms: list[dict[str, Any]] = []
+        return page
+
+    def _local_host_id(self) -> str:
+        return str(effective_config()["host_id"].value)
+
+    def _clear_lab_ws_cards(self) -> None:
+        self._lab_ws_card_frames = []
+        while self.lab_ws_cards_layout.count():
+            item = self.lab_ws_cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _lab_ws_card(self, lab: dict[str, Any]) -> QFrame:
+        lab_id = str(lab.get("lab_id", ""))
+        selected = lab_id == self.selected_workspace_lab_id
+        card = QFrame()
+        card.setObjectName("hostCardSelected" if selected else "hostCard")
+        card.mousePressEvent = lambda event, lid=lab_id: self._select_workspace_lab(lid)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+        title = QLabel(str(lab.get("name") or lab_id))
+        title.setObjectName("sectionTitle")
+        meta = QLabel(f"{lab_id} · {lab.get('network_mode', 'nat')} · {lab.get('subnet', '')}")
+        meta.setObjectName("mutedLabel")
+        summary = lab_status_summary(self._workspace_unified_vms(lab))
+        counts = summary["counts"]
+        chips = QLabel(
+            f"{counts['total']} VM(s) · {counts['running']} running · {counts['shut_off']} shut off"
+            + (f" · {counts['paused']} paused" if counts["paused"] else "")
+            + (f" · {counts['not_created']} not created" if counts["not_created"] else "")
+            + (f" · {counts['unknown']} unknown" if counts["unknown"] else "")
+        )
+        chips.setObjectName("mutedLabel")
+        chips.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(meta)
+        layout.addWidget(chips)
+        if lab.get("description"):
+            description = QLabel(str(lab.get("description")))
+            description.setObjectName("mutedLabel")
+            description.setWordWrap(True)
+            layout.addWidget(description)
+        return card
+
+    def _workspace_unified_vms(self, lab: dict[str, Any]) -> list[dict[str, Any]]:
+        return unify_lab_vms(lab, self.all_vms, self.remote_vms_inventory, self._local_host_id())
+
+    def _selected_workspace_lab(self) -> dict[str, Any] | None:
+        for lab in self.labs:
+            if str(lab.get("lab_id", "")) == self.selected_workspace_lab_id:
+                return lab
+        return None
+
+    def _select_workspace_lab(self, lab_id: str) -> None:
+        self.selected_workspace_lab_id = lab_id
+        self.render_labs_workspace()
+
+    def render_labs_workspace(self) -> None:
+        if not hasattr(self, "lab_ws_cards_layout"):
+            return
+        labs = self.labs
+        if labs and not any(str(lab.get("lab_id", "")) == self.selected_workspace_lab_id for lab in labs):
+            self.selected_workspace_lab_id = str(labs[0].get("lab_id", ""))
+        self._clear_lab_ws_cards()
+        if not labs:
+            self.lab_ws_cards_layout.addWidget(
+                self._remote_message_panel(
+                    "No labs yet",
+                    "Create VMs in default-lab or create a new lab.",
+                    action=("New Lab", self.new_lab),
+                )
+            )
+            self.lab_ws_cards_layout.addStretch()
+            self._render_lab_ws_detail(None)
+            return
+        for lab in labs:
+            card = self._lab_ws_card(lab)
+            self._lab_ws_card_frames.append(card)
+            self.lab_ws_cards_layout.addWidget(card)
+        self.lab_ws_cards_layout.addStretch()
+        self._render_lab_ws_detail(self._selected_workspace_lab())
+
+    def _render_lab_ws_detail(self, lab: dict[str, Any] | None) -> None:
+        if lab is None:
+            self.lab_ws_title.setText("No lab selected")
+            self.lab_ws_meta.setText("")
+            self.lab_ws_status_label.setText("")
+            self.lab_ws_hosts_label.setText("")
+            self.lab_ws_vm_table.setRowCount(0)
+            self._lab_ws_vms = []
+            self._update_lab_ws_buttons()
+            return
+        lab_id = str(lab.get("lab_id", ""))
+        self.lab_ws_title.setText(str(lab.get("name") or lab_id))
+        description = str(lab.get("description") or "")
+        self.lab_ws_meta.setText(
+            f"{lab_id} · {lab.get('network_mode', 'nat')} · subnet {lab.get('subnet', '')} · "
+            f"bridge {lab.get('bridge_name', '')}"
+            + (f"\n{description}" if description else "")
+        )
+        unified = self._workspace_unified_vms(lab)
+        self._lab_ws_vms = unified
+        summary = lab_status_summary(unified)
+        counts = summary["counts"]
+        self.lab_ws_status_label.setText(
+            f"Status: {counts['total']} VM(s) · {counts['running']} running · "
+            f"{counts['shut_off']} shut off · {counts['paused']} paused · "
+            f"{counts['unknown']} unknown · {counts['not_created']} not created"
+        )
+        hosts = summary["hosts"]
+        if hosts:
+            parts = [f"{host_id}: {len(names)} VM(s)" for host_id, names in sorted(hosts.items())]
+            self.lab_ws_hosts_label.setText("Host distribution — " + " · ".join(parts))
+        else:
+            self.lab_ws_hosts_label.setText("Host distribution — no live VMs yet")
+        self.lab_ws_vm_table.setRowCount(len(unified))
+        local_host_id = self._local_host_id()
+        for row, vm in enumerate(unified):
+            location = "Local" if (not vm["remote"] and vm["host_id"] == local_host_id) else ("Remote" if vm["remote"] else "—")
+            cells = (
+                vm["name"],
+                vm["role"] or "—",
+                vm["state"].upper(),
+                vm["host_id"] or "—",
+                format_mib(vm["ram_mib"]) if vm["ram_mib"] else "—",
+                str(vm["vcpus"] or "—"),
+                location,
+            )
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if column == 2:
+                    item.setForeground(QColor(STATE_COLORS.get(state_kind(vm["state"]), "#94A3B8")))
+                self.lab_ws_vm_table.setItem(row, column, item)
+        self._update_lab_ws_buttons()
+
+    def _selected_lab_ws_vm(self) -> dict[str, Any] | None:
+        row = self.lab_ws_vm_table.currentRow()
+        if row < 0 or row >= len(self._lab_ws_vms):
+            return None
+        return self._lab_ws_vms[row]
+
+    def _update_lab_ws_buttons(self) -> None:
+        lab = self._selected_workspace_lab()
+        vm = self._selected_lab_ws_vm()
+        has_lab = lab is not None
+        is_local = vm is not None and not vm["remote"] and vm["state"] != "not created"
+        is_remote = vm is not None and vm["remote"]
+        self.lab_ws_open_vm_button.setEnabled(is_local)
+        self.lab_ws_view_remote_button.setEnabled(is_remote)
+        self.lab_ws_migrate_button.setEnabled(is_local)
+        self.lab_ws_role_button.setEnabled(has_lab and vm is not None)
+        self.lab_ws_start_button.setEnabled(has_lab and any(v["state"] == "shut off" for v in self._lab_ws_vms))
+        self.lab_ws_shutdown_button.setEnabled(has_lab and any(v["state"] == "running" for v in self._lab_ws_vms))
+
+    def lab_ws_open_vm(self) -> None:
+        vm = self._selected_lab_ws_vm()
+        if vm is None or vm["remote"]:
+            return
+        self._dashboard_go_vms()
+        self.vm_filter.setCurrentIndex(0)
+        self._select_vm_by_name(vm["name"])
+
+    def lab_ws_view_remote_vm(self) -> None:
+        vm = self._selected_lab_ws_vm()
+        if vm is None or not vm["remote"]:
+            return
+        self._view_host_vms(vm["host_id"])
+
+    def lab_ws_migrate_vm(self) -> None:
+        vm = self._selected_lab_ws_vm()
+        if vm is None or vm["remote"]:
+            return
+        self._dashboard_go_vms()
+        self.vm_filter.setCurrentIndex(0)
+        self._select_vm_by_name(vm["name"])
+        if self.selected_vm is not None and self.selected_vm.name == vm["name"]:
+            self.live_migration_vm()
+        else:
+            self.status.showMessage(f"Select {vm['name']} in Virtual Machines, then use Live Migration", 8000)
+
+    def lab_ws_set_role(self) -> None:
+        lab = self._selected_workspace_lab()
+        vm = self._selected_lab_ws_vm()
+        if lab is None or vm is None:
+            return
+        options = ["(no role)"] + list(LAB_VM_ROLES)
+        current = vm["role"] if vm["role"] in LAB_VM_ROLES else "(no role)"
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Set VM Role",
+            f"Role for {vm['name']} in {lab.get('lab_id', '')}:",
+            options,
+            options.index(current),
+            False,
+        )
+        if not ok:
+            return
+        role = "" if choice == "(no role)" else choice
+        try:
+            self.lab_store().set_vm_role(str(lab["lab_id"]), vm["name"], role)
+        except Exception as exc:
+            self.show_error(str(exc))
+            return
+        self.log_activity(f"Set role '{role or 'none'}' for {vm['name']} in lab {lab.get('lab_id', '')}")
+        self.refresh_labs()
+        self.render_labs_workspace()
+
+    def start_lab(self) -> None:
+        self._confirm_and_run_lab_power("start")
+
+    def shutdown_lab(self) -> None:
+        self._confirm_and_run_lab_power("shutdown")
+
+    def _confirm_and_run_lab_power(self, action: str) -> None:
+        lab = self._selected_workspace_lab()
+        if lab is None:
+            self.show_error("Select a lab first.")
+            return
+        plan = plan_lab_power_action(self._workspace_unified_vms(lab), action)
+        targets = plan["targets"]
+        if not targets:
+            self.lab_ws_feedback.setText(
+                f"Nothing to {action}: no VMs in the required state ("
+                + ("shut off" if action == "start" else "running")
+                + ")."
+            )
+            return
+        if action == "start":
+            question = f"This will start {len(targets)} VM(s) across {plan['host_count']} host(s)."
+        else:
+            question = f"This will request ACPI shutdown for {len(targets)} running VM(s)."
+        names = ", ".join(vm["name"] for vm in targets[:8]) + ("…" if len(targets) > 8 else "")
+        answer = QMessageBox.question(
+            self,
+            f"{action.capitalize()} Lab",
+            f"{question}\n\nVMs: {names}\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._execute_lab_power(str(lab.get("lab_id", "")), action, targets)
+
+    def _execute_lab_power(self, lab_id: str, action: str, targets: list[dict[str, Any]]) -> None:
+        url = self.registry_url()
+        backend = self.backend
+        local_method = "start_vm" if action == "start" else "shutdown_vm"
+
+        def run() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            results: dict[str, list[str]] = {"local": [], "queued": [], "errors": []}
+            client: RegistryClient | None = None
+            for vm in targets:
+                try:
+                    if vm["remote"]:
+                        if client is None:
+                            client = RegistryClient(url)
+                        command = client.queue_vm_power_command(vm["host_id"], vm["name"], action)
+                        results["queued"].append(f"{vm['name']}@{vm['host_id']} ({command.get('command_id', '')})")
+                    else:
+                        getattr(backend, local_method)(vm["name"])
+                        results["local"].append(vm["name"])
+                except Exception as exc:
+                    results["errors"].append(f"{vm['name']}: {exc}")
+            return results
+
+        def on_done(results: dict[str, Any]) -> None:
+            local = results.get("local") or []
+            queued = results.get("queued") or []
+            errors = results.get("errors") or []
+            lines = [f"Lab {lab_id} {action}:"]
+            if local:
+                lines.append(f"  {len(local)} local VM(s): {', '.join(local)}")
+            if queued:
+                lines.append(f"  {len(queued)} remote command(s) queued: {', '.join(queued)}")
+            if errors:
+                lines.append(f"  {len(errors)} FAILED: {'; '.join(errors)}")
+            summary = "\n".join(lines)
+            self.lab_ws_feedback.setText(summary)
+            self.lab_ws_feedback.setObjectName("calloutDanger" if errors else "calloutOk")
+            self.lab_ws_feedback.style().unpolish(self.lab_ws_feedback)
+            self.lab_ws_feedback.style().polish(self.lab_ws_feedback)
+            self.log_activity(summary.replace("\n", " · "))
+            self.refresh_all()
+
+        self.log_activity(f"Lab {action} requested for {lab_id}: {len(targets)} VM(s)")
+        self.run_operation(
+            f"{'Starting' if action == 'start' else 'Shutting down'} lab {lab_id}",
+            run,
+            on_success=on_done,
+            refresh_after=False,
+            busy=False,
+        )
+
     MIGRATIONS_TABLE_COLUMNS = ("Migration ID", "Source VM", "Target VM", "Source → Target", "Strategy", "Status", "Updated")
 
     def _build_migrations_page(self) -> QWidget:
@@ -1280,15 +2181,202 @@ class MainWindow(QMainWindow):
         layout.addLayout(actions)
 
         safety = QLabel(
-            "History is read-only: migration records and packages are never deleted from this page. "
+            "History is read-only: migration records are never deleted from this page. "
             "Source VMs are never touched by migrations."
         )
         safety.setObjectName("calloutInfo")
         safety.setWordWrap(True)
         layout.addWidget(safety)
+        layout.addWidget(self._build_hub_staging_panel())
         self.migrations_history: list[dict[str, Any]] = []
         self._migrations_loaded = False
         return page
+
+    def _build_hub_staging_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        title = QLabel("Hub Staging Maintenance")
+        title.setObjectName("sectionTitle")
+        header.addWidget(title)
+        header.addStretch()
+        hours_label = QLabel("Older than (hours):")
+        hours_label.setObjectName("mutedLabel")
+        self.staging_hours_spin = QSpinBox()
+        self.staging_hours_spin.setRange(1, 720)
+        self.staging_hours_spin.setValue(24)
+        self.staging_refresh_button = self._button("Refresh Staging", self.refresh_hub_staging)
+        self.staging_dry_run_button = self._button("Dry Run Cleanup", self.dry_run_hub_cleanup)
+        self.staging_cleanup_button = self._button("Cleanup Confirmed", self.confirm_hub_cleanup, danger=True)
+        header.addWidget(hours_label)
+        header.addWidget(self.staging_hours_spin)
+        header.addWidget(self.staging_refresh_button)
+        header.addWidget(self.staging_dry_run_button)
+        header.addWidget(self.staging_cleanup_button)
+        layout.addLayout(header)
+
+        self.staging_stats_label = QLabel("Staging not loaded yet — press Refresh Staging.")
+        self.staging_stats_label.setObjectName("mutedLabel")
+        self.staging_stats_label.setWordWrap(True)
+        layout.addWidget(self.staging_stats_label)
+
+        self.staging_detail = QTextEdit()
+        self.staging_detail.setReadOnly(True)
+        self.staging_detail.setMaximumHeight(150)
+        self.staging_detail.setPlaceholderText(
+            "Staged packages and cleanup previews appear here. Run Dry Run Cleanup to see candidates."
+        )
+        layout.addWidget(self.staging_detail)
+
+        staging_safety = QLabel(
+            "Only temporary Hub staging packages are deleted. VMs and imported disks are never touched."
+        )
+        staging_safety.setObjectName("calloutInfo")
+        staging_safety.setWordWrap(True)
+        layout.addWidget(staging_safety)
+        return panel
+
+    @staticmethod
+    def _format_size(size_bytes: int | float) -> str:
+        size = float(size_bytes or 0)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if size < 1024 or unit == "GiB":
+                return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{int(size)} B"
+
+    HUB_OFFLINE_STAGING_MESSAGE = "Hub not reachable. Check the NAS Hub and HYPERGERY_HUB_URL."
+
+    def refresh_hub_staging(self) -> None:
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return RegistryClient(url).list_staged_packages()
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            "Loading Hub staging packages",
+            fetch,
+            on_success=self.render_hub_staging,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def render_hub_staging(self, result: dict[str, Any]) -> None:
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.staging_stats_label.setText(f"{self.HUB_OFFLINE_STAGING_MESSAGE}\n{error}")
+            return
+        packages = list((result or {}).get("packages") or [])
+        orphans = int((result or {}).get("orphan_count") or 0)
+        total = self._format_size((result or {}).get("total_size_bytes") or 0)
+        oldest = max((float(p.get("age_hours") or 0) for p in packages), default=0.0)
+        self.staging_stats_label.setText(
+            f"Staging path: {result.get('staging_dir', '')} · "
+            f"{len(packages)} package(s) · {total} · {orphans} orphan(s) · "
+            f"oldest {oldest:.1f}h"
+        )
+        if not packages:
+            self.staging_detail.setPlainText("No staged packages found.")
+            return
+        lines = []
+        for package in packages:
+            status = package.get("migration_status") or "no migration record (orphan)"
+            lines.append(
+                f"{package.get('migration_id', '')} · {self._format_size(package.get('size_bytes') or 0)} · "
+                f"{package.get('file_count', 0)} file(s) · {package.get('age_hours', 0)}h · {status}"
+            )
+        self.staging_detail.setPlainText("\n".join(lines))
+
+    def _run_hub_cleanup(self, *, dry_run: bool) -> None:
+        url = self.registry_url()
+        hours = int(self.staging_hours_spin.value())
+
+        def cleanup() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return RegistryClient(url).cleanup_staging(older_than_hours=hours, dry_run=dry_run)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        label = "Previewing Hub staging cleanup" if dry_run else "Cleaning Hub staging packages"
+        self.run_operation(
+            label,
+            cleanup,
+            on_success=self.render_hub_cleanup_result,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def dry_run_hub_cleanup(self) -> None:
+        self._run_hub_cleanup(dry_run=True)
+
+    def confirm_hub_cleanup(self) -> None:
+        hours = int(self.staging_hours_spin.value())
+        answer = QMessageBox.warning(
+            self,
+            "Cleanup Hub Staging",
+            (
+                f"Delete leftover Hub staging packages older than {hours}h?\n\n"
+                "Only temporary Hub staging packages are deleted. "
+                "VMs and imported disks are never touched.\n\n"
+                "Packages of active migrations are always kept."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._run_hub_cleanup(dry_run=False)
+
+    def render_hub_cleanup_result(self, result: dict[str, Any]) -> None:
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.staging_detail.setPlainText(f"{self.HUB_OFFLINE_STAGING_MESSAGE}\n{error}")
+            return
+        dry_run = bool(result.get("dry_run"))
+        candidates = list(result.get("candidates") or [])
+        skipped = list(result.get("skipped") or [])
+        errors = list(result.get("errors") or [])
+        lines = ["DRY RUN — nothing was deleted." if dry_run else "CLEANUP EXECUTED."]
+        lines.append(
+            f"{len(candidates)} candidate(s) · {self._format_size(result.get('total_size_bytes') or 0)} "
+            f"(older than {result.get('older_than_hours', '?')}h)"
+        )
+        for candidate in candidates:
+            lines.append(
+                f"  - {candidate.get('migration_id', '')} "
+                f"({self._format_size(candidate.get('size_bytes') or 0)}): {candidate.get('reason', '')}"
+            )
+        if not candidates:
+            lines.append("  No cleanup candidates found.")
+        if skipped:
+            lines.append(f"{len(skipped)} skipped:")
+            for item in skipped:
+                lines.append(f"  - {item.get('migration_id', '')}: {item.get('reason', '')}")
+        if not dry_run:
+            lines.append(
+                f"Deleted {result.get('deleted_count', 0)} package(s), "
+                f"freed {self._format_size(result.get('deleted_size_bytes') or 0)}."
+            )
+        for item in errors:
+            lines.append(f"ERROR {item.get('migration_id', '')}: {item.get('error', '')}")
+        self.staging_detail.setPlainText("\n".join(lines))
+        if not dry_run:
+            self.log_activity(
+                f"Hub staging cleanup done: {result.get('deleted_count', 0)} deleted, "
+                f"{len(errors)} error(s)"
+            )
+            self.refresh_hub_staging()
 
     def refresh_migrations(self) -> None:
         url = self.registry_url()
@@ -1383,6 +2471,201 @@ class MainWindow(QMainWindow):
         ]
         QApplication.clipboard().setText("\n".join(lines))
         self.status.showMessage("Migration summary copied", 4000)
+
+    COMMANDS_TABLE_COLUMNS = ("Command ID", "Host", "Type", "Status", "Created", "Age", "Payload", "Result")
+    COMMAND_FILTERS = ("All", "Pending", "Running", "Done", "Failed", "Power commands", "Migration commands")
+    MIGRATION_COMMAND_TYPES = {"receive_vm_package", "import_vm_package", "migration_status"}
+
+    def _build_commands_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 26)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        title_block = QVBoxLayout()
+        title_block.setSpacing(2)
+        title = QLabel("Commands")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Hub command queue — remote power, migration, and diagnostic commands (read-only)")
+        subtitle.setObjectName("mutedLabel")
+        title_block.addWidget(title)
+        title_block.addWidget(subtitle)
+        header.addLayout(title_block)
+        header.addStretch()
+        self.commands_filter = QComboBox()
+        self.commands_filter.addItems(list(self.COMMAND_FILTERS))
+        self.commands_filter.currentIndexChanged.connect(self._apply_commands_filter)
+        self.commands_refresh_button = self._button("Refresh", self.refresh_commands)
+        header.addWidget(self.commands_filter)
+        header.addWidget(self.commands_refresh_button)
+        layout.addLayout(header)
+
+        self.commands_status_label = QLabel("Commands not loaded yet — press Refresh or open this section again.")
+        self.commands_status_label.setObjectName("mutedLabel")
+        self.commands_status_label.setWordWrap(True)
+        layout.addWidget(self.commands_status_label)
+
+        self.commands_table = QTableWidget(0, len(self.COMMANDS_TABLE_COLUMNS))
+        self.commands_table.setHorizontalHeaderLabels(list(self.COMMANDS_TABLE_COLUMNS))
+        self.commands_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.commands_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.commands_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.commands_table.setAlternatingRowColors(True)
+        self.commands_table.verticalHeader().setVisible(False)
+        self.commands_table.horizontalHeader().setStretchLastSection(True)
+        self.commands_table.setColumnWidth(0, 230)
+        self.commands_table.itemSelectionChanged.connect(self._update_command_copy_buttons)
+        layout.addWidget(self.commands_table, 1)
+
+        actions = QHBoxLayout()
+        self.copy_command_id_button = QPushButton("Copy Command ID")
+        self.copy_command_id_button.setEnabled(False)
+        self.copy_command_id_button.clicked.connect(self.copy_selected_command_id)
+        self.copy_command_result_button = QPushButton("Copy Result")
+        self.copy_command_result_button.setEnabled(False)
+        self.copy_command_result_button.clicked.connect(self.copy_selected_command_result)
+        actions.addWidget(self.copy_command_id_button)
+        actions.addWidget(self.copy_command_result_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+
+        safety = QLabel(
+            "Read-only view: commands cannot be requeued, deleted, or executed from this page. "
+            "Remote power actions live in Remote Hosts → View VMs."
+        )
+        safety.setObjectName("calloutInfo")
+        safety.setWordWrap(True)
+        layout.addWidget(safety)
+
+        self.commands_history: list[dict[str, Any]] = []
+        self.commands_visible: list[dict[str, Any]] = []
+        self._commands_loaded = False
+        return page
+
+    def refresh_commands(self) -> None:
+        url = self.registry_url()
+
+        def fetch() -> dict[str, Any]:
+            from ..registry import RegistryClient
+
+            try:
+                return {"commands": RegistryClient(url).list_commands(limit=200)}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        self.run_operation(
+            "Loading Hub command queue",
+            fetch,
+            on_success=self.render_commands,
+            refresh_after=False,
+            busy=False,
+        )
+
+    def render_commands(self, result: dict[str, Any]) -> None:
+        self._commands_loaded = True
+        error = str((result or {}).get("error") or "")
+        if error:
+            self.commands_history = []
+            self._apply_commands_filter()
+            self.commands_status_label.setText(f"Hub not reachable: {error}")
+            return
+        self.commands_history = list((result or {}).get("commands") or [])
+        self._apply_commands_filter()
+
+    def _filtered_commands(self) -> list[dict[str, Any]]:
+        selected = self.commands_filter.currentText()
+        commands = self.commands_history
+        if selected in {"Pending", "Running", "Done", "Failed"}:
+            return [item for item in commands if str(item.get("status") or "") == selected.lower()]
+        if selected == "Power commands":
+            return [item for item in commands if str(item.get("command_type") or "").startswith("vm_")]
+        if selected == "Migration commands":
+            return [item for item in commands if str(item.get("command_type") or "") in self.MIGRATION_COMMAND_TYPES]
+        return list(commands)
+
+    @staticmethod
+    def _summarize_command_value(value: Any, limit: int = 80) -> str:
+        if not value:
+            return "—"
+        if isinstance(value, dict):
+            text = str(value.get("message") or value.get("error") or json.dumps(value, sort_keys=True))
+        else:
+            text = str(value)
+        return text[: limit - 1] + "…" if len(text) > limit else text
+
+    def _command_age_text(self, command: dict[str, Any]) -> str:
+        age_seconds = self._iso_age_seconds(str(command.get("created_at") or ""))
+        if age_seconds is None:
+            return "—"
+        if age_seconds < 90:
+            return f"{int(age_seconds)}s"
+        if age_seconds < 5400:
+            return f"{int(age_seconds // 60)}m"
+        return f"{age_seconds / 3600:.1f}h"
+
+    COMMAND_STATUS_COLORS = {"done": "#22C55E", "failed": "#EF4444", "running": "#3B82F6"}
+
+    def _apply_commands_filter(self) -> None:
+        commands = self._filtered_commands()
+        self.commands_visible = commands
+        self.commands_table.setRowCount(len(commands))
+        for row, command in enumerate(commands):
+            status = str(command.get("status") or "unknown")
+            cells = (
+                str(command.get("command_id") or ""),
+                str(command.get("target_host_id") or ""),
+                str(command.get("command_type") or ""),
+                status.upper(),
+                str(command.get("created_at") or ""),
+                self._command_age_text(command),
+                self._summarize_command_value(command.get("payload")),
+                self._summarize_command_value(command.get("result")),
+            )
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if column == 3:
+                    item.setForeground(QColor(self.COMMAND_STATUS_COLORS.get(status, "#F59E0B")))
+                self.commands_table.setItem(row, column, item)
+        if self.commands_history:
+            counts = {"pending": 0, "running": 0, "done": 0, "failed": 0}
+            for command in self.commands_history:
+                key = str(command.get("status") or "")
+                if key in counts:
+                    counts[key] += 1
+            self.commands_status_label.setText(
+                f"{len(commands)} shown / {len(self.commands_history)} command(s) on the Hub · "
+                f"{counts['pending']} pending · {counts['running']} running · "
+                f"{counts['done']} done · {counts['failed']} failed"
+            )
+        else:
+            self.commands_status_label.setText("No commands recorded on the Hub yet.")
+        self._update_command_copy_buttons()
+
+    def _selected_command(self) -> dict[str, Any] | None:
+        row = self.commands_table.currentRow()
+        if row < 0 or row >= len(self.commands_visible):
+            return None
+        return self.commands_visible[row]
+
+    def _update_command_copy_buttons(self) -> None:
+        enabled = self._selected_command() is not None
+        self.copy_command_id_button.setEnabled(enabled)
+        self.copy_command_result_button.setEnabled(enabled)
+
+    def copy_selected_command_id(self) -> None:
+        command = self._selected_command()
+        if not command:
+            return
+        QApplication.clipboard().setText(str(command.get("command_id") or ""))
+        self.status.showMessage("Command ID copied", 4000)
+
+    def copy_selected_command_result(self) -> None:
+        command = self._selected_command()
+        if not command:
+            return
+        QApplication.clipboard().setText(json.dumps(command.get("result") or {}, indent=2, sort_keys=True))
+        self.status.showMessage("Command result copied", 4000)
 
     def _open_live_migration_from_page(self) -> None:
         if self.selected_vm is not None:
@@ -1643,6 +2926,20 @@ class MainWindow(QMainWindow):
             self.refresh_lab_templates_button,
             self.refresh_remote_button,
             self.test_remote_button,
+            self.staging_refresh_button,
+            self.staging_dry_run_button,
+            self.staging_cleanup_button,
+            self.commands_refresh_button,
+            self.v1_refresh_all_button,
+            self.v1_export_button,
+            self.lab_ws_new_button,
+            self.lab_ws_refresh_button,
+            self.lab_ws_start_button,
+            self.lab_ws_shutdown_button,
+            self.lab_ws_open_vm_button,
+            self.lab_ws_view_remote_button,
+            self.lab_ws_migrate_button,
+            self.lab_ws_role_button,
         ):
             button.setEnabled(not busy)
         if busy:
@@ -1684,6 +2981,8 @@ class MainWindow(QMainWindow):
         self.edit_lab_template_button.setEnabled(has_lab_tmpl)
         self.export_lab_template_button.setEnabled(has_lab_tmpl)
         self.test_remote_button.setEnabled(self.selected_remote_host_index is not None)
+        if hasattr(self, "lab_ws_vm_table"):
+            self._update_lab_ws_buttons()
 
     def registry_url(self) -> str:
         return effective_value("hub_url")
@@ -1710,14 +3009,22 @@ class MainWindow(QMainWindow):
             latency_ms = None
         hosts = client.list_hosts()
         try:
-            vm_count: int | None = len(client.list_vms())
+            remote_vms: list[dict[str, Any]] | None = client.list_vms()
+            vm_count: int | None = len(remote_vms)
         except Exception:
+            remote_vms = None
             vm_count = None
         try:
             migrations: list[dict[str, Any]] = client.list_migrations()
         except Exception:
             migrations = []
-        return {"hosts": hosts, "vm_count": vm_count, "migrations": migrations, "latency_ms": latency_ms}
+        return {
+            "hosts": hosts,
+            "vm_count": vm_count,
+            "remote_vms": remote_vms,
+            "migrations": migrations,
+            "latency_ms": latency_ms,
+        }
 
     def render_remote_hosts(self, result: dict[str, Any] | list[dict[str, Any]]) -> None:
         latency_ms: int | None = None
@@ -1725,11 +3032,14 @@ class MainWindow(QMainWindow):
             hosts = result.get("hosts", [])
             vm_count = result.get("vm_count")
             latency_ms = result.get("latency_ms")
+            if result.get("remote_vms") is not None:
+                self.remote_vms_inventory = list(result.get("remote_vms") or [])
             self.update_dashboard_migration(result.get("migrations") or [])
         else:
             hosts = result
             vm_count = None
         self.remote_hosts = hosts
+        self.render_labs_workspace()
         self._render_host_cards(hosts)
         self.hub_latency_label.setText(f"{latency_ms} ms" if latency_ms is not None else "—")
         self.remote_status_label.setText(f"{len(hosts)} host(s)")
@@ -2232,6 +3542,7 @@ class MainWindow(QMainWindow):
             self.selected_lab = None
         self.lab_table.blockSignals(was_blocked)
         self.render_lab_details()
+        self.render_labs_workspace()
         self.update_vm_empty_state()
         self.update_actions()
 

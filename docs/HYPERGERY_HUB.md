@@ -32,7 +32,11 @@ python -m hypergery_ubuntu.cli registry health
 - `GET /vms`
 - `GET /vms/{host_id}`
 - `POST /commands`
-- `GET /commands/{host_id}`
+- `GET /commands` — read-only command queue listing (v0.8), newest first.
+  Optional query filters: `target_host_id`, `status`
+  (`pending|running|done|failed`), `command_type` (allowlisted types only),
+  `limit` (1–500, default 100).
+- `GET /commands/{host_id}` — pending commands for one host (agent polling)
 - `GET /commands/id/{command_id}`
 - `POST /commands/{command_id}/result`
 - `POST /migrations`
@@ -49,7 +53,67 @@ Package staging (v0.7, Hub Transfer):
 - `GET /packages/{migration_id}/{relative_path}` — download one file (streamed)
 - `DELETE /packages/{migration_id}` — remove a staged package (whole package only)
 
+Staging maintenance (v0.8):
+
+- `GET /packages` — list all staged packages with `size_bytes`, `file_count`,
+  `created_at`/`modified_at`, `age_hours`, linked `migration_status`, and
+  `orphan` (no migration record on the Hub).
+- `POST /packages/cleanup` — preview or delete leftover staging packages.
+  Body parameters: `older_than_hours` (default `24`, floor `1`), `dry_run`
+  (default **true**), `include_failed` (default false), `include_orphans`
+  (default true). Returns `candidates` (each with a `reason`),
+  `total_size_bytes`, `deleted_count`, `deleted_size_bytes`, `skipped`, and
+  `errors`.
+
+Cleanup safety rules: only directories inside `HYPERGERY_HUB_STAGING` are ever
+removed — never VMs, never imported disks, never anything outside staging.
+Packages of active migrations (`created` … `defining_vm`) and packages newer
+than the threshold are always skipped, symlinks are never followed, and every
+deletion is reported in the response.
+
 All endpoints return JSON except package file downloads (`application/octet-stream`). Unsupported commands and invalid payloads return JSON errors. Package paths are validated against directory traversal.
+
+### Command allowlist
+
+`POST /commands` only accepts an explicit allowlist of command types; anything
+else is rejected by the Hub **and** re-validated by the target agent:
+
+- `ping`, `preflight`, `list_vms` — diagnostics and inventory.
+- `receive_vm_package`, `import_vm_package`, `migration_status` — migrations.
+- `vm_start`, `vm_shutdown`, `vm_force_off` — remote VM power control (v0.8).
+
+Remote power commands require `payload.vm_name` and flow App → Hub → target
+Agent → libvirt; the agent checks that the VM exists locally, is
+HyperGery-managed, and that its current state allows the action, then returns
+a structured result (`previous_state`, `new_state`, `message`) recorded on the
+command. The agent re-reports its inventory right after acting so the UI sees
+the new state quickly.
+
+Intentionally **not** remote-controllable: VM delete, undefine, disk deletion,
+XML edits, console access, and arbitrary shell commands. `vm_reboot`/`vm_reset`
+is not offered yet (no safe backend method). Limitations: the target agent must
+be online, libvirt must be healthy on the target host, actions depend on the
+VM's current state, and Force Off can corrupt guest data (the UI always asks
+for confirmation).
+
+### Remote VM inventory fields (v0.8)
+
+Agents report per-VM inventory on each heartbeat (`POST /vms/report`):
+`vm_name`, `state`, `lab_id`, `display`, `ram_mib`, `vcpus`, `disk_paths`,
+`iso_paths`, and since v0.8 also `networks` and `macs` (parsed from the
+domain XML, best effort). Old agents that omit the new fields keep working —
+the Hub stores empty lists. The Qt app shows these details in
+Remote Hosts → View VMs, including a staleness warning when the inventory
+has not been refreshed recently.
+
+### Command observability (v0.8)
+
+The Qt app has a read-only **Commands** page (sidebar) showing the Hub
+command queue: command id, target host, type, status (pending / running /
+done / failed), created time, age, payload and result summaries. Filters:
+all, per status, power commands, migration commands. Copy actions for the
+command id and the full JSON result. Nothing can be requeued, deleted, or
+executed from this page.
 
 ## Data Model
 
@@ -79,7 +143,34 @@ staging directory:
 - Staged packages are **temporary by design**: after a successful target
   import the target agent deletes the staged copy (`hub_package_deleted: true`
   in the migration result). Failed migrations keep their staged package for
-  inspection; clean up manually with `DELETE /packages/{migration_id}`.
+  inspection; clean up manually with `DELETE /packages/{migration_id}` or with
+  the v0.8 staging maintenance below.
+
+### Staging maintenance (v0.8)
+
+Orphan packages can pile up when a migration fails, is interrupted, or the
+target host stays offline. v0.8 adds safe maintenance:
+
+```bash
+# List staged packages with size, age, migration status, orphan flag.
+python -m hypergery_ubuntu.cli hub packages
+
+# Preview cleanup candidates (default behavior — nothing is deleted).
+python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --dry-run
+
+# Actually delete; requires the explicit --confirm flag.
+python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --confirm
+
+# Optional flags: --include-failed (also clean failed/rolled back migrations),
+# --no-orphans (keep packages without a Hub migration record).
+```
+
+Without `--confirm` the CLI never deletes anything, even if other flags are
+set. The command exits non-zero if a real cleanup reports errors. The Qt app
+exposes the same maintenance in **Migrations → Hub Staging Maintenance** with
+Refresh / Dry Run Cleanup / Cleanup Confirmed (with confirmation dialog).
+Only temporary Hub staging packages are deleted; VMs and imported disks are
+never touched.
 
 ### Running the Hub on the NAS (Container Station)
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from hypergery_ubuntu import cli
-from hypergery_ubuntu.agent import AgentConfig, HyperGeryAgent
+from hypergery_ubuntu.agent import AgentConfig, HyperGeryAgent, vm_interfaces_from_xml
 from hypergery_ubuntu.backend import HyperGeryError, PreflightItem, VmSummary
 from hypergery_ubuntu.migration import export_vm_package
 from hypergery_ubuntu.registry import RegistryServer, RegistryStore
@@ -67,6 +67,116 @@ class FakeClient:
         return update
 
 
+class PowerFakeBackend(FakeBackend):
+    def __init__(self, *, fail_action: str = ""):
+        self.states = {"running-vm": "running", "off-vm": "shut off"}
+        self.calls: list[tuple[str, str]] = []
+        self.fail_action = fail_action
+
+    def get_vm(self, name):
+        if name not in self.states:
+            raise HyperGeryError(f"{name} is not managed by HyperGery.")
+        return VmSummary(name=name, state=self.states[name], lab_id="lab1", ram_mib=1024, vcpus=1, disk_path="/tmp/a.qcow2")
+
+    def vm_state(self, name):
+        return self.states[name]
+
+    def start_vm(self, name):
+        self.calls.append(("start_vm", name))
+        if self.fail_action == "start":
+            raise HyperGeryError("libvirt start failed")
+        self.states[name] = "running"
+
+    def shutdown_vm(self, name):
+        self.calls.append(("shutdown_vm", name))
+        if self.fail_action == "shutdown":
+            raise HyperGeryError("libvirt shutdown failed")
+        self.states[name] = "shut off"
+
+    def force_off_vm(self, name):
+        self.calls.append(("force_off_vm", name))
+        if self.fail_action == "force_off":
+            raise HyperGeryError("libvirt destroy failed")
+        self.states[name] = "shut off"
+
+
+class AgentPowerCommandTests(unittest.TestCase):
+    def make_agent(self, **backend_kwargs):
+        backend = PowerFakeBackend(**backend_kwargs)
+        client = FakeClient()
+        agent = HyperGeryAgent(AgentConfig(host_id="local", name="Local"), backend=backend, client=client)
+        return agent, backend, client
+
+    def power(self, agent, command_type, vm_name):
+        return agent.execute_command({"command_type": command_type, "payload": {"vm_name": vm_name}})
+
+    def test_vm_start_calls_backend_and_reports_inventory(self):
+        agent, backend, client = self.make_agent()
+        status, result = self.power(agent, "vm_start", "off-vm")
+        self.assertEqual(status, "done")
+        self.assertEqual(backend.calls, [("start_vm", "off-vm")])
+        self.assertEqual(result["action"], "start")
+        self.assertEqual(result["previous_state"], "shut off")
+        self.assertEqual(result["new_state"], "running")
+        self.assertEqual(result["host_id"], "local")
+        self.assertIn("off-vm", result["message"])
+        # Inventory is re-reported to the Hub right after the action.
+        self.assertEqual(client.reported_vms["host_id"], "local")
+
+    def test_vm_shutdown_uses_acpi_backend_method(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_shutdown", "running-vm")
+        self.assertEqual(status, "done")
+        self.assertEqual(backend.calls, [("shutdown_vm", "running-vm")])
+        self.assertEqual(result["action"], "shutdown")
+
+    def test_vm_force_off_uses_destroy_backend_method(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_force_off", "running-vm")
+        self.assertEqual(status, "done")
+        self.assertEqual(backend.calls, [("force_off_vm", "running-vm")])
+        self.assertEqual(result["action"], "force_off")
+        self.assertEqual(result["new_state"], "shut off")
+
+    def test_missing_vm_fails_without_touching_backend(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_start", "missing-vm")
+        self.assertEqual(status, "failed")
+        self.assertEqual(backend.calls, [])
+        self.assertIn("missing-vm", result["error"])
+
+    def test_empty_vm_name_fails(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_start", "  ")
+        self.assertEqual(status, "failed")
+        self.assertEqual(backend.calls, [])
+        self.assertIn("vm_name is required", result["error"])
+
+    def test_state_mismatch_fails_without_touching_backend(self):
+        agent, backend, _ = self.make_agent()
+        status, result = self.power(agent, "vm_start", "running-vm")
+        self.assertEqual(status, "failed")
+        self.assertEqual(backend.calls, [])
+        self.assertIn("running", result["error"])
+        status, result = self.power(agent, "vm_shutdown", "off-vm")
+        self.assertEqual(status, "failed")
+        self.assertEqual(backend.calls, [])
+
+    def test_backend_error_becomes_failed_with_clear_message(self):
+        agent, backend, _ = self.make_agent(fail_action="start")
+        status, result = self.power(agent, "vm_start", "off-vm")
+        self.assertEqual(status, "failed")
+        self.assertIn("libvirt start failed", result["error"])
+        self.assertEqual(result["previous_state"], "shut off")
+
+    def test_destructive_remote_commands_stay_blocked(self):
+        agent, backend, _ = self.make_agent()
+        for command_type in ("vm_delete", "vm_undefine", "delete_disks", "shell", "vm_reboot", "vm_reset"):
+            with self.assertRaises(HyperGeryError):
+                agent.execute_command({"command_type": command_type, "payload": {"vm_name": "running-vm"}})
+        self.assertEqual(backend.calls, [])
+
+
 class AgentTests(unittest.TestCase):
     def test_config_loads_json_without_password_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,6 +212,59 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(client.reported_vms["host_id"], "local")
         self.assertEqual(client.reported_vms["vms"][0]["vm_name"], "running-vm")
         self.assertEqual(client.reported_vms["vms"][0]["display"], "unknown")
+
+    def test_vm_interfaces_from_xml_extracts_networks_and_macs(self):
+        xml = """
+        <domain>
+          <devices>
+            <interface type='network'>
+              <mac address='52:54:00:aa:bb:cc'/>
+              <source network='hg-net-lab1'/>
+            </interface>
+            <interface type='bridge'>
+              <mac address='52:54:00:dd:ee:ff'/>
+              <source bridge='hgbr1234567'/>
+            </interface>
+          </devices>
+        </domain>
+        """
+        networks, macs = vm_interfaces_from_xml(xml)
+        self.assertEqual(networks, ["hg-net-lab1", "hgbr1234567"])
+        self.assertEqual(macs, ["52:54:00:aa:bb:cc", "52:54:00:dd:ee:ff"])
+        # Malformed or empty XML degrades to empty lists, never raises.
+        self.assertEqual(vm_interfaces_from_xml("<broken"), ([], []))
+        self.assertEqual(vm_interfaces_from_xml(""), ([], []))
+
+    def test_vm_inventory_payload_includes_networks_and_macs(self):
+        class XmlBackend(FakeBackend):
+            def list_vms(self):
+                return [
+                    VmSummary(
+                        name="net-vm",
+                        state="running",
+                        lab_id="lab1",
+                        ram_mib=1024,
+                        vcpus=1,
+                        disk_path="/tmp/a.qcow2",
+                        network="hg-net-lab1",
+                        xml=(
+                            "<domain><devices><interface type='network'>"
+                            "<mac address='52:54:00:aa:bb:cc'/>"
+                            "<source network='hg-net-lab1'/>"
+                            "</interface></devices></domain>"
+                        ),
+                    ),
+                    VmSummary(name="bare-vm", state="shut off", lab_id="lab1", network="hg-net-lab1"),
+                ]
+
+        agent = HyperGeryAgent(AgentConfig(host_id="local", name="Local"), backend=XmlBackend(), client=FakeClient())
+        payload = agent.vm_inventory_payload()
+        by_name = {vm["vm_name"]: vm for vm in payload["vms"]}
+        self.assertEqual(by_name["net-vm"]["networks"], ["hg-net-lab1"])
+        self.assertEqual(by_name["net-vm"]["macs"], ["52:54:00:aa:bb:cc"])
+        # Without XML the single VmSummary.network field is used as fallback.
+        self.assertEqual(by_name["bare-vm"]["networks"], ["hg-net-lab1"])
+        self.assertEqual(by_name["bare-vm"]["macs"], [])
 
     def test_config_reads_hub_environment_before_registry_fallback(self):
         with patch.dict(
