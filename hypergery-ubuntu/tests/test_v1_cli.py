@@ -91,6 +91,19 @@ class V1CliTests(unittest.TestCase):
             self.assertTrue(status["health"]["ok"])
             self.assertEqual(len(status["commits"]), 1)
 
+    def test_v1_nas_commit_dry_run_flag_overrides_confirm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.with_tmp_env(tmp)
+            Path(env["HYPERGERY_NAS_STAGING_PATH"]).mkdir(parents=True)
+            # Explicit --dry-run must win even when --confirm is also passed.
+            code, output = self.run_cli(
+                ["v1", "nas", "commit", "--lab", "default-lab", "--dry-run", "--confirm"], env=env
+            )
+            self.assertEqual(code, 0)
+            data = json.loads(output)
+            self.assertTrue(data["dry_run"])
+            self.assertFalse((Path(env["HYPERGERY_NAS_STAGING_PATH"]) / "labs-commits").exists())
+
     def test_v1_orchestrator_plan_local_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = self.with_tmp_env(tmp)

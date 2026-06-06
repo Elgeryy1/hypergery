@@ -154,7 +154,9 @@ def v1_action(args: argparse.Namespace) -> int:
         if args.nas_command == "status":
             return _print_json({"health": nas.health(), "commits": nas.list_commits()[-20:]})
         if args.nas_command == "commit":
-            dry_run = not args.confirm
+            # An explicit --dry-run always wins over --confirm: the safer
+            # flag must never be silently overridden.
+            dry_run = args.dry_run or not args.confirm
             result = nas.commit_lab(
                 args.lab,
                 include_disks=args.include_disks,
