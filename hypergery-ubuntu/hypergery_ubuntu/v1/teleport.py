@@ -87,6 +87,8 @@ class TeleportEngine:
         staging_dir: str | Path | None = None,
         memdiff_base_state: str | Path | None = None,
         start_after_import: bool = True,
+        include_iso: bool = True,
+        include_snapshots: bool = True,
     ) -> dict[str, Any]:
         mode = mode or self.settings.teleport_default_mode
         if mode not in TELEPORT_MODES:
@@ -101,15 +103,16 @@ class TeleportEngine:
             vm_id=vm_name,
             host=self.source_host_id,
             operation_id=operation_id,
-            details={"target_host_id": target_host_id},
+            details={"target_host_id": target_host_id, "include_iso": include_iso},
         )
         try:
             if mode in {"dry_run", "experimental_memdiff"}:
-                return self._dry_run(vm_name, mode, target_host_id, operation_id, memdiff_base_state)
+                return self._dry_run(vm_name, mode, target_host_id, operation_id, memdiff_base_state, include_iso)
             if mode == "local_loopback":
-                return self._local_loopback(vm_name, target_vm_name, staging_dir, operation_id)
+                return self._local_loopback(vm_name, target_vm_name, staging_dir, operation_id, include_iso, include_snapshots)
             return self._suspend_copy_start(
-                vm_name, target_host_id, target_vm_name, staging_dir, operation_id, start_after_import
+                vm_name, target_host_id, target_vm_name, staging_dir, operation_id, start_after_import,
+                include_iso, include_snapshots,
             )
         except (TeleportError, HostOfflineError):
             raise
@@ -129,8 +132,11 @@ class TeleportEngine:
         target_host_id: str,
         operation_id: str,
         memdiff_base_state: str | Path | None,
+        include_iso: bool = True,
     ) -> dict[str, Any]:
-        preflight = migration_preflight(self.backend, vm_name, target_vm_name=f"{vm_name}-teleport", allow_paused=True)
+        preflight = migration_preflight(
+            self.backend, vm_name, target_vm_name=f"{vm_name}-teleport", allow_paused=True, include_iso=include_iso
+        )
         target_check: dict[str, Any] = {"checked": False}
         if target_host_id and self.hub_client is not None:
             try:
@@ -175,13 +181,16 @@ class TeleportEngine:
         target_vm_name: str,
         staging_dir: str | Path | None,
         operation_id: str,
+        include_iso: bool = True,
+        include_snapshots: bool = True,
     ) -> dict[str, Any]:
         if staging_dir is None:
             raise TeleportError("local_loopback needs a staging_dir for the package.")
         target_vm_name = target_vm_name or f"{vm_name}-loopback"
         staging = Path(staging_dir).expanduser()
         export = export_vm_package(
-            self.backend, vm_name, staging, target_vm_name=target_vm_name, allow_paused=True
+            self.backend, vm_name, staging, target_vm_name=target_vm_name, allow_paused=True,
+            include_iso=include_iso, include_snapshots=include_snapshots,
         )
         package_dir = Path(export["package_dir"])
         self._write_teleport_manifest(
@@ -230,6 +239,8 @@ class TeleportEngine:
         staging_dir: str | Path | None,
         operation_id: str,
         start_after_import: bool,
+        include_iso: bool = True,
+        include_snapshots: bool = True,
     ) -> dict[str, Any]:
         if not target_host_id:
             raise TeleportError("suspend_copy_start needs a target_host_id.")
@@ -261,6 +272,8 @@ class TeleportEngine:
                 target_host_id=target_host_id,
                 target_vm_name=target_vm_name or f"{vm_name}-teleport",
                 allow_paused=True,
+                include_iso=include_iso,
+                include_snapshots=include_snapshots,
                 start_after_import=start_after_import,
                 transfer="hub",
             )

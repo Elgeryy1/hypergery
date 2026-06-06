@@ -291,6 +291,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     str(body.get("vm_name") or ""),
                     mode="dry_run",
                     target_host_id=str(body.get("target_host_id") or ""),
+                    include_iso=bool(body.get("include_iso", True)),
                 )
                 self._ok(result)
                 return
@@ -307,6 +308,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     target_host_id=str(body.get("target_host_id") or ""),
                     target_vm_name=str(body.get("target_vm_name") or ""),
                     staging_dir=str(body.get("staging_dir") or "") or None,
+                    include_iso=bool(body.get("include_iso", True)),
                 )
                 self._ok(result)
                 return

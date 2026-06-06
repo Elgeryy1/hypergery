@@ -87,10 +87,12 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     teleport_dry = teleport_sub.add_parser("dry-run", help="Validate a teleport without copying anything.")
     teleport_dry.add_argument("--vm", required=True)
     teleport_dry.add_argument("--target", default="")
+    teleport_dry.add_argument("--no-iso", action="store_true", help="Do not require/transfer the attached ISO.")
     teleport_loop = teleport_sub.add_parser("loopback", help="Local loopback teleport (export+import on this host).")
     teleport_loop.add_argument("--vm", required=True)
     teleport_loop.add_argument("--staging-dir", required=True)
     teleport_loop.add_argument("--target-vm-name", default="")
+    teleport_loop.add_argument("--no-iso", action="store_true", help="Do not require/transfer the attached ISO.")
 
     network = v1_sub.add_parser("network", help="Lab network validation.")
     network_sub = network.add_subparsers(dest="network_command", required=True)
@@ -197,7 +199,9 @@ def v1_action(args: argparse.Namespace) -> int:
 
         engine = TeleportEngine(backend, settings=settings, hub_client=_hub_client())
         if args.teleport_command == "dry-run":
-            return _print_json(engine.teleport_vm(args.vm, mode="dry_run", target_host_id=args.target))
+            return _print_json(
+                engine.teleport_vm(args.vm, mode="dry_run", target_host_id=args.target, include_iso=not args.no_iso)
+            )
         if args.teleport_command == "loopback":
             return _print_json(
                 engine.teleport_vm(
@@ -205,6 +209,7 @@ def v1_action(args: argparse.Namespace) -> int:
                     mode="local_loopback",
                     staging_dir=args.staging_dir,
                     target_vm_name=args.target_vm_name,
+                    include_iso=not args.no_iso,
                 )
             )
     if args.v1_command == "network" and args.network_command == "validate":

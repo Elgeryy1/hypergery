@@ -203,6 +203,18 @@ class TeleportEngineTests(unittest.TestCase):
         with self.assertRaises(TeleportError):
             engine.teleport_vm("hg-source", mode="local_loopback")
 
+    def test_include_iso_false_skips_iso_in_dry_run_preflight(self):
+        # A VM whose ISO is missing must still be teleportable with
+        # include_iso=False (the disk is what matters).
+        engine, backend = self.make_engine()
+        backend.iso.unlink()  # the attached ISO file no longer exists
+        with_iso = engine.teleport_vm("hg-source", mode="dry_run", include_iso=True)
+        without_iso = engine.teleport_vm("hg-source", mode="dry_run", include_iso=False)
+        # With ISO the preflight flags the missing media; without ISO it passes.
+        self.assertFalse(with_iso["ok"])
+        self.assertTrue(any("ISO" in e for e in with_iso["preflight"]["errors"]))
+        self.assertTrue(without_iso["ok"], without_iso["preflight"]["errors"])
+
     def test_suspend_copy_start_suspends_running_vm_and_queues_import(self):
         client = FakeRegistryClient()
         engine, backend = self.make_engine(state="running", client=client)
