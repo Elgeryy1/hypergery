@@ -78,6 +78,15 @@ importing into the same live libvirt) against a local isolated Hub:
 - This real run surfaced one improvement (teleport now supports
   `include_iso=False` / `--no-iso`, committed) — a VM whose ISO path is gone
   could not be teleported before.
+- **Teleport of a RUNNING VM, REAL**: `ubuntu-test-v07` was started to a real
+  `running` state, then teleported. The engine suspended it (`paused`),
+  packaged the disk, the second agent imported it into live libvirt as
+  `tp-running-v07`, **which then started and ran** on the "other" host. The
+  source was left `paused` (so there are never two running copies). Note this
+  is **not** live RAM migration: the running VM is frozen, its DISK is copied,
+  and the target boots fresh from that disk — the guest's in-RAM state is not
+  carried over (by design; see "no true live RAM migration"). Source restored
+  to its exact original state (shut off, ISO re-attached) afterward.
 
 The user's three real VMs (ubuntu-hub-e2e, ubuntu-migrated, ubuntu-test-v07)
 were verified intact after every test.
