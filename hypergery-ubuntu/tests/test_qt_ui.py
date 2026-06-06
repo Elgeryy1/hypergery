@@ -602,7 +602,7 @@ class QtUiTests(unittest.TestCase):
             # Console detail card shows console status and Host Key.
             console_text = window.detail_views["Consola"].toPlainText()
             self.assertIn("Consola integrada", console_text)
-            self.assertIn("Ctrl derecha", console_text)
+            self.assertIn("Ctrl derecho", console_text)
             window.close()
         self.assertIsNotNone(app)
 

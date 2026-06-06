@@ -119,7 +119,7 @@ class AppSettingsDialog(QDialog):
             self._field("Carpeta de discos", self.default_vm_storage_path, "default_vm_storage_path", "Carpeta opcional por defecto para los discos de las máquinas nuevas."),
         )))
         self.pages.addWidget(self._section_page((
-            self._callout("Tecla para soltar el ratón de la consola: Ctrl derecha. Las máquinas SPICE siempre usan el visor externo.", "calloutInfo"),
+            self._callout("Tecla para soltar el ratón de la consola: Ctrl derecho. Las máquinas SPICE siempre usan el visor externo.", "calloutInfo"),
             self._callout("Más preferencias de consola (escalado, comando del visor) llegarán en una versión futura.", "calloutInfo"),
         )))
         self.pages.addWidget(self._section_page((

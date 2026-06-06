@@ -3652,7 +3652,7 @@ class MainWindow(QMainWindow):
                 ("Pantalla", (vm.graphics or "desconocida").upper()),
                 ("Consola integrada", "disponible (VNC)" if vm.graphics == "vnc" else "no disponible — requiere VNC"),
                 ("Visor externo", "virt-viewer o remote-viewer"),
-                ("Tecla para soltar el ratón", "Ctrl derecha"),
+                ("Tecla para soltar el ratón", "Ctrl derecho"),
                 ("Al cerrar", "cerrar la ventana de la consola no apaga la máquina"),
             )
         )
