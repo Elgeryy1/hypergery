@@ -212,6 +212,31 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(plan.target_host, "laptop")
         self.assertTrue(any("denied" in warning for warning in plan.warnings))
 
+    def test_running_vm_stays_on_its_full_host_without_false_failure(self):
+        # The laptop looks 'full' only because the 8GB VM is already running
+        # on it; the orchestrator must not claim no host can take it.
+        hosts = [host("laptop", role="laptop", ram_total=16384, ram_free=1000)]
+        plans = self.make_orchestrator().plan(
+            hosts=hosts, vms=[vm("bigvm", ram_mb=8192, status="running", host_id="laptop")], battery=battery_state(90), local_host_id="laptop"
+        )
+        plan = self.plan_one(plans, "bigvm")
+        self.assertEqual(plan.target_host, "laptop")
+        self.assertFalse(plan.is_move)
+        self.assertEqual(plan.warnings, [])
+        self.assertGreater(plan.confidence, 0.6)
+        self.assertNotIn("No host can take", plan.reason)
+
+    def test_shut_off_vm_that_does_not_fit_is_still_reported_honestly(self):
+        # A shut-off VM is NOT yet using the RAM, so it genuinely needs
+        # headroom; the orchestrator must not pretend it fits.
+        hosts = [host("laptop", role="laptop", ram_total=16384, ram_free=1000)]
+        plans = self.make_orchestrator().plan(
+            hosts=hosts, vms=[vm("bigvm", ram_mb=8192, status="shut off", host_id="laptop")], battery=battery_state(90), local_host_id="laptop"
+        )
+        plan = self.plan_one(plans, "bigvm")
+        self.assertIn("No host can take", plan.reason)
+        self.assertTrue(plan.warnings)
+
     def test_lab_filter_and_empty_hosts(self):
         hosts = [host("laptop", role="laptop")]
         plans = self.make_orchestrator().plan(

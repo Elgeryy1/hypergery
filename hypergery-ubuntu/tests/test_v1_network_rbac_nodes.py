@@ -226,12 +226,13 @@ class ExternalNodeTests(unittest.TestCase):
             HostInfo(id="laptop", role="laptop", status="online", ram_total_mib=8192, ram_free_mib=1500, capabilities=["can_run_vms"]),
             host,
         ]
+        # A SHUT OFF VM genuinely needs headroom to start, so the laptop
+        # cannot take it and the external node is the only candidate.
         plans = OrchestratorService(settings=V1Settings()).plan(
             hosts=hosts,
-            vms=[VmInfo(id="big", ram_mb=8192, status="running", host_id="laptop")],
+            vms=[VmInfo(id="big", ram_mb=8192, status="shut off", host_id="laptop")],
             local_host_id="laptop",
         )
-        # Laptop lacks headroom; the external node is the only candidate.
         self.assertEqual(plans[0].target_host, "isard-1")
 
     def test_detect_local_environment_is_non_invasive(self):

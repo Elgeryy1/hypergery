@@ -75,10 +75,15 @@ class OrchestratorService:
             eligible.append(host)
         return eligible
 
-    def _headroom_ok(self, host: HostInfo, vm: VmInfo) -> bool:
+    def _headroom_ok(self, host: HostInfo, vm: VmInfo, *, current_host_id: str = "") -> bool:
         if not host.ram_total_mib:
             # Unknown RAM (e.g. loopback/external minimal record): assume ok.
             return True
+        # A VM already running/paused on this host is fine staying there: its
+        # RAM is already reflected in the host's free figure, so don't subtract
+        # it again (that would falsely reject a perfectly healthy placement).
+        if host.id == current_host_id and str(vm.status).lower() in {"running", "paused"}:
+            return host.ram_free_mib >= 0
         return host.ram_free_mib - vm.ram_mb >= self.settings.ram_low_threshold_mib
 
     # Planning ------------------------------------------------------------------#
@@ -153,7 +158,7 @@ class OrchestratorService:
             if current_host is not None and current_host.status != "online":
                 warnings.append(f"Current host {current} is offline.")
 
-            candidates = [host for host in eligible if self._headroom_ok(host, vm)]
+            candidates = [host for host in eligible if self._headroom_ok(host, vm, current_host_id=current)]
             if not candidates:
                 warnings.append("No eligible host has enough free RAM; keeping current placement.")
                 finish(current, f"No host can take {vm.id} right now (RAM headroom < {self.settings.ram_low_threshold_mib} MiB).", 0.4)
