@@ -81,7 +81,7 @@ class VncScreen(QWidget):
     def __init__(self, console: "IntegratedConsoleWidget") -> None:
         super().__init__()
         self.console = console
-        self.message = "Click Connect to open the VM console.\nHost Key: Right Ctrl"
+        self.message = "Pulsa «Conectar» para abrir la consola.\nTecla para soltar el ratón: Ctrl derecha"
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -166,14 +166,14 @@ class IntegratedConsoleWidget(QWidget):
         self.controls_callback: Callable[[bool, bool], None] | None = None
         self.vm_updated_callback: Callable[[str], None] | None = None
 
-        self.status = QLabel("No VM selected.")
+        self.status = QLabel("Ninguna máquina seleccionada.")
         self.status.setObjectName("mutedLabel")
         self.hint = QLabel(
-            "Click inside the console to capture input. Press Right Ctrl to release input. "
-            "Closing this console does not stop the VM. Use ACPI Shutdown or Force Off to stop the VM."
+            "Haz clic dentro de la consola para capturar el teclado y el ratón. Pulsa Ctrl derecha para soltarlos. "
+            "Cerrar esta consola no apaga la máquina. Usa «Apagar (suave)» o «Apagar a la fuerza»."
         )
         self.hint.setWordWrap(True)
-        self.hint.setToolTip(f"Host Key: {HOST_KEY_NAME}")
+        self.hint.setToolTip(f"Tecla para soltar: {HOST_KEY_NAME}")
         self.screen = VncScreen(self)
         self.scroll_area = QScrollArea()
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
@@ -227,20 +227,20 @@ class IntegratedConsoleWidget(QWidget):
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(28, 26, 28, 26)
         card_layout.setSpacing(14)
-        title = QLabel("Integrated console requires VNC")
+        title = QLabel("La consola integrada requiere VNC")
         title.setObjectName("consoleCardTitle")
         text = QLabel(
-            "This VM uses SPICE. HyperGery can open it with the external viewer, or you can switch "
-            "the VM display to VNC while the VM is powered off."
+            "Esta máquina usa SPICE. HyperGery puede abrirla con el visor externo, o puedes cambiar "
+            "la pantalla de la máquina a VNC mientras está apagada."
         )
         text.setWordWrap(True)
         text.setObjectName("mutedLabel")
         self.spice_power_hint = QLabel("")
         self.spice_power_hint.setWordWrap(True)
         self.spice_power_hint.setObjectName("mutedLabel")
-        self.spice_external_button = QPushButton("Open External Viewer")
+        self.spice_external_button = QPushButton("Abrir visor externo")
         self.spice_external_button.setObjectName("primaryButton")
-        self.spice_switch_button = QPushButton("Switch to VNC")
+        self.spice_switch_button = QPushButton("Cambiar a VNC")
         self.spice_external_button.clicked.connect(self.open_external)
         self.spice_switch_button.clicked.connect(self.switch_display_to_vnc)
         actions = QHBoxLayout()
@@ -266,9 +266,9 @@ class IntegratedConsoleWidget(QWidget):
         self.graphics = graphics
         self.vm = vm
         if not name:
-            self.set_status("No VM selected.")
+            self.set_status("Ninguna máquina seleccionada.")
             self.mode_stack.setCurrentWidget(self.scroll_area)
-            self.screen.setText("Select a running VM to open the integrated console.")
+            self.screen.setText("Selecciona una máquina encendida para abrir la consola integrada.")
             self.update_controls(False)
             return
         if console_mode_for_graphics(graphics) == "external-spice":
@@ -281,12 +281,12 @@ class IntegratedConsoleWidget(QWidget):
             return
         self.mode_stack.setCurrentWidget(self.scroll_area)
         if "running" not in state and "paused" not in state:
-            self.set_status("VM is powered off.")
-            self.screen.setText("VM is powered off.\nStart the VM from HyperGery, then reconnect.")
+            self.set_status("La máquina está apagada.")
+            self.screen.setText("La máquina está apagada.\nEnciéndela desde HyperGery y vuelve a conectar.")
             self.update_controls(False)
             return
         message = console_message_for_graphics(graphics)
-        self.set_status(f"Ready for {name}. Host Key: {HOST_KEY_NAME}")
+        self.set_status(f"Lista para {name}. Tecla para soltar: {HOST_KEY_NAME}")
         self.screen.setText(message)
         self.update_controls(console_mode_for_graphics(graphics) == "integrated-vnc")
 
@@ -307,8 +307,8 @@ class IntegratedConsoleWidget(QWidget):
         if not self.vm_name:
             return
         if "running" not in self.vm_state and "paused" not in self.vm_state:
-            self.set_status("VM is not running. Start the VM to open console.")
-            self.screen.setText("VM is not running. Start the VM to open console.")
+            self.set_status("La máquina no está encendida. Enciéndela para abrir la consola.")
+            self.screen.setText("La máquina no está encendida. Enciéndela para abrir la consola.")
             self.update_controls(False)
             return
         if console_mode_for_graphics(self.graphics) == "external-spice":
@@ -319,11 +319,11 @@ class IntegratedConsoleWidget(QWidget):
         try:
             display = self.backend.get_console_display(self.vm_name)
         except HyperGeryError as exc:
-            self.set_status(f"Integrated console unavailable: {exc}")
-            self.screen.setText("Integrated console unavailable.\nUse Open External Viewer.")
+            self.set_status(f"Consola integrada no disponible: {exc}")
+            self.screen.setText("Consola integrada no disponible.\nUsa «Abrir visor externo».")
             return
         if display.get("type") != "vnc":
-            self.set_status(SPICE_INTEGRATED_MESSAGE if display.get("type") == "spice" else "Integrated console requires VNC.")
+            self.set_status(SPICE_INTEGRATED_MESSAGE if display.get("type") == "spice" else "La consola integrada requiere VNC.")
             self.screen.setText(f"{SPICE_INTEGRATED_MESSAGE}\n\nUse Open External Viewer.")
             return
         self.disconnect_console()
@@ -630,8 +630,8 @@ class VmConsoleWindow(QMainWindow):
         self.scale_action = QAction("Scale to Fit", self)
         self.scale_action.setCheckable(True)
         self.scale_action.setChecked(True)
-        self.external_action = QAction("Open External Viewer", self)
-        self.switch_vnc_action = QAction("Switch to VNC", self)
+        self.external_action = QAction("Abrir visor externo", self)
+        self.switch_vnc_action = QAction("Cambiar a VNC", self)
         self.close_action = QAction("Close", self)
 
         self.connect_action.triggered.connect(self.console.connect_console)
@@ -666,7 +666,7 @@ class VmConsoleWindow(QMainWindow):
         status = QStatusBar(self)
         self.state_label = QLabel("Input released")
         self.display_label = QLabel("Display: —")
-        self.host_key_label = QLabel(f"Host Key: {HOST_KEY_NAME}")
+        self.host_key_label = QLabel(f"Tecla para soltar: {HOST_KEY_NAME}")
         self.close_note_label = QLabel("Closing this console does not stop the VM.")
         status.addWidget(self.state_label, 1)
         status.addPermanentWidget(self.display_label)

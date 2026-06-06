@@ -16,11 +16,11 @@ _STATE_COLORS: dict[str, str] = {
     "not created": "#607D8B",
 }
 _STATE_LABEL: dict[str, str] = {
-    "running": "running",
-    "shut off": "shut off",
-    "shutoff": "shut off",
-    "paused": "paused",
-    "not created": "not created",
+    "running": "encendida",
+    "shut off": "apagada",
+    "shutoff": "apagada",
+    "paused": "en pausa",
+    "not created": "sin crear",
 }
 _NETWORK_COLOR = "#1565C0"
 _NODE_BG = "#1E293B"
@@ -75,11 +75,11 @@ class LabTopologyWidget(QWidget):
         painter.fillRect(0, 0, w, h, QColor("#0F172A"))
 
         if not self._topology:
-            self._draw_empty(painter, w, h, "No lab selected.")
+            self._draw_empty(painter, w, h, "Ningún laboratorio seleccionado.")
             return
         vms = self._topology.get("vms", [])
         if not vms:
-            self._draw_empty(painter, w, h, "No VMs in this lab yet.")
+            self._draw_empty(painter, w, h, "Este laboratorio aún no tiene máquinas.")
             return
 
         self._hit_boxes = []

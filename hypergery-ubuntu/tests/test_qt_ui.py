@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import tempfile
 import unittest
@@ -114,7 +115,7 @@ class QtUiTests(unittest.TestCase):
                 dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
 
             self.assertFalse(dialog.package_button.isEnabled())
-            self.assertIn("Hub not reachable", dialog.result_view.toPlainText())
+            self.assertIn("No se puede contactar con el Hub", dialog.result_view.toPlainText())
             self.assertIn("HYPERGERY_HUB_URL", dialog.result_view.toPlainText())
             self.assertIn("docker compose", dialog.result_view.toPlainText())
             self.assertIn("registry offline", dialog.result_view.toPlainText())
@@ -133,31 +134,31 @@ class QtUiTests(unittest.TestCase):
             self.assertEqual(
                 sections,
                 [
-                    "Dashboard",
-                    "Virtual Machines",
-                    "Labs",
-                    "Templates",
-                    "Remote Hosts",
-                    "Migrations",
-                    "Commands",
-                    "Control Center",
-                    "Diagnostics",
-                    "Settings",
+                    "Inicio",
+                    "Máquinas virtuales",
+                    "Laboratorios",
+                    "Plantillas",
+                    "Otros equipos",
+                    "Migraciones",
+                    "Tareas remotas",
+                    "Centro de control",
+                    "Diagnóstico",
+                    "Ajustes",
                 ],
             )
-            self.assertEqual(window.sidebar_nav.currentItem().text(), "Virtual Machines")
+            self.assertEqual(window.sidebar_nav.currentItem().text(), "Máquinas virtuales")
             self.assertEqual(window.main_tabs.currentIndex(), 0)
             self.assertFalse(window.main_tabs.tabBar().isVisible())
 
-            window.sidebar_nav.setCurrentRow(sections.index("Remote Hosts"))
+            window.sidebar_nav.setCurrentRow(sections.index("Otros equipos"))
             self.assertEqual(window.main_tabs.currentIndex(), 2)
-            window.sidebar_nav.setCurrentRow(sections.index("Dashboard"))
+            window.sidebar_nav.setCurrentRow(sections.index("Inicio"))
             self.assertEqual(window.main_tabs.currentIndex(), window.dashboard_page_index)
             with patch.object(window, "refresh_commands") as refresh_commands:
-                window.sidebar_nav.setCurrentRow(sections.index("Commands"))
+                window.sidebar_nav.setCurrentRow(sections.index("Tareas remotas"))
                 refresh_commands.assert_called_once()
             self.assertEqual(window.main_tabs.currentIndex(), window.commands_page_index)
-            window.sidebar_nav.setCurrentRow(sections.index("Diagnostics"))
+            window.sidebar_nav.setCurrentRow(sections.index("Diagnóstico"))
             self.assertEqual(window.main_tabs.currentIndex(), window.diagnostics_page_index)
             window.close()
         self.assertIsNotNone(app)
@@ -172,9 +173,9 @@ class QtUiTests(unittest.TestCase):
             window = MainWindow()
             sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
             with patch.object(window, "app_settings") as app_settings:
-                window.sidebar_nav.setCurrentRow(sections.index("Settings"))
+                window.sidebar_nav.setCurrentRow(sections.index("Ajustes"))
                 app_settings.assert_called_once()
-            self.assertEqual(window.sidebar_nav.currentItem().text(), "Virtual Machines")
+            self.assertEqual(window.sidebar_nav.currentItem().text(), "Máquinas virtuales")
             window.close()
         self.assertIsNotNone(app)
 
@@ -186,12 +187,12 @@ class QtUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
-            self.assertEqual(window.hub_chip.text(), "Hub: not checked")
+            self.assertEqual(window.hub_chip.text(), "Hub: sin comprobar")
             window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=2)
-            self.assertEqual(window.hub_chip.text(), "Hub: online")
+            self.assertEqual(window.hub_chip.text(), "Hub: en línea")
             self.assertTrue(window.nas_chip.text().startswith("NAS: "))
             window.render_hub_status([], reachable=False)
-            self.assertEqual(window.hub_chip.text(), "Hub: offline")
+            self.assertEqual(window.hub_chip.text(), "Hub: sin conexión")
             window.close()
         self.assertIsNotNone(app)
 
@@ -204,28 +205,28 @@ class QtUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
-            self.assertEqual(window.dash_hub_big.text(), "Not checked")
+            self.assertEqual(window.dash_hub_big.text(), "Sin comprobar")
 
             window.render_vms([
                 VmSummary(name="vm-a", state="running", lab_id="default-lab", ram_mib=1024, vcpus=1),
                 VmSummary(name="vm-b", state="shut off", lab_id="default-lab", ram_mib=1024, vcpus=1),
             ])
             self.assertEqual(window.dash_vm_big.text(), "1")
-            self.assertIn("1 shutoff", window.dash_vm_sub.text())
-            self.assertIn("2 total", window.dash_vm_sub.text())
+            self.assertIn("1 apagadas", window.dash_vm_sub.text())
+            self.assertIn("2 en total", window.dash_vm_sub.text())
 
             window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=5)
-            self.assertEqual(window.dash_hub_big.text(), "Online")
-            self.assertIn("5 VM record(s)", window.dash_hub_sub.text())
+            self.assertEqual(window.dash_hub_big.text(), "En línea")
+            self.assertIn("5 máquina(s) registrada(s)", window.dash_hub_sub.text())
             self.assertEqual(window.dash_hosts_big.text(), "1 / 1")
 
             window.render_hub_status([], reachable=False)
-            self.assertEqual(window.dash_hub_big.text(), "Offline")
+            self.assertEqual(window.dash_hub_big.text(), "Sin conexión")
             warnings = [
                 window.dash_warnings_layout.itemAt(i).widget().text()
                 for i in range(window.dash_warnings_layout.count())
             ]
-            self.assertTrue(any("Hub is not responding" in text for text in warnings))
+            self.assertTrue(any("no responde" in text for text in warnings))
             window.close()
         self.assertIsNotNone(app)
 
@@ -237,7 +238,7 @@ class QtUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
-            self.assertIn("No migrations", window.dash_migration_label.text())
+            self.assertIn("Todavía no se ha movido", window.dash_migration_label.text())
             window.render_remote_hosts({
                 "hosts": [FAKE_ONLINE_HOST],
                 "vm_count": 1,
@@ -273,20 +274,20 @@ class QtUiTests(unittest.TestCase):
             })
             self.assertEqual(len(window._host_card_frames), 2)
             self.assertEqual(window.hub_latency_label.text(), "12 ms")
-            self.assertEqual(window.hub_status_label.text(), "ONLINE")
+            self.assertEqual(window.hub_status_label.text(), "EN LÍNEA")
 
             online_texts = [
                 label.text() for label in window._host_card_frames[0].findChildren(QLabel)
             ]
             self.assertIn("KVM OK", online_texts)
             self.assertIn("libvirt OK", online_texts)
-            self.assertTrue(any(text == "ONLINE" for text in online_texts))
+            self.assertTrue(any(text == "EN LÍNEA" for text in online_texts))
 
             offline_texts = [
                 label.text() for label in window._host_card_frames[1].findChildren(QLabel)
             ]
-            self.assertTrue(any(text == "OFFLINE" for text in offline_texts))
-            self.assertTrue(any("No heartbeat since 2026-06-01T10:00:00" in text for text in offline_texts))
+            self.assertTrue(any(text == "SIN CONEXIÓN" for text in offline_texts))
+            self.assertTrue(any("Sin señal desde 2026-06-01T10:00:00" in text for text in offline_texts))
             self.assertEqual(window._host_card_frames[1].objectName(), "hostCardOffline")
             window.close()
         self.assertIsNotNone(app)
@@ -305,14 +306,14 @@ class QtUiTests(unittest.TestCase):
                 label.text()
                 for label in window.remote_cards_scroll.widget().findChildren(QLabel)
             ]
-            self.assertTrue(any("No hosts registered yet" in text for text in texts))
+            self.assertTrue(any("Todavía no hay equipos registrados" in text for text in texts))
 
             window.render_hub_offline("connection refused")
             texts = [
                 label.text()
                 for label in window.remote_cards_scroll.widget().findChildren(QLabel)
             ]
-            self.assertTrue(any("Hub not reachable" in text for text in texts))
+            self.assertTrue(any("No se puede contactar con el Hub" in text for text in texts))
             self.assertTrue(any("docker compose" in text for text in texts))
             window.close()
         self.assertIsNotNone(app)
@@ -344,8 +345,8 @@ class QtUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
-            self.assertEqual(window.remote_status_label.text(), "Hub not loaded")
-            self.assertIn("HyperGery Hub", window.remote_detail.placeholderText())
+            self.assertEqual(window.remote_status_label.text(), "Hub sin cargar")
+            self.assertIn("Hub", window.remote_detail.placeholderText())
             self.assertTrue(hasattr(window, "hub_status_label"))
             window.close()
         self.assertIsNotNone(app)
@@ -404,12 +405,12 @@ class QtUiTests(unittest.TestCase):
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
             self.assertTrue(hasattr(window, "run_doctor_button"))
-            self.assertEqual(window.run_doctor_button.text(), "Run Doctor")
+            self.assertEqual(window.run_doctor_button.text(), "Comprobar sistema")
             self.assertFalse(window.copy_report_button.isEnabled())
             page = window.main_tabs.widget(window.diagnostics_page_index)
             texts = [label.text() for label in page.findChildren(QLabel)]
-            self.assertIn("Diagnostics", texts)
-            self.assertTrue(any("Run Doctor to check your environment" in text for text in texts))
+            self.assertIn("Diagnóstico", texts)
+            self.assertTrue(any("Pulsa «Comprobar sistema» para revisar tu equipo" in text for text in texts))
             window.close()
         self.assertIsNotNone(app)
 
@@ -433,15 +434,15 @@ class QtUiTests(unittest.TestCase):
             self.assertEqual(window.diag_ok_chip.text(), "2 OK")
             self.assertEqual(window.diag_warn_chip.text(), "1 WARN")
             self.assertEqual(window.diag_fail_chip.text(), "1 FAIL")
-            self.assertIn("exit code 1", window.diag_overall_label.text())
+            self.assertIn("Hay fallos críticos", window.diag_overall_label.text())
             self.assertTrue(window.copy_report_button.isEnabled())
 
             page = window.main_tabs.widget(window.diagnostics_page_index)
             texts = [label.text() for label in page.findChildren(QLabel)]
-            self.assertIn("Local Virtualization", texts)
-            self.assertIn("Tooling", texts)
+            self.assertIn("Virtualización local", texts)
+            self.assertIn("Herramientas", texts)
             self.assertIn("Docker", texts)
-            self.assertTrue(any("CRITICAL" in text for text in texts))
+            self.assertTrue(any("CRÍTICO" in text for text in texts))
 
             # Copy with results populates clipboard without crashing.
             window.copy_doctor_report()
@@ -460,10 +461,10 @@ class QtUiTests(unittest.TestCase):
             window = MainWindow()
             window.render_doctor_results({"error": "boom"})
             self.assertFalse(window.copy_report_button.isEnabled())
-            self.assertIn("failed", window.diag_overall_label.text().lower())
+            self.assertIn("no se ha podido ejecutar", window.diag_overall_label.text().lower())
             page = window.main_tabs.widget(window.diagnostics_page_index)
             texts = [label.text() for label in page.findChildren(QLabel)]
-            self.assertTrue(any("Doctor failed to run: boom" in text for text in texts))
+            self.assertTrue(any("El diagnóstico no se ha podido ejecutar: boom" in text for text in texts))
             # Copy Report without results must not crash.
             window.copy_doctor_report()
             window.close()
@@ -485,7 +486,7 @@ class QtUiTests(unittest.TestCase):
             sections = [dialog.section_nav.item(i).text() for i in range(dialog.section_nav.count())]
             self.assertEqual(
                 sections,
-                ["General", "Hub", "Host Agent", "NAS", "VM Defaults", "Console", "Appearance", "Advanced"],
+                ["General", "Hub", "Agente", "NAS", "Valores por defecto", "Consola", "Apariencia", "Avanzado"],
             )
             self.assertEqual(dialog.pages.count(), 8)
             dialog.section_nav.setCurrentRow(sections.index("Hub"))
@@ -523,7 +524,7 @@ class QtUiTests(unittest.TestCase):
             dialog.validate_and_accept()
 
             self.assertNotEqual(dialog.result(), int(QDialog.DialogCode.Accepted))
-            self.assertIn("http:// or https://", dialog.status.text())
+            self.assertIn("http:// o https://", dialog.status.text())
             dialog.close()
         self.assertIsNotNone(app)
 
@@ -558,7 +559,7 @@ class QtUiTests(unittest.TestCase):
                 window.app_settings()
 
             show_error.assert_called_once()
-            self.assertIn("Cannot save HyperGery settings", show_error.call_args[0][0])
+            self.assertIn("No se han podido guardar los ajustes", show_error.call_args[0][0])
             window.close()
         self.assertIsNotNone(app)
 
@@ -571,13 +572,13 @@ class QtUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
-            self.assertEqual(window.vm_page_title.text(), "Virtual Machines")
-            self.assertIn("KVM/libvirt", window.vm_page_subtitle.text())
+            self.assertEqual(window.vm_page_title.text(), "Máquinas virtuales")
+            self.assertIn("Las máquinas de este equipo", window.vm_page_subtitle.text())
             self.assertEqual(window.vm_table.columnCount(), 7)
 
             window.render_vms([])
             self.assertEqual(window.vm_stack.currentIndex(), 1)
-            self.assertIn("Create your first VM from an ISO", window.vm_empty_subtitle.text())
+            self.assertIn("Crea tu primera máquina desde una ISO", window.vm_empty_subtitle.text())
 
             window.render_vms([
                 VmSummary(name="dc01", state="running", lab_id="lab", ram_mib=4096, vcpus=2, graphics="vnc"),
@@ -586,7 +587,7 @@ class QtUiTests(unittest.TestCase):
             ])
             self.assertEqual(window.vm_table.rowCount(), 3)
             states = [window.vm_table.item(row, 1).text() for row in range(3)]
-            self.assertEqual(states, ["RUNNING", "SHUTOFF", "PAUSED"])
+            self.assertEqual(states, ["ENCENDIDA", "APAGADA", "EN PAUSA"])
             self.assertEqual(window.vm_table.item(0, 6).text(), "VNC")
 
             # Destructive actions keep the danger style; core attributes survive.
@@ -597,9 +598,9 @@ class QtUiTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, attr))
 
             # Console detail card shows console status and Host Key.
-            console_text = window.detail_views["Console"].toPlainText()
-            self.assertIn("Integrated console", console_text)
-            self.assertIn("Right Ctrl", console_text)
+            console_text = window.detail_views["Consola"].toPlainText()
+            self.assertIn("Consola integrada", console_text)
+            self.assertIn("Ctrl derecha", console_text)
             window.close()
         self.assertIsNotNone(app)
 
@@ -612,11 +613,11 @@ class QtUiTests(unittest.TestCase):
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
             sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
-            window.sidebar_nav.setCurrentRow(sections.index("Labs"))
+            window.sidebar_nav.setCurrentRow(sections.index("Laboratorios"))
             # Labs is a dedicated workspace page now, not the shared VM view.
             self.assertEqual(window.main_tabs.currentIndex(), window.labs_page_index)
             self.assertFalse(window.right_panel.isVisible())
-            window.sidebar_nav.setCurrentRow(sections.index("Virtual Machines"))
+            window.sidebar_nav.setCurrentRow(sections.index("Máquinas virtuales"))
             self.assertEqual(window.main_tabs.currentIndex(), 0)
             window.close()
         self.assertIsNotNone(app)
@@ -632,9 +633,9 @@ class QtUiTests(unittest.TestCase):
             window = MainWindow()
             page = window.main_tabs.widget(window.migrations_page_index)
             texts = [label.text() for label in page.findChildren(QLabel)]
-            self.assertIn("Migrations", texts)
-            self.assertIn("NAS package history and migration status", texts)
-            self.assertTrue(any("read-only" in text for text in texts))
+            self.assertIn("Migraciones", texts)
+            self.assertIn("Historial de traslados de máquinas entre equipos", texts)
+            self.assertTrue(any("solo consulta" in text for text in texts))
             # History table and actions exist; copy starts disabled.
             self.assertEqual(window.migrations_table.columnCount(), 7)
             self.assertTrue(window.migrations_refresh_button.isEnabled())
@@ -643,7 +644,7 @@ class QtUiTests(unittest.TestCase):
             # Quick action without a selected VM navigates instead of crashing.
             window.selected_vm = None
             window._open_live_migration_from_page()
-            self.assertEqual(window.sidebar_nav.currentItem().text(), "Virtual Machines")
+            self.assertEqual(window.sidebar_nav.currentItem().text(), "Máquinas virtuales")
             window.close()
         self.assertIsNotNone(app)
 
@@ -676,9 +677,9 @@ class QtUiTests(unittest.TestCase):
             self.assertEqual(table.item(0, 1).text(), "RUNNING")
             self.assertEqual(table.item(0, 5).text(), "gery-lenovo")
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("Remote power commands are executed by the target host agent", texts)
-            self.assertIn("Remote console arrives", texts)
-            self.assertIn("delete is intentionally not supported", texts)
+            self.assertIn("las ejecuta el equipo de destino", texts)
+            self.assertIn("Borrar máquinas en remoto", texts)
+            self.assertIn("no está permitido a propósito", texts)
             dialog.close()
 
             # Hub error surfaces instead of silently showing local VMs.
@@ -800,7 +801,7 @@ class QtUiTests(unittest.TestCase):
                 ]
                 window._remote_power_command_id = "cmd-power-1"
                 window._poll_remote_power_command()
-                self.assertIn("done", window.remote_power_status.text())
+                self.assertIn("completada", window.remote_power_status.text())
                 client.list_vms.assert_called_once_with("gery-lenovo")
                 self.assertEqual(window.remote_vms_table.rowCount(), 1)
                 self.assertEqual(window.remote_vms_table.item(0, 1).text(), "SHUT OFF")
@@ -860,9 +861,9 @@ class QtUiTests(unittest.TestCase):
             self.assertEqual(window.migrations_table.item(0, 0).text(), "mig-done-1")
             self.assertEqual(window.migrations_table.item(0, 5).text(), "DONE")
             self.assertEqual(window.migrations_table.item(1, 4).text(), "nas_clone")
-            self.assertIn("2 migration(s)", window.migrations_status_label.text())
-            self.assertIn("1 done", window.migrations_status_label.text())
-            self.assertIn("1 failed", window.migrations_status_label.text())
+            self.assertIn("2 traslado(s)", window.migrations_status_label.text())
+            self.assertIn("1 completados", window.migrations_status_label.text())
+            self.assertIn("1 fallidos", window.migrations_status_label.text())
 
             # Selecting a row enables copy actions and copies real data.
             window.migrations_table.selectRow(0)
@@ -878,7 +879,7 @@ class QtUiTests(unittest.TestCase):
             # Hub error renders inline without touching history records.
             window.render_migrations({"error": "connection refused"})
             self.assertEqual(window.migrations_table.rowCount(), 0)
-            self.assertIn("Hub not reachable", window.migrations_status_label.text())
+            self.assertIn("No se puede contactar con el Hub", window.migrations_status_label.text())
             self.assertFalse(window.copy_migration_id_button.isEnabled())
             window.close()
         self.assertIsNotNone(app)
@@ -924,8 +925,8 @@ class QtUiTests(unittest.TestCase):
         backend = MagicMock()
         vm = VmSummary(name="hg-vnc", state="shut off", lab_id="lab", ram_mib=1024, vcpus=1, graphics="vnc")
         window = VmConsoleWindow(backend, vm)
-        self.assertIn("powered off", window.console.screen.message.lower())
-        self.assertIn("then reconnect", window.console.screen.message)
+        self.assertIn("está apagada", window.console.screen.message.lower())
+        self.assertIn("vuelve a conectar", window.console.screen.message)
         self.assertFalse(window.connect_action.isEnabled())
         window.console.capture_input()
         self.assertFalse(window.console.input_captured)
@@ -947,13 +948,12 @@ class QtUiTests(unittest.TestCase):
             self.assertEqual(len(dialog._step_labels), 6)
             self.assertEqual(
                 list(dialog.STEPS),
-                ["Select VM", "Target Host", "Options", "Preflight", "Progress", "Result"],
+                ["Elegir máquina", "Equipo destino", "Opciones", "Comprobación", "Progreso", "Resultado"],
             )
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("NAS Clone Migration", texts)
-            self.assertIn("not live RAM migration", texts)
-            self.assertIn("Source VM and source disks will not be deleted.", texts)
-            self.assertIn("Must be shut off", texts)
+            self.assertIn("no es migración de RAM en vivo", texts)
+            self.assertIn("La máquina original y sus discos no se borran.", texts)
+            self.assertIn("Debe estar apagada", texts)
             dialog.close()
         self.assertIsNotNone(app)
 
@@ -972,7 +972,7 @@ class QtUiTests(unittest.TestCase):
             self.assertEqual(dialog.current_step(), 0)
             self.assertFalse(dialog.next_button.isEnabled())
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("Running VM migration is blocked", texts)
+            self.assertIn("No se puede mover una máquina encendida", texts)
             dialog.go_next()
             self.assertEqual(dialog.current_step(), 0)
             dialog.close()
@@ -999,7 +999,7 @@ class QtUiTests(unittest.TestCase):
             dialog.target_host.setCurrentIndex(0)
             self.assertFalse(dialog.next_button.isEnabled())
             dialog.run_preflight()
-            self.assertIn("offline", dialog.error_label.text().lower())
+            self.assertIn("sin conexión", dialog.error_label.text().lower())
             self.assertFalse(dialog.package_button.isEnabled())
 
             # Online, ready target passes preflight and enables Start Migration.
@@ -1007,8 +1007,8 @@ class QtUiTests(unittest.TestCase):
             dialog._set_step(3)
             dialog.run_preflight()
             self.assertTrue(dialog.package_button.isEnabled(), dialog.error_label.text())
-            self.assertIn("Source will be deleted: False", dialog.result_view.toPlainText())
-            self.assertIn("UUID and MAC will be regenerated", dialog.result_view.toPlainText())
+            self.assertIn("¿Se borra el original?: False", dialog.result_view.toPlainText())
+            self.assertIn("el UUID y la MAC se regeneran al importar", dialog.result_view.toPlainText())
             dialog.close()
         self.assertIsNotNone(app)
 
@@ -1039,7 +1039,7 @@ class QtUiTests(unittest.TestCase):
             dialog.target_host.setCurrentIndex(0)
             dialog.nas_path.setText("")
             dialog.run_preflight()
-            self.assertIn("NAS staging path is required", dialog.error_label.text())
+            self.assertIn("La carpeta del NAS es obligatoria", dialog.error_label.text())
             self.assertFalse(dialog.package_button.isEnabled())
 
             # Hub mode passes preflight without any NAS path and reports the transfer.
@@ -1047,8 +1047,8 @@ class QtUiTests(unittest.TestCase):
             dialog._set_step(3)
             dialog.run_preflight()
             self.assertTrue(dialog.package_button.isEnabled(), dialog.error_label.text())
-            self.assertIn("Transfer: hub", dialog.result_view.toPlainText())
-            self.assertIn("removed from the Hub after import", dialog.result_view.toPlainText())
+            self.assertIn("Envío: por el Hub", dialog.result_view.toPlainText())
+            self.assertIn("se borra de allí tras importarse", dialog.result_view.toPlainText())
             dialog.close()
         self.assertIsNotNone(app)
 
@@ -1075,7 +1075,7 @@ class QtUiTests(unittest.TestCase):
 
             # Without a started migration the poll handler is a safe no-op.
             dialog.refresh_migration_status()
-            self.assertIn("No migration started yet", dialog.error_label.text())
+            self.assertIn("Todavía no hay ningún traslado", dialog.error_label.text())
             dialog.close()
         self.assertIsNotNone(app)
 
@@ -1093,10 +1093,10 @@ class QtUiTests(unittest.TestCase):
 
             # Copy buttons must be safe without any migration data.
             dialog.copy_migration_id()
-            self.assertIn("No migration ID", dialog.error_label.text())
+            self.assertIn("Aún no hay ID", dialog.error_label.text())
             dialog.copy_progress_logs()
             dialog.copy_summary()
-            self.assertIn("No result", dialog.error_label.text())
+            self.assertIn("Aún no hay resultado", dialog.error_label.text())
 
             # Progress page renders migration id and state list.
             dialog.last_result = {"migration_id": "hg-mig-77", "package_dir": "/nas/migrations/hg-mig-77"}
@@ -1114,9 +1114,9 @@ class QtUiTests(unittest.TestCase):
             dialog._show_result_success({"status": "done"})
             self.assertEqual(dialog.current_step(), 5)
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("Source VM remains untouched", texts)
-            self.assertIn("regenerated UUID and MAC", texts)
-            self.assertIn("conserved", texts)
+            self.assertIn("La máquina original no se ha tocado", texts)
+            self.assertIn("UUID y MAC nuevos", texts)
+            self.assertIn("se conserva", texts)
 
             # Closing the wizard must not touch the backend destructively.
             dialog.reject()
@@ -1183,7 +1183,7 @@ class QtHubStagingTests(unittest.TestCase):
             self.assertIn("/data/staging", window.staging_stats_label.text())
             self.assertIn("1 orphan(s)", window.staging_stats_label.text())
             self.assertIn("mig-orphan", window.staging_detail.toPlainText())
-            self.assertIn("no migration record (orphan)", window.staging_detail.toPlainText())
+            self.assertIn("sin registro de traslado (huérfano)", window.staging_detail.toPlainText())
             window.close()
         self.assertIsNotNone(app)
 
@@ -1195,7 +1195,7 @@ class QtHubStagingTests(unittest.TestCase):
             window.render_hub_staging(
                 {"staging_dir": "/data/staging", "count": 0, "orphan_count": 0, "total_size_bytes": 0, "packages": []}
             )
-            self.assertEqual(window.staging_detail.toPlainText(), "No staged packages found.")
+            self.assertEqual(window.staging_detail.toPlainText(), "No hay paquetes temporales.")
             window.close()
         self.assertIsNotNone(app)
 
@@ -1205,10 +1205,10 @@ class QtHubStagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             window = self.make_window(backend_cls, tmp)
             window.render_hub_staging({"error": "connection refused"})
-            self.assertIn("Hub not reachable", window.staging_stats_label.text())
+            self.assertIn("No se puede contactar con el Hub", window.staging_stats_label.text())
             self.assertIn("HYPERGERY_HUB_URL", window.staging_stats_label.text())
             window.render_hub_cleanup_result({"error": "connection refused"})
-            self.assertIn("Hub not reachable", window.staging_detail.toPlainText())
+            self.assertIn("No se puede contactar con el Hub", window.staging_detail.toPlainText())
             window.close()
         self.assertIsNotNone(app)
 
@@ -1230,7 +1230,7 @@ class QtHubStagingTests(unittest.TestCase):
                 }
             )
             text = window.staging_detail.toPlainText()
-            self.assertIn("DRY RUN", text)
+            self.assertIn("SIMULACIÓN", text)
             self.assertIn("mig-orphan", text)
             self.assertIn("mig-active", text)
             self.assertNotIn("Deleted", text)
@@ -1286,9 +1286,9 @@ class QtHubStagingTests(unittest.TestCase):
                 )
                 refresh.assert_called_once()
             text = window.staging_detail.toPlainText()
-            self.assertIn("CLEANUP EXECUTED", text)
-            self.assertIn("Deleted 1 package(s)", text)
-            self.assertIn("Hub staging cleanup done", window.activity_log.toPlainText())
+            self.assertIn("LIMPIEZA EJECUTADA", text)
+            self.assertIn("Borrados 1 paquete(s)", text)
+            self.assertIn("Limpieza del Hub completada", window.activity_log.toPlainText())
             window.close()
         self.assertIsNotNone(app)
 
@@ -1341,9 +1341,9 @@ class QtCommandQueueTests(unittest.TestCase):
             window = self.make_window(backend_cls, tmp)
             window.render_commands({"commands": self.SAMPLE_COMMANDS})
             self.assertEqual(window.commands_table.rowCount(), 3)
-            self.assertIn("3 shown / 3 command(s)", window.commands_status_label.text())
-            self.assertIn("1 pending", window.commands_status_label.text())
-            self.assertIn("1 failed", window.commands_status_label.text())
+            self.assertIn("3 mostradas / 3 orden(es)", window.commands_status_label.text())
+            self.assertIn("1 pendientes", window.commands_status_label.text())
+            self.assertIn("1 fallidas", window.commands_status_label.text())
             statuses = {window.commands_table.item(row, 3).text() for row in range(3)}
             self.assertEqual(statuses, {"DONE", "FAILED", "PENDING"})
             results = [window.commands_table.item(row, 7).text() for row in range(3)]
@@ -1358,16 +1358,16 @@ class QtCommandQueueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             window = self.make_window(backend_cls, tmp)
             window.render_commands({"commands": self.SAMPLE_COMMANDS})
-            window.commands_filter.setCurrentText("Failed")
+            window.commands_filter.setCurrentText("Fallidas")
             self.assertEqual(window.commands_table.rowCount(), 1)
             self.assertEqual(window.commands_table.item(0, 0).text(), "cmd-mig-1")
-            window.commands_filter.setCurrentText("Power commands")
+            window.commands_filter.setCurrentText("De encendido/apagado")
             self.assertEqual(window.commands_table.rowCount(), 1)
             self.assertEqual(window.commands_table.item(0, 2).text(), "vm_start")
-            window.commands_filter.setCurrentText("Migration commands")
+            window.commands_filter.setCurrentText("De traslado")
             self.assertEqual(window.commands_table.rowCount(), 1)
             self.assertEqual(window.commands_table.item(0, 2).text(), "import_vm_package")
-            window.commands_filter.setCurrentText("All")
+            window.commands_filter.setCurrentText("Todas")
             self.assertEqual(window.commands_table.rowCount(), 3)
             window.close()
         self.assertIsNotNone(app)
@@ -1399,9 +1399,9 @@ class QtCommandQueueTests(unittest.TestCase):
             window = self.make_window(backend_cls, tmp)
             window.render_commands({"error": "connection refused"})
             self.assertEqual(window.commands_table.rowCount(), 0)
-            self.assertIn("Hub not reachable", window.commands_status_label.text())
+            self.assertIn("No se puede contactar con el Hub", window.commands_status_label.text())
             window.render_commands({"commands": []})
-            self.assertIn("No commands recorded", window.commands_status_label.text())
+            self.assertIn("aún no tiene órdenes", window.commands_status_label.text())
             window.close()
         self.assertIsNotNone(app)
 
@@ -1461,7 +1461,7 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
             self.assertIn("52:54:00:aa:bb:cc", text)
             self.assertIn("hg-net-lab1", text)
             self.assertIn("2020-01-01T00:00:00+00:00", text)
-            self.assertIn("stale", text)
+            self.assertIn("desactualizados", text)
             window._remote_vms_dialog.close()
             window.close()
         self.assertIsNotNone(app)
@@ -1477,7 +1477,7 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
             window.remote_vms_table.selectRow(0)
             text = window.remote_vm_detail.toPlainText()
             self.assertIn("hg-remote", text)
-            self.assertNotIn("stale", text)
+            self.assertNotIn("desactualizados", text)
             window._remote_vms_dialog.close()
             window.close()
         self.assertIsNotNone(app)
@@ -1504,7 +1504,7 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
                     "result": {"message": "start executed on hg-remote."},
                 }
                 window._poll_remote_power_command()
-            self.assertIn("Remote command done: cmd-1", window.activity_log.toPlainText())
+            self.assertIn("Orden remota completada: cmd-1", window.activity_log.toPlainText())
 
             window._remote_power_command_id = "cmd-2"
             with (
@@ -1517,7 +1517,7 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
                     "result": {"error": "VM state mismatch"},
                 }
                 window._poll_remote_power_command()
-            self.assertIn("Remote command FAILED: cmd-2", window.activity_log.toPlainText())
+            self.assertIn("Orden remota FALLÓ: cmd-2", window.activity_log.toPlainText())
             window._remote_vms_dialog.close()
             window.close()
         self.assertIsNotNone(app)
@@ -1530,10 +1530,10 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             window = self.make_window_with_dialog(backend_cls, tmp, [dict(self.REMOTE_VM)])
             dialog = window._remote_vms_dialog
-            console_buttons = [b for b in dialog.findChildren(QPushButton) if b.text() == "Console"]
+            console_buttons = [b for b in dialog.findChildren(QPushButton) if b.text() == "Consola"]
             self.assertEqual(len(console_buttons), 1)
             self.assertFalse(console_buttons[0].isEnabled())
-            self.assertIn("arrives later", console_buttons[0].toolTip())
+            self.assertIn("versión futura", console_buttons[0].toolTip())
             window.remote_vms_table.clearSelection()
             window._update_remote_power_buttons()
             self.assertEqual(window.remote_vm_detail.toPlainText(), "")
@@ -1591,17 +1591,17 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             self.assertIn("isolated", window.lab_ws_meta.text())
             self.assertIn("Active Directory lab", window.lab_ws_meta.text())
             status = window.lab_ws_status_label.text()
-            self.assertIn("3 VM(s)", status)
-            self.assertIn("1 running", status)
-            self.assertIn("1 shut off", status)
-            self.assertIn("1 not created", status)
+            self.assertIn("3 máquina(s)", status)
+            self.assertIn("1 encendidas", status)
+            self.assertIn("1 apagadas", status)
+            self.assertIn("1 sin crear", status)
             hosts = window.lab_ws_hosts_label.text()
-            self.assertIn("lenovo: 1 VM(s)", hosts)
+            self.assertIn("lenovo: 1 máquina(s)", hosts)
             self.assertEqual(window.lab_ws_vm_table.rowCount(), 3)
             roles = {window.lab_ws_vm_table.item(row, 1).text() for row in range(3)}
             self.assertIn("server", roles)
             locations = {window.lab_ws_vm_table.item(row, 6).text() for row in range(3)}
-            self.assertIn("Remote", locations)
+            self.assertIn("Remoto", locations)
             window.close()
         self.assertIsNotNone(app)
 
@@ -1621,9 +1621,9 @@ class QtLabsWorkspaceTests(unittest.TestCase):
                 widget = window.lab_ws_cards_layout.itemAt(index).widget()
                 if widget is not None:
                     texts.extend(label.text() for label in widget.findChildren(QLabel))
-            self.assertTrue(any("No labs yet" in text for text in texts))
+            self.assertTrue(any("Todavía no hay laboratorios" in text for text in texts))
             self.assertTrue(any("default-lab" in text for text in texts))
-            self.assertEqual(window.lab_ws_title.text(), "No lab selected")
+            self.assertEqual(window.lab_ws_title.text(), "Ningún laboratorio seleccionado")
             self.assertFalse(window.lab_ws_start_button.isEnabled())
             self.assertFalse(window.lab_ws_shutdown_button.isEnabled())
             window.close()
@@ -1645,7 +1645,7 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             ):
                 window.start_lab()
                 question.assert_called_once()
-                self.assertIn("start 1 VM(s) across 1 host(s)", question.call_args.args[2])
+                self.assertIn("Se encenderán 1 máquina(s) en 1 equipo(s)", question.call_args.args[2])
                 execute.assert_not_called()
             with (
                 patch.object(window, "_execute_lab_power") as execute,
@@ -1677,7 +1677,7 @@ class QtLabsWorkspaceTests(unittest.TestCase):
                 ) as question,
             ):
                 window.shutdown_lab()
-                self.assertIn("ACPI shutdown for 1 running VM(s)", question.call_args.args[2])
+                self.assertIn("apagado suave de 1 máquina(s) encendida(s)", question.call_args.args[2])
                 _lab_id, action, targets = execute.call_args.args
                 self.assertEqual(action, "shutdown")
                 self.assertEqual([vm["name"] for vm in targets], ["remote-db"])
@@ -1718,11 +1718,11 @@ class QtLabsWorkspaceTests(unittest.TestCase):
                 window._execute_lab_power("asr-lab", "start", targets)
                 registry_cls.return_value.queue_vm_power_command.assert_called_once_with("lenovo", "remote-db", "start")
             feedback = window.lab_ws_feedback.text()
-            self.assertIn("1 local VM(s): alpha", feedback)
+            self.assertIn("1 máquina(s) locales: alpha", feedback)
             self.assertIn("remote-db@lenovo (cmd-9)", feedback)
-            self.assertIn("1 FAILED", feedback)
+            self.assertIn("1 FALLARON", feedback)
             self.assertIn("libvirt exploded", feedback)
-            self.assertIn("Lab asr-lab start", window.activity_log.toPlainText())
+            self.assertIn("Laboratorio asr-lab (start)", window.activity_log.toPlainText())
             window.close()
         self.assertIsNotNone(app)
 
@@ -1738,10 +1738,10 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             self.assertFalse(any("force" in text for text in button_texts))
             self.assertFalse(any("delete" in text for text in button_texts))
             # Snapshot Lab exists but is explicitly disabled as planned.
-            snapshot = [b for b in page.findChildren(QPushButton) if b.text() == "Snapshot Lab"]
+            snapshot = [b for b in page.findChildren(QPushButton) if b.text() == "Instantánea del laboratorio"]
             self.assertEqual(len(snapshot), 1)
             self.assertFalse(snapshot[0].isEnabled())
-            self.assertIn("Planned", snapshot[0].toolTip())
+            self.assertIn("Previsto", snapshot[0].toolTip())
             window.close()
         self.assertIsNotNone(app)
 
@@ -1781,7 +1781,16 @@ class QtControlCenterTests(unittest.TestCase):
             tabs = [window.v1_tabs.tabText(i) for i in range(window.v1_tabs.count())]
             self.assertEqual(
                 tabs,
-                ["Telemetry", "Orchestrator", "Battery", "NAS", "Network", "Guests", "External Nodes", "Logs"],
+                [
+                    "Mi equipo",
+                    "Sugerencias",
+                    "Batería",
+                    "Copias en el NAS",
+                    "Redes",
+                    "Usuarios",
+                    "Equipos externos",
+                    "Historial",
+                ],
             )
             window.close()
         self.assertIsNotNone(app)
@@ -1793,10 +1802,10 @@ class QtControlCenterTests(unittest.TestCase):
             window = self.make_window(backend_cls, tmp)
             sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
             with patch.object(window, "refresh_v1_all") as refresh:
-                window.sidebar_nav.setCurrentRow(sections.index("Control Center"))
+                window.sidebar_nav.setCurrentRow(sections.index("Centro de control"))
                 refresh.assert_called_once()
-                window.sidebar_nav.setCurrentRow(sections.index("Dashboard"))
-                window.sidebar_nav.setCurrentRow(sections.index("Control Center"))
+                window.sidebar_nav.setCurrentRow(sections.index("Inicio"))
+                window.sidebar_nav.setCurrentRow(sections.index("Centro de control"))
                 refresh.assert_called_once()  # only loads automatically the first time
             self.assertEqual(window.main_tabs.currentIndex(), window.control_center_page_index)
             window.close()
@@ -1807,8 +1816,11 @@ class QtControlCenterTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as tmp:
             window = self.make_window(backend_cls, tmp)
-            window._set_v1_view("Battery", '{"battery": {"percent": 57}}')
+            window._set_v1_view("Battery", '{"battery": {"available": true, "percent": 57, "charging": true}}')
             self.assertIn("57", window.v1_views["Battery"].toPlainText())
+            # El resumen humano también se rellena, en español.
+            self.assertIn("57", window.v1_summaries["Battery"].toPlainText())
+            self.assertIn("Batería", window.v1_summaries["Battery"].toPlainText())
 
             def fake_run_operation(label, fn, *, on_success=None, **kwargs):
                 result = fn()
@@ -1820,7 +1832,8 @@ class QtControlCenterTests(unittest.TestCase):
                 patch.object(window, "_v1_collect", side_effect=Exception("service exploded")),
             ):
                 window.refresh_v1_tab("NAS")
-            self.assertIn("NAS unavailable: service exploded", window.v1_views["NAS"].toPlainText())
+            self.assertIn("service exploded", window.v1_views["NAS"].toPlainText())
+            self.assertIn("No se ha podido cargar", window.v1_summaries["NAS"].toPlainText())
             window.close()
         self.assertIsNotNone(app)
 
@@ -1838,16 +1851,16 @@ class QtControlCenterTests(unittest.TestCase):
             with patch.dict(os.environ, env):
                 window = self.make_window(backend_cls, tmp)
                 backend_cls.return_value.list_vms.side_effect = Exception("no libvirt in tests")
-                battery_text = window._v1_collect("Battery")
-                self.assertIn("battery", battery_text)
-                network_text = window._v1_collect("Network")
-                self.assertIn("hg-net-default-lab", network_text)
-                guests_text = window._v1_collect("Guests")
-                self.assertIn("users", guests_text)
-                orchestrator_text = window._v1_collect("Orchestrator")
-                self.assertIn("plans", orchestrator_text)
-                logs_text = window._v1_collect("Logs")
-                self.assertIn("events", logs_text)
+                battery_payload = window._v1_collect("Battery")
+                self.assertIn("battery", battery_payload)
+                network_payload = window._v1_collect("Network")
+                self.assertIn("hg-net-default-lab", json.dumps(network_payload))
+                guests_payload = window._v1_collect("Guests")
+                self.assertIn("users", guests_payload)
+                orchestrator_payload = window._v1_collect("Orchestrator")
+                self.assertIn("plans", orchestrator_payload)
+                logs_payload = window._v1_collect("Logs")
+                self.assertIn("events", logs_payload)
                 window.close()
         self.assertIsNotNone(app)
 
@@ -1868,7 +1881,7 @@ class QtControlCenterTests(unittest.TestCase):
             data = json.loads(target.read_text(encoding="utf-8"))
             self.assertIn("Battery", data["sections"])
             self.assertIn("57", data["sections"]["Battery"])
-            self.assertIn("Exported Control Center report", window.activity_log.toPlainText())
+            self.assertIn("Informe del Centro de control exportado", window.activity_log.toPlainText())
             window.close()
         self.assertIsNotNone(app)
 

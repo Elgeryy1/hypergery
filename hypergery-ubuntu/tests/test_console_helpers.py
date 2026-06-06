@@ -30,9 +30,9 @@ class ConsoleHelperTests(unittest.TestCase):
 
     def test_spice_message_points_to_external_viewer(self):
         self.assertEqual(console_message_for_graphics("spice"), SPICE_INTEGRATED_MESSAGE)
-        self.assertIn("External Viewer", console_message_for_graphics("spice"))
+        self.assertIn("visor externo", console_message_for_graphics("spice"))
         self.assertIn("VNC", console_message_for_graphics("spice"))
-        self.assertEqual(SPICE_STATUS_MESSAGE, "SPICE display detected. Use External Viewer or switch this VM to VNC.")
+        self.assertEqual(SPICE_STATUS_MESSAGE, "Pantalla SPICE detectada. Usa el visor externo o cambia esta máquina a VNC.")
 
     def test_capture_requires_connected_vnc(self):
         self.assertTrue(can_capture_input("vnc", True))
@@ -85,9 +85,9 @@ class ConsoleHelperTests(unittest.TestCase):
     def test_console_source_has_spice_card_actions(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "hypergery_ubuntu" / "ui_qt" / "console.py").read_text(encoding="utf-8")
-        self.assertIn("Integrated console requires VNC", source)
-        self.assertIn("Open External Viewer", source)
-        self.assertIn("Switch to VNC", source)
+        self.assertIn("La consola integrada requiere VNC", source)
+        self.assertIn("Abrir visor externo", source)
+        self.assertIn("Cambiar a VNC", source)
         self.assertIn("SPICE_STATUS_MESSAGE", source)
         self.assertIn("self.scale_to_fit = True", source)
 

@@ -28,7 +28,7 @@ class QtLabHelperTests(unittest.TestCase):
         preview = build_lab_preview("ASR Lab", "isolated", existing_lab_ids={"asr-lab"}, existing_subnets=set())
 
         self.assertFalse(preview["valid"])
-        self.assertIn("already exists", preview["error"])
+        self.assertIn("Ya existe", preview["error"])
 
     def test_filter_vms_for_selected_lab(self):
         vms = [

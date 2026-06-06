@@ -38,10 +38,10 @@ STATE_BACKGROUNDS = {
 }
 
 STATE_LABELS = {
-    "running": "RUNNING",
-    "shutoff": "SHUTOFF",
-    "paused": "PAUSED",
-    "unknown": "UNKNOWN",
+    "running": "ENCENDIDA",
+    "shutoff": "APAGADA",
+    "paused": "EN PAUSA",
+    "unknown": "DESCONOCIDA",
 }
 
 
