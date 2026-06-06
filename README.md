@@ -2,15 +2,15 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/main-v0.7.0-blue)
-![Develop](https://img.shields.io/badge/develop-v0.9%2Fv1.0--dev-purple)
+![Version](https://img.shields.io/badge/version-v1.0--rc1-blue)
+![Status](https://img.shields.io/badge/status-release--candidate-orange)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 HyperGery is a real desktop virtual machine manager for Ubuntu, functionally inspired by VirtualBox workflows but using KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
 
-**Branch status**: `main` holds the latest stable release, **v0.7.0**. `develop` contains **v0.8 (closed)** plus the **v0.9/v1.0 service layer** ("functional raw" — implemented, tested, and validated on real hardware, pending the two-physical-host smoke and a release decision). See [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) for the v1 quick start.
+**Branch status**: **v1.0-rc1** is the current release candidate (tag `v1.0-rc1` on `main`): v0.8 (closed) plus the v0.9/v1.0 service layer, gated on a successful **real two-physical-host smoke** (23 PASS · 0 FAIL · 1 BLOCKED known-env · 1 SKIP — see [V1_MANUAL_SMOKE_RESULT.md](V1_MANUAL_SMOKE_RESULT.md) and [RELEASE_NOTES_v1.0-rc1.md](RELEASE_NOTES_v1.0-rc1.md)). It is a release candidate, **not v1.0 final** — v1.1 (bugfix/UX) and v1.2 (security) come first. The last previous stable release is **v0.7.0**. See [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) for the v1 quick start.
 
 HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
 
@@ -360,7 +360,7 @@ The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime fo
 - v0.7.0 — Visual Refresh & UX Stabilization: PySide6/QSS UI redesign, Hub on the NAS, Hub Transfer migrations, migrations history, agent user service ✓
 - v0.8.0 — Remote cluster workflows: remote VM power control via Hub→Agent ✓, remote VM details ✓, command queue view ✓, Hub staging cleanup ✓, Labs workspace with lab power actions ✓ (closed on develop; extra Settings sections moved to a later version)
 - v0.9.0 — Core stabilization: structured logging/errors/settings, unified host registry, telemetry + alerts, labs workspace v0.9, VM providers, NAS commit/restore ✓ (develop, unreleased)
-- v1.0.0 — Full vision, functional raw: Auto-Boost orchestrator, battery manager, teleport engine (incl. state-preserving `save_restore`), networks, RBAC, external nodes, API v1, CLI v1, Control Center UI ✓ (develop, unreleased — pending two-physical-host smoke and release decision)
+- v1.0-rc1 — Full vision, functional raw: Auto-Boost orchestrator, battery manager, teleport engine (incl. state-preserving `save_restore`), networks, RBAC, external nodes, API v1, CLI v1, Control Center UI ✓ — **released as v1.0-rc1** after the real two-physical-host smoke (23 PASS / 0 FAIL)
 - v1.1.0 — bugfix/UX (see NEXT_STEPS_V11.md)
 - v1.2.0 — security hardening: API/Hub auth, TLS (see NEXT_STEPS_V12_SECURITY.md)
 - Stable classroom-ready release after v1.x stabilization

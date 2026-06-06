@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-APP_DISPLAY_VERSION = "0.7.0"
+APP_DISPLAY_VERSION = "1.0-rc1"
 
 # v0.7 design tokens (docs/design/v0.7/hypergery-design/app/styles.css)
 DESIGN_TOKENS = {

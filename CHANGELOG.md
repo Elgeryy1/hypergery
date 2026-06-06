@@ -1,6 +1,25 @@
 # Changelog
 
-## v0.9.0 / v1.0 - Unreleased (develop, overnight build 2026-06-06)
+## v1.0-rc1 - Release Candidate 1 (2026-06-06)
+
+First release candidate for v1.0: the closed v0.8 base plus the v0.9/v1.0
+service layer below, gated on a successful **real two-physical-host smoke**
+(desktop + laptop + NAS Hub): **23 PASS · 0 FAIL · 1 BLOCKED (save_restore
+cross-host on stock `qemu:///system`, known environment limitation) · 1 SKIP
+(manual GUI check, covered by the green offscreen Qt suite)**. Highlights of
+the smoke: real host→host teleport between two physical machines via Hub
+Transfer (target running, UUID/MAC regenerated, source intact, Hub staging
+cleaned), real NAS commit/restore with verified checksums, API v1 envelope and
+confirm guard, host offline/online detection, and save_restore safe local
+resume on a real running VM.
+
+See [RELEASE_NOTES_v1.0-rc1.md](RELEASE_NOTES_v1.0-rc1.md) and
+[V1_MANUAL_SMOKE_RESULT.md](V1_MANUAL_SMOKE_RESULT.md). Version metadata bumped
+to `1.0.0rc1` (PEP 440; UI shows `v1.0-rc1`) — no other runtime changes in the
+RC cut. **Not v1.0 final**: v1.1 (bugfix/UX) and v1.2 (security hardening)
+remain planned.
+
+## v0.9.0 / v1.0 - develop (overnight build 2026-06-06, rolled into v1.0-rc1)
 
 New `hypergery_ubuntu/v1/` service layer on top of the closed v0.8 base
 (everything dry-run-first, injectable, and fully tested — 149 new tests,
