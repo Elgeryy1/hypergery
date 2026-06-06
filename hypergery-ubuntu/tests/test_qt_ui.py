@@ -204,6 +204,7 @@ class QtUiTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            backend_cls.return_value.recent_logs.return_value = ""
             window = MainWindow()
             self.assertEqual(window.dash_hub_big.text(), "Sin comprobar")
 
@@ -571,6 +572,7 @@ class QtUiTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            backend_cls.return_value.recent_logs.return_value = ""
             window = MainWindow()
             self.assertEqual(window.vm_page_title.text(), "Máquinas virtuales")
             self.assertIn("Las máquinas de este equipo", window.vm_page_subtitle.text())
