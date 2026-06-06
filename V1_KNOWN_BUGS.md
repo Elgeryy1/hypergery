@@ -23,6 +23,19 @@ arreglaron, con tests de regresión:
   fallara. Ahora reporta "still paused" con log de error.
 - **API expuesta por error** (media): bind no-loopback ahora exige
   `--allow-remote` explícito (la API sigue sin auth — eso es v1.2).
+- **Doble conteo de RAM en el orchestrator** (media): una VM pesada
+  corriendo bien en el portátil se reportaba como "ningún host puede
+  cogerla" porque restaba su propia RAM contra el host donde ya corría.
+  Ahora una VM running/paused siempre cabe en su host actual (las
+  apagadas siguen necesitando headroom real).
+- **`nas commit --dry-run` ignorado** (media): `--dry-run --confirm`
+  hacía un commit real. Ahora `--dry-run` siempre gana.
+- **Escrituras no atómicas en stores** (media): UserStore/ExternalNodeStore
+  podían dejar JSON truncado ante fallo/concurrencia (bricking el store).
+  Ahora escritura atómica (temp+rename), como telemetría.
+
+Segunda ronda de revisión adversarial: 0 bugs nuevos en cli_v1 (salvo el
+dry-run), Control Center UI, y api.py — confirmados limpios.
 
 1. **Control Center muestra JSON crudo**
    - Severidad: baja (UX).

@@ -4,19 +4,22 @@
 
 ```text
 QT_QPA_PLATFORM=offscreen ~/.venvs/hypergery/bin/python -m pytest
-→ 471 passed, 1 skipped in 63.38s        (pytest 9.0.3, full suite incl. Qt offscreen)
+→ 474 passed, 1 skipped in 60.30s        (pytest 9.0.3, full suite incl. Qt offscreen)
 
 python3 -m unittest discover -s tests
 → OK (skipped=70)                         (system Python, from the project dir)
 
 python3 -m compileall hypergery-ubuntu    → OK
+docker compose config                     → OK
 ```
 
-A QA pass (adversarial review + dynamic probing) found and fixed 6 issues
-(NAS path traversal, corrupt-commit listing, telemetry sample loss under
-concurrency, memdiff partial files, misleading teleport rollback text, and
-accidental remote API exposure) — all with regression tests. See
-V1_KNOWN_BUGS.md "Corregidos en la ronda de QA".
+Two QA passes (two independent adversarial reviews + dynamic probing) found
+and fixed 9 issues, all with regression tests:
+NAS path traversal, corrupt-commit listing, telemetry sample loss under
+concurrency, memdiff partial files, misleading teleport rollback text,
+accidental remote API exposure, orchestrator RAM double-count, dead
+`nas commit --dry-run` flag, and non-atomic user/external-node store writes.
+See V1_KNOWN_BUGS.md "Corregidos en la ronda de QA".
 
 The single venv skip is `test_require_raises_without_battery`: psutil reports
 the laptop's real battery, so the "no battery available" branch cannot be
