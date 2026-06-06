@@ -81,7 +81,7 @@ class VncScreen(QWidget):
     def __init__(self, console: "IntegratedConsoleWidget") -> None:
         super().__init__()
         self.console = console
-        self.message = "Pulsa «Conectar» para abrir la consola.\nTecla para soltar el ratón: Ctrl derecha"
+        self.message = f"Pulsa «Conectar» para abrir la consola.\nTecla para soltar el ratón: {HOST_KEY_NAME}"
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -169,7 +169,7 @@ class IntegratedConsoleWidget(QWidget):
         self.status = QLabel("Ninguna máquina seleccionada.")
         self.status.setObjectName("mutedLabel")
         self.hint = QLabel(
-            "Haz clic dentro de la consola para capturar el teclado y el ratón. Pulsa Ctrl derecha para soltarlos. "
+            f"Haz clic dentro de la consola para capturar el teclado y el ratón. Pulsa {HOST_KEY_NAME} para soltarlos. "
             "Cerrar esta consola no apaga la máquina. Usa «Apagar (suave)» o «Apagar a la fuerza»."
         )
         self.hint.setWordWrap(True)
@@ -276,7 +276,7 @@ class IntegratedConsoleWidget(QWidget):
             self.set_status(SPICE_STATUS_MESSAGE)
             switch_enabled = can_switch_display_to_vnc(graphics, state)
             self.spice_switch_button.setEnabled(switch_enabled)
-            self.spice_power_hint.setText("" if switch_enabled else "Shut down the VM before switching display mode.")
+            self.spice_power_hint.setText("" if switch_enabled else "Apaga la VM antes de cambiar el modo de pantalla.")
             self.update_controls(False)
             return
         self.mode_stack.setCurrentWidget(self.scroll_area)
@@ -324,7 +324,7 @@ class IntegratedConsoleWidget(QWidget):
             return
         if display.get("type") != "vnc":
             self.set_status(SPICE_INTEGRATED_MESSAGE if display.get("type") == "spice" else "La consola integrada requiere VNC.")
-            self.screen.setText(f"{SPICE_INTEGRATED_MESSAGE}\n\nUse Open External Viewer.")
+            self.screen.setText(f"{SPICE_INTEGRATED_MESSAGE}\n\nUsa «Abrir visor externo».")
             return
         self.disconnect_console()
         self.display = display
@@ -335,7 +335,7 @@ class IntegratedConsoleWidget(QWidget):
         self.socket.errorOccurred.connect(self.on_socket_error)
         self.socket.disconnected.connect(lambda: self.update_controls(True))
         self.socket.connectToHost(str(display["host"]), int(display["port"]))
-        self.set_status(f"Connecting to {display['uri']}...")
+        self.set_status(f"Conectando con {display['uri']}...")
         self.update_controls(True)
 
     def disconnect_console(self) -> None:
@@ -349,9 +349,9 @@ class IntegratedConsoleWidget(QWidget):
         self.state = "idle"
         if was_connected:
             self.framebuffer = None
-            self.screen.setText(f"Console disconnected. Click Connect to reconnect.\nHost Key: {HOST_KEY_NAME}")
+            self.screen.setText(f"Consola desconectada. Pulsa «Conectar» para reconectar.\nTecla para soltar: {HOST_KEY_NAME}")
             self.screen.update()
-            self.set_status("Disconnected")
+            self.set_status("Desconectada")
         self.update_controls(bool(self.vm_name) and console_mode_for_graphics(self.graphics) == "integrated-vnc")
 
     def reconnect_console(self) -> None:
@@ -364,13 +364,13 @@ class IntegratedConsoleWidget(QWidget):
 
     def switch_display_to_vnc(self) -> None:
         if not can_switch_display_to_vnc(self.graphics, self.vm_state):
-            self.set_status("Shut down the VM before switching display mode.")
+            self.set_status("Apaga la VM antes de cambiar el modo de pantalla.")
             return
         vm = self.vm
         ram_mib = int(getattr(vm, "ram_mib", 0) or 0)
         vcpus = int(getattr(vm, "vcpus", 0) or 0)
         if ram_mib < 256 or vcpus < 1:
-            self.set_status("Could not switch display to VNC: VM RAM/vCPU settings are unavailable.")
+            self.set_status("No se ha podido cambiar la pantalla a VNC: los ajustes de RAM/vCPU no están disponibles.")
             return
         network_mode = "isolated" if str(getattr(vm, "network", "")).endswith("-isolated") else "nat"
         try:
@@ -384,12 +384,12 @@ class IntegratedConsoleWidget(QWidget):
                 lab_id=str(getattr(vm, "lab_id", "") or "default-lab"),
             )
         except HyperGeryError as exc:
-            self.set_status(f"Could not switch display to VNC: {exc}")
+            self.set_status(f"No se ha podido cambiar la pantalla a VNC: {exc}")
             return
         self.graphics = "vnc"
-        self.set_status("Display switched to VNC. Start the VM, then connect the integrated console.")
+        self.set_status("Pantalla cambiada a VNC. Enciende la VM y conecta la consola integrada.")
         self.mode_stack.setCurrentWidget(self.scroll_area)
-        self.screen.setText("Display switched to VNC.\nStart the VM, then click Connect.")
+        self.screen.setText("Pantalla cambiada a VNC.\nEnciende la VM y pulsa «Conectar».")
         self.update_controls(False)
         if self.vm_updated_callback:
             self.vm_updated_callback(self.vm_name)
@@ -401,19 +401,19 @@ class IntegratedConsoleWidget(QWidget):
             return
         if not self.input_captured:
             self.input_captured = True
-            self.set_status(f"Input captured - press {HOST_KEY_NAME} to release")
+            self.set_status(f"Teclado y ratón capturados - pulsa {HOST_KEY_NAME} para soltarlos")
             self.update_controls(console_mode_for_graphics(self.graphics) == "integrated-vnc")
 
     def release_input(self) -> None:
         if self.input_captured:
             self.input_captured = False
             self.pointer_mask = 0
-            self.set_status("Input released")
+            self.set_status("Teclado y ratón liberados")
             self.update_controls(console_mode_for_graphics(self.graphics) == "integrated-vnc")
 
     def on_socket_error(self, _error) -> None:
-        detail = self.socket.errorString() if self.socket else "unknown socket error"
-        self.set_status(f"Integrated console failed: {detail}. Use Open External Viewer.")
+        detail = self.socket.errorString() if self.socket else "error de socket desconocido"
+        self.set_status(f"Falló la consola integrada: {detail}. Usa «Abrir visor externo».")
         self.update_controls(True)
 
     def on_ready_read(self) -> None:
@@ -423,7 +423,7 @@ class IntegratedConsoleWidget(QWidget):
         try:
             self.process_buffer()
         except HyperGeryError as exc:
-            self.set_status(f"Integrated console failed: {exc}. Use Open External Viewer.")
+            self.set_status(f"Falló la consola integrada: {exc}. Usa «Abrir visor externo».")
             self.disconnect_console()
 
     def _take(self, size: int) -> bytes | None:
@@ -440,7 +440,7 @@ class IntegratedConsoleWidget(QWidget):
                 if data is None:
                     return
                 if not data.startswith(b"RFB "):
-                    raise HyperGeryError("VNC server did not send an RFB protocol banner.")
+                    raise HyperGeryError("El servidor VNC no ha enviado la cabecera del protocolo RFB.")
                 self.socket.write(b"RFB 003.008\n")
                 self.state = "security"
             elif self.state == "security":
@@ -453,7 +453,7 @@ class IntegratedConsoleWidget(QWidget):
                     self.buffer.insert(0, count)
                     return
                 if 1 not in types:
-                    raise HyperGeryError("VNC authentication is required; integrated console supports local no-auth VNC only.")
+                    raise HyperGeryError("El servidor VNC requiere autenticación; la consola integrada solo admite VNC local sin autenticación.")
                 self.socket.write(b"\x01")
                 self.state = "security-result"
             elif self.state == "security-result":
@@ -461,7 +461,7 @@ class IntegratedConsoleWidget(QWidget):
                 if data is None:
                     return
                 if struct.unpack(">I", data)[0] != 0:
-                    raise HyperGeryError("VNC security negotiation failed.")
+                    raise HyperGeryError("Falló la negociación de seguridad VNC.")
                 self.socket.write(b"\x01")
                 self.state = "server-init"
             elif self.state == "server-init":
@@ -481,7 +481,7 @@ class IntegratedConsoleWidget(QWidget):
                 self.send_set_encodings()
                 self.request_update(False)
                 self.state = "message"
-                self.set_status(f"Connected - {self.fb_width}x{self.fb_height} - Host Key: {HOST_KEY_NAME}")
+                self.set_status(f"Conectada - {self.fb_width}x{self.fb_height} - Tecla para soltar: {HOST_KEY_NAME}")
                 self.update_controls(True)
             elif self.state == "message":
                 msg_type = self._take(1)
@@ -507,7 +507,7 @@ class IntegratedConsoleWidget(QWidget):
                     return
                 x, y, w, h, encoding = struct.unpack(">HHHHi", rect_header)
                 if encoding != 0:
-                    raise HyperGeryError(f"Unsupported VNC encoding: {encoding}")
+                    raise HyperGeryError(f"Codificación VNC no soportada: {encoding}")
                 pixels = self._take(w * h * 4)
                 if pixels is None:
                     self.buffer = bytearray(rect_header) + self.buffer
@@ -602,7 +602,7 @@ class VmConsoleWindow(QMainWindow):
         self.backend = backend
         self.vm = vm
         self.on_vm_changed = on_vm_changed
-        self.setWindowTitle(f"HyperGery Console - {getattr(vm, 'name', '')}")
+        self.setWindowTitle(f"Consola HyperGery - {getattr(vm, 'name', '')}")
         self.resize(1024, 768)
         self.setMinimumSize(1024, 768)
         self.console = IntegratedConsoleWidget(backend, self)
@@ -615,24 +615,24 @@ class VmConsoleWindow(QMainWindow):
         self.set_vm(vm)
 
     def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Console")
+        toolbar = QToolBar("Consola")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.addToolBar(toolbar)
 
-        self.connect_action = QAction("Connect", self)
-        self.disconnect_action = QAction("Disconnect", self)
-        self.reconnect_action = QAction("Reconnect", self)
-        self.cad_action = QAction("Send Ctrl+Alt+Del", self)
-        self.release_action = QAction("Release Input", self)
-        self.fullscreen_action = QAction("Fullscreen", self)
+        self.connect_action = QAction("Conectar", self)
+        self.disconnect_action = QAction("Desconectar", self)
+        self.reconnect_action = QAction("Reconectar", self)
+        self.cad_action = QAction("Enviar Ctrl+Alt+Supr", self)
+        self.release_action = QAction("Soltar teclado/ratón", self)
+        self.fullscreen_action = QAction("Pantalla completa", self)
         self.fullscreen_action.setCheckable(True)
-        self.scale_action = QAction("Scale to Fit", self)
+        self.scale_action = QAction("Ajustar a la ventana", self)
         self.scale_action.setCheckable(True)
         self.scale_action.setChecked(True)
         self.external_action = QAction("Abrir visor externo", self)
         self.switch_vnc_action = QAction("Cambiar a VNC", self)
-        self.close_action = QAction("Close", self)
+        self.close_action = QAction("Cerrar", self)
 
         self.connect_action.triggered.connect(self.console.connect_console)
         self.disconnect_action.triggered.connect(self.console.disconnect_console)
@@ -664,10 +664,10 @@ class VmConsoleWindow(QMainWindow):
 
     def _build_status_bar(self) -> None:
         status = QStatusBar(self)
-        self.state_label = QLabel("Input released")
-        self.display_label = QLabel("Display: —")
+        self.state_label = QLabel("Teclado y ratón liberados")
+        self.display_label = QLabel("Pantalla: —")
         self.host_key_label = QLabel(f"Tecla para soltar: {HOST_KEY_NAME}")
-        self.close_note_label = QLabel("Closing this console does not stop the VM.")
+        self.close_note_label = QLabel("Cerrar esta consola no apaga la VM.")
         status.addWidget(self.state_label, 1)
         status.addPermanentWidget(self.display_label)
         status.addPermanentWidget(self.close_note_label)
@@ -676,7 +676,7 @@ class VmConsoleWindow(QMainWindow):
 
     def set_vm(self, vm) -> None:
         self.vm = vm
-        self.setWindowTitle(f"HyperGery Console - {getattr(vm, 'name', '')}")
+        self.setWindowTitle(f"Consola HyperGery - {getattr(vm, 'name', '')}")
         self.console.set_vm(vm)
         self.external_action.setEnabled(bool(getattr(vm, "name", "")))
         self.switch_vnc_action.setEnabled(can_switch_display_to_vnc(getattr(vm, "graphics", ""), getattr(vm, "state", "")))
@@ -695,7 +695,7 @@ class VmConsoleWindow(QMainWindow):
         display = (self.console.graphics or "—").upper() if self.console.graphics else "—"
         if connected and self.console.fb_width and self.console.fb_height:
             display += f" · {self.console.fb_width}x{self.console.fb_height}"
-        self.display_label.setText(f"Display: {display}")
+        self.display_label.setText(f"Pantalla: {display}")
 
     def toggle_fullscreen(self, enabled: bool) -> None:
         if enabled:

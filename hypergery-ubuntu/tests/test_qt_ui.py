@@ -895,9 +895,9 @@ class QtUiTests(unittest.TestCase):
         backend = MagicMock()
         vm = VmSummary(name="hg-spice", state="shut off", lab_id="lab", ram_mib=1024, vcpus=1, graphics="spice")
         window = VmConsoleWindow(backend, vm)
-        self.assertIn("HyperGery Console - hg-spice", window.windowTitle())
-        self.assertIn("Right Ctrl", window.host_key_label.text())
-        self.assertIn("does not stop the VM", window.close_note_label.text())
+        self.assertIn("Consola HyperGery - hg-spice", window.windowTitle())
+        self.assertIn("Ctrl derecho", window.host_key_label.text())
+        self.assertIn("no apaga la VM", window.close_note_label.text())
         self.assertIn("SPICE", window.display_label.text())
 
         # SPICE card keeps the v0.6 microcopy and is the active mode.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-HOST_KEY_NAME = "Right Ctrl"
+HOST_KEY_NAME = "Ctrl derecho"
 SPICE_INTEGRATED_MESSAGE = "Esta máquina usa SPICE. Usa el visor externo o cambia la pantalla a VNC para la consola integrada."
 SPICE_STATUS_MESSAGE = "Pantalla SPICE detectada. Usa el visor externo o cambia esta máquina a VNC."
 NO_DISPLAY_MESSAGE = "La consola integrada no está disponible. Usa el visor externo o configura una pantalla VNC local."
@@ -24,7 +24,7 @@ def console_mode_for_graphics(graphics: str | None) -> str:
 def console_message_for_graphics(graphics: str | None) -> str:
     mode = console_mode_for_graphics(graphics)
     if mode == "integrated-vnc":
-        return "Click Connect to open the VM console."
+        return "Pulsa «Conectar» para abrir la consola de la máquina."
     if mode == "external-spice":
         return SPICE_INTEGRATED_MESSAGE
     return NO_DISPLAY_MESSAGE
