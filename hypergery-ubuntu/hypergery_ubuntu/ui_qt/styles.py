@@ -57,7 +57,7 @@ def state_kind(state: str) -> str:
 
 
 def format_mib(value: int | None) -> str:
-    return f"{value} MiB" if value else "unknown"
+    return f"{value} MiB" if value else "desconocido"
 
 
 def details_block(*rows: tuple[str, str]) -> str:

@@ -676,7 +676,7 @@ class QtUiTests(unittest.TestCase):
             table = dialog.findChild(QTableWidget, "remoteVmsTable")
             self.assertEqual(table.rowCount(), 2)
             self.assertEqual(table.item(0, 0).text(), "ubuntu-migrated")
-            self.assertEqual(table.item(0, 1).text(), "RUNNING")
+            self.assertEqual(table.item(0, 1).text(), "ENCENDIDA")
             self.assertEqual(table.item(0, 5).text(), "gery-lenovo")
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
             self.assertIn("las ejecuta el equipo de destino", texts)
@@ -806,7 +806,7 @@ class QtUiTests(unittest.TestCase):
                 self.assertIn("completada", window.remote_power_status.text())
                 client.list_vms.assert_called_once_with("gery-lenovo")
                 self.assertEqual(window.remote_vms_table.rowCount(), 1)
-                self.assertEqual(window.remote_vms_table.item(0, 1).text(), "SHUT OFF")
+                self.assertEqual(window.remote_vms_table.item(0, 1).text(), "APAGADA")
                 self.assertFalse(window._remote_power_poll_timer.isActive())
 
                 # Hub errors surface in the status label instead of crashing.
@@ -861,7 +861,7 @@ class QtUiTests(unittest.TestCase):
             )
             self.assertEqual(window.migrations_table.rowCount(), 2)
             self.assertEqual(window.migrations_table.item(0, 0).text(), "mig-done-1")
-            self.assertEqual(window.migrations_table.item(0, 5).text(), "DONE")
+            self.assertEqual(window.migrations_table.item(0, 5).text(), "COMPLETADA")
             self.assertEqual(window.migrations_table.item(1, 4).text(), "nas_clone")
             self.assertIn("2 traslado(s)", window.migrations_status_label.text())
             self.assertIn("1 completados", window.migrations_status_label.text())
@@ -1347,7 +1347,7 @@ class QtCommandQueueTests(unittest.TestCase):
             self.assertIn("1 pendientes", window.commands_status_label.text())
             self.assertIn("1 fallidas", window.commands_status_label.text())
             statuses = {window.commands_table.item(row, 3).text() for row in range(3)}
-            self.assertEqual(statuses, {"DONE", "FAILED", "PENDING"})
+            self.assertEqual(statuses, {"COMPLETADA", "FALLÓ", "PENDIENTE"})
             results = [window.commands_table.item(row, 7).text() for row in range(3)]
             self.assertTrue(any("start executed" in text for text in results))
             self.assertTrue(any("target offline" in text for text in results))
@@ -1590,7 +1590,7 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             window = self.make_window(backend_cls, tmp)
             self.assertEqual(len(window._lab_ws_card_frames), 1)
             self.assertEqual(window.lab_ws_title.text(), "ASR Lab")
-            self.assertIn("isolated", window.lab_ws_meta.text())
+            self.assertIn("aislada", window.lab_ws_meta.text())
             self.assertIn("Active Directory lab", window.lab_ws_meta.text())
             status = window.lab_ws_status_label.text()
             self.assertIn("3 máquina(s)", status)
@@ -1724,7 +1724,7 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             self.assertIn("remote-db@lenovo (cmd-9)", feedback)
             self.assertIn("1 FALLARON", feedback)
             self.assertIn("libvirt exploded", feedback)
-            self.assertIn("Laboratorio asr-lab (start)", window.activity_log.toPlainText())
+            self.assertIn("Laboratorio asr-lab (arranque)", window.activity_log.toPlainText())
             window.close()
         self.assertIsNotNone(app)
 

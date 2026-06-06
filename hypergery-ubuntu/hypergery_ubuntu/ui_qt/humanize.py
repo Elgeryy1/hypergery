@@ -9,6 +9,7 @@ se resume lo importante.
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime
 from typing import Any
 
@@ -387,3 +388,160 @@ def humanize_error(key: str, message: str) -> str:
         + _line(ERROR, f"No se ha podido cargar esta sección: {_esc(message)}")
         + _muted("Puede ser temporal. Prueba a pulsar «Actualizar» de nuevo.")
     )
+
+
+# --------------------------------------------------------------------------- #
+# Estados, acciones y errores visibles (solo presentación; los valores         #
+# internos de libvirt/Hub no se tocan)                                          #
+# --------------------------------------------------------------------------- #
+
+# (detalle "Apagada", tabla "APAGADA") por tipo de estado normalizado.
+_VM_STATES_ES = {
+    "running": ("Encendida", "ENCENDIDA"),
+    "shutoff": ("Apagada", "APAGADA"),
+    "paused": ("En pausa", "EN PAUSA"),
+    "not created": ("No creada", "NO CREADA"),
+    "unknown": ("Desconocida", "DESCONOCIDA"),
+}
+
+
+def _vm_state_kind(state: Any) -> str:
+    value = str(state or "").strip().lower()
+    if value in {"not created", "not_created"}:
+        return "not created"
+    if "running" in value:
+        return "running"
+    if "paused" in value:
+        return "paused"
+    if "shut" in value or "off" in value:
+        return "shutoff"
+    return "unknown"
+
+
+def humanize_vm_status(status: Any, style: str = "detail") -> str:
+    """Estado libvirt → texto visible en español.
+
+    style="table" → mayúsculas (APAGADA); "detail"/"title" → capitalizado (Apagada).
+    El valor interno (shut off, running…) no se modifica nunca: esto es solo
+    para mostrar.
+    """
+    detail, table = _VM_STATES_ES[_vm_state_kind(status)]
+    return table if style == "table" else detail
+
+
+_COMMAND_STATUS_ES = {
+    "pending": ("Pendiente", "PENDIENTE"),
+    "sent": ("Enviada", "ENVIADA"),
+    "running": ("En curso", "EN CURSO"),
+    "done": ("Completada", "COMPLETADA"),
+    "failed": ("Falló", "FALLÓ"),
+    "expired": ("Caducada", "CADUCADA"),
+    "cancelled": ("Cancelada", "CANCELADA"),
+}
+
+
+def humanize_command_status(status: Any, style: str = "table") -> str:
+    """Estado de una orden/traslado del Hub → texto visible en español."""
+    value = str(status or "").strip().lower()
+    pair = _COMMAND_STATUS_ES.get(value)
+    if pair is None:
+        pair = ("Desconocida", "DESCONOCIDA") if not value else (value, value.upper())
+    return pair[1] if style == "table" else pair[0]
+
+
+_LAB_ACTIONS_ES = {
+    "start": "arranque",
+    "shutdown": "apagado",
+    "force_off": "apagado forzado",
+}
+
+
+def humanize_lab_action(action: Any) -> str:
+    """Acción de laboratorio (start/shutdown) → palabra en español."""
+    value = str(action or "").strip().lower()
+    return _LAB_ACTIONS_ES.get(value, value)
+
+
+_NETWORK_LABELS_ES = {
+    "subnet": "Subred",
+    "bridge": "Puente",
+    "bridge_name": "Puente",
+    "network": "Red",
+    "unknown": "desconocido",
+    "nat": "NAT",
+    "isolated": "aislada",
+}
+
+
+def humanize_network_label(label: Any) -> str:
+    """Etiqueta técnica de red (subnet, bridge…) → texto visible en español."""
+    value = str(label or "").strip()
+    return _NETWORK_LABELS_ES.get(value.lower(), value)
+
+
+# Señales de "falta un archivo" en errores de libvirt/virsh (ES y EN).
+_MISSING_FILE_MARKERS = (
+    "cannot access storage file",
+    "no such file or directory",
+    "no existe el archivo o el directorio",
+    "no se puede acceder al archivo",
+)
+
+# Señales de error técnico de arranque que conviene encapsular.
+_TECHNICAL_START_MARKERS = (
+    "failed to start domain",
+    "virsh",
+    "qemu:///system",
+)
+
+
+def _find_missing_file(text: str) -> str:
+    """Devuelve la ruta/nombre del archivo que falta, si se puede extraer."""
+    lowered = text.lower()
+    if not any(marker in lowered for marker in _MISSING_FILE_MARKERS):
+        return ""
+    # Rutas entre comillas simples (formato habitual de libvirt) o rutas absolutas.
+    for pattern in (r"'(/[^']+)'", r"(/\S+\.(?:iso|qcow2|img|raw))"):
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def humanize_error_message(error_text: Any) -> str:
+    """Error técnico → resumen humano en español + detalle técnico al final.
+
+    Si el texto no contiene jerga conocida (virsh, Failed to start domain,
+    archivos que faltan…), se devuelve tal cual. Nunca se pierde el detalle
+    técnico: queda al final, después de la explicación.
+    """
+    text = str(error_text or "").strip()
+    if not text:
+        return text
+    lowered = text.lower()
+    missing = _find_missing_file(text)
+    technical = any(marker in lowered for marker in _TECHNICAL_START_MARKERS)
+    if not missing and not technical:
+        return text
+
+    if missing:
+        base = missing.rsplit("/", 1)[-1]
+        if base.lower().endswith(".iso"):
+            summary = f"No se pudo encender la máquina porque falta la ISO {base}."
+        else:
+            summary = f"No se pudo encender la máquina porque falta un archivo de disco ({base})."
+        steps = (
+            "Qué puedes hacer:\n"
+            "1. Comprueba que el NAS está montado.\n"
+            "2. Corrige la ruta de la ISO o del disco en la configuración de la máquina.\n"
+            "3. Si estás haciendo una migración de prueba, usa la opción sin ISO cuando corresponda."
+        )
+    else:
+        summary = "No se pudo completar la operación con la máquina virtual."
+        steps = (
+            "Qué puedes hacer:\n"
+            "1. Comprueba que la máquina y sus archivos existen en este equipo.\n"
+            "2. Revisa el Diagnóstico (libvirt y KVM deben estar en verde).\n"
+            "3. Vuelve a intentarlo; si sigue fallando, copia el detalle técnico."
+        )
+    return f"{summary}\n\n{steps}\n\nDetalle técnico:\n{text}"

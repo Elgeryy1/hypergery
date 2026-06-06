@@ -74,7 +74,16 @@ from .lab_helpers import (
     unify_lab_vms,
     vm_count_for_lab,
 )
-from .humanize import V1_TAB_TITLES, humanize_error, humanize_v1
+from .humanize import (
+    V1_TAB_TITLES,
+    humanize_command_status,
+    humanize_error,
+    humanize_error_message,
+    humanize_lab_action,
+    humanize_network_label,
+    humanize_v1,
+    humanize_vm_status,
+)
 from .topology import LabTopologyWidget
 from .styles import (
     APP_DISPLAY_VERSION,
@@ -523,7 +532,7 @@ class MainWindow(QMainWindow):
         header.addStretch()
         self.remote_status_label = QLabel("Hub sin cargar")
         self.remote_status_label.setObjectName("mutedLabel")
-        self.refresh_remote_button = self._button("Refresh", self.refresh_remote_hosts)
+        self.refresh_remote_button = self._button("Actualizar", self.refresh_remote_hosts)
         self.test_remote_button = self._button("Probar equipo seleccionado", self.test_selected_remote_host)
         remote_settings_button = self._button("Ajustes", self.app_settings)
         header.addWidget(self.remote_status_label)
@@ -851,7 +860,7 @@ class MainWindow(QMainWindow):
             state = str(vm.get("state") or "unknown")
             cells = (
                 str(vm.get("vm_name") or vm.get("name") or ""),
-                state.upper(),
+                humanize_vm_status(state, "table"),
                 str(vm.get("lab_id") or ""),
                 str(vm.get("ram_mib") or ""),
                 str(vm.get("vcpus") or ""),
@@ -923,7 +932,7 @@ class MainWindow(QMainWindow):
                 ("Nombre", str(vm.get("vm_name") or vm.get("name") or "")),
                 ("ID del equipo", host_id),
                 ("Nombre del equipo", self._remote_host_name(host_id) or "desconocido"),
-                ("Estado", str(vm.get("state") or "desconocido")),
+                ("Estado", humanize_vm_status(vm.get("state"))),
                 ("Laboratorio", str(vm.get("lab_id") or "desconocido")),
                 ("RAM", format_mib(vm.get("ram_mib"))),
                 ("vCPUs", str(vm.get("vcpus") or "desconocido")),
@@ -1024,7 +1033,7 @@ class MainWindow(QMainWindow):
                 return
             status = str((result or {}).get("status") or "")
             if status not in {"done", "failed"}:
-                self.remote_power_status.setText(f"Orden {command_id}: {status or 'pendiente'}…")
+                self.remote_power_status.setText(f"Orden {command_id}: {humanize_command_status(status or 'pending', 'detail').lower()}…")
                 return
             self._remote_power_poll_timer.stop()
             self._remote_power_command_id = ""
@@ -1034,7 +1043,7 @@ class MainWindow(QMainWindow):
                 self.remote_power_status.setText(f"Orden {command_id} completada. {message}".strip())
                 self.log_activity(f"Orden remota completada: {command_id}. {message}".strip())
             else:
-                self.remote_power_status.setText(f"Orden {command_id} FALLÓ. {message}".strip())
+                self.remote_power_status.setText(f"Orden {command_id} FALLÓ. {humanize_error_message(message)}".strip())
                 self.log_activity(f"Orden remota FALLÓ: {command_id}. {message}".strip())
             self._refresh_remote_vms()
 
@@ -1118,7 +1127,7 @@ class MainWindow(QMainWindow):
                     ("Hub", self.registry_url()),
                     ("Equipo", host_id),
                     ("Orden encolada", str(result.get("command_id", ""))),
-                    ("Estado", str(result.get("status", ""))),
+                    ("Estado", humanize_command_status(result.get("status"), "detail")),
                 )
             )
             self.log_activity(f"Encolada prueba del equipo {host_id}: {result.get('command_id', '')}")
@@ -1527,7 +1536,16 @@ class MainWindow(QMainWindow):
             chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             name = QLabel(item.name + ("  · CRÍTICO" if item.critical and item.status == "FAIL" else ""))
             name.setMinimumWidth(170)
-            detail = QLabel(str(item.detail))
+            # Presentación: el doctor (CLI) emite detalles técnicos; aquí se
+            # muestran en español sin tocar el dato original.
+            detail_text = (
+                str(item.detail)
+                .replace("writable=True", "escribible: sí")
+                .replace("writable=False", "escribible: NO")
+                .replace("{'ok': True}", "responde correctamente")
+                .replace(" VM record(s)", " máquina(s) registradas")
+            )
+            detail = QLabel(detail_text)
             detail.setObjectName("mutedLabel")
             detail.setWordWrap(True)
             row.addWidget(chip)
@@ -1889,7 +1907,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
         title = QLabel(str(lab.get("name") or lab_id))
         title.setObjectName("sectionTitle")
-        meta = QLabel(f"{lab_id} · {lab.get('network_mode', 'nat')} · {lab.get('subnet', '')}")
+        meta = QLabel(f"{lab_id} · red {humanize_network_label(lab.get('network_mode', 'nat'))} · subred {lab.get('subnet', '') or '—'}")
         meta.setObjectName("mutedLabel")
         summary = lab_status_summary(self._workspace_unified_vms(lab))
         counts = summary["counts"]
@@ -1963,8 +1981,8 @@ class MainWindow(QMainWindow):
         self.lab_ws_title.setText(str(lab.get("name") or lab_id))
         description = str(lab.get("description") or "")
         self.lab_ws_meta.setText(
-            f"{lab_id} · {lab.get('network_mode', 'nat')} · subnet {lab.get('subnet', '')} · "
-            f"bridge {lab.get('bridge_name', '')}"
+            f"{lab_id} · red {humanize_network_label(lab.get('network_mode', 'nat'))} · subred {lab.get('subnet', '') or '—'} · "
+            f"puente {lab.get('bridge_name', '') or '—'}"
             + (f"\n{description}" if description else "")
         )
         unified = self._workspace_unified_vms(lab)
@@ -1989,7 +2007,7 @@ class MainWindow(QMainWindow):
             cells = (
                 vm["name"],
                 vm["role"] or "—",
-                vm["state"].upper(),
+                humanize_vm_status(vm["state"], "table"),
                 vm["host_id"] or "—",
                 format_mib(vm["ram_mib"]) if vm["ram_mib"] else "—",
                 str(vm["vcpus"] or "—"),
@@ -2070,7 +2088,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.show_error(str(exc))
             return
-        self.log_activity(f"Set role '{role or 'none'}' for {vm['name']} in lab {lab.get('lab_id', '')}")
+        self.log_activity(f"Rol '{role or 'ninguno'}' asignado a {vm['name']} en el laboratorio {lab.get('lab_id', '')}")
         self.refresh_labs()
         self.render_labs_workspace()
 
@@ -2089,9 +2107,9 @@ class MainWindow(QMainWindow):
         targets = plan["targets"]
         if not targets:
             self.lab_ws_feedback.setText(
-                f"Nothing to {action}: no VMs in the required state ("
-                + ("shut off" if action == "start" else "running")
-                + ")."
+                "No hay nada que encender: ninguna máquina del laboratorio está apagada."
+                if action == "start"
+                else "No hay nada que apagar: ninguna máquina del laboratorio está encendida."
             )
             return
         if action == "start":
@@ -2138,13 +2156,17 @@ class MainWindow(QMainWindow):
             local = results.get("local") or []
             queued = results.get("queued") or []
             errors = results.get("errors") or []
-            lines = [f"Laboratorio {lab_id} ({action}):"]
+            lines = [f"Laboratorio {lab_id} ({humanize_lab_action(action)}):"]
             if local:
                 lines.append(f"  {len(local)} máquina(s) locales: {', '.join(local)}")
             if queued:
                 lines.append(f"  {len(queued)} orden(es) remotas encoladas: {', '.join(queued)}")
             if errors:
-                lines.append(f"  {len(errors)} FALLARON: {'; '.join(errors)}")
+                lines.append(f"  {len(errors)} FALLARON:")
+                for error in errors:
+                    name, _, detail = error.partition(": ")
+                    lines.append(f"    - {name}: {humanize_error_message(detail).splitlines()[0]}")
+                lines.append(f"  Detalle técnico: {'; '.join(errors)}")
             summary = "\n".join(lines)
             self.lab_ws_feedback.setText(summary)
             self.lab_ws_feedback.setObjectName("calloutDanger" if errors else "calloutOk")
@@ -2153,7 +2175,7 @@ class MainWindow(QMainWindow):
             self.log_activity(summary.replace("\n", " · "))
             self.refresh_all()
 
-        self.log_activity(f"Pedido {action} del laboratorio {lab_id}: {len(targets)} máquina(s)")
+        self.log_activity(f"Pedido {humanize_lab_action(action)} del laboratorio {lab_id}: {len(targets)} máquina(s)")
         self.run_operation(
             f"{'Encendiendo' if action == 'start' else 'Apagando'} laboratorio {lab_id}",
             run,
@@ -2385,7 +2407,7 @@ class MainWindow(QMainWindow):
         errors = list(result.get("errors") or [])
         lines = ["SIMULACIÓN — no se ha borrado nada." if dry_run else "LIMPIEZA EJECUTADA."]
         lines.append(
-            f"{len(candidates)} candidate(s) · {self._format_size(result.get('total_size_bytes') or 0)} "
+            f"{len(candidates)} candidato(s) a borrar · {self._format_size(result.get('total_size_bytes') or 0)} "
             f"(más antiguos de {result.get('older_than_hours', '?')}h)"
         )
         for candidate in candidates:
@@ -2394,9 +2416,9 @@ class MainWindow(QMainWindow):
                 f"({self._format_size(candidate.get('size_bytes') or 0)}): {candidate.get('reason', '')}"
             )
         if not candidates:
-            lines.append("  No cleanup candidates found.")
+            lines.append("  No hay nada que limpiar.")
         if skipped:
-            lines.append(f"{len(skipped)} skipped:")
+            lines.append(f"{len(skipped)} omitido(s):")
             for item in skipped:
                 lines.append(f"  - {item.get('migration_id', '')}: {item.get('reason', '')}")
         if not dry_run:
@@ -2453,7 +2475,7 @@ class MainWindow(QMainWindow):
                 str(record.get("target_vm_name") or ""),
                 f"{record.get('source_host_id') or '?'} → {record.get('target_host_id') or '?'}",
                 str(record.get("strategy") or ""),
-                status.upper(),
+                humanize_command_status(status),
                 str(record.get("updated_at") or ""),
             )
             for column, text in enumerate(cells):
@@ -2532,7 +2554,7 @@ class MainWindow(QMainWindow):
         self.commands_filter = QComboBox()
         self.commands_filter.addItems(list(self.COMMAND_FILTERS))
         self.commands_filter.currentIndexChanged.connect(self._apply_commands_filter)
-        self.commands_refresh_button = self._button("Refresh", self.refresh_commands)
+        self.commands_refresh_button = self._button("Actualizar", self.refresh_commands)
         header.addWidget(self.commands_filter)
         header.addWidget(self.commands_refresh_button)
         layout.addLayout(header)
@@ -2661,7 +2683,7 @@ class MainWindow(QMainWindow):
                 str(command.get("command_id") or ""),
                 str(command.get("target_host_id") or ""),
                 str(command.get("command_type") or ""),
-                status.upper(),
+                humanize_command_status(status),
                 str(command.get("created_at") or ""),
                 self._command_age_text(command),
                 self._summarize_command_value(command.get("payload")),
@@ -3637,11 +3659,11 @@ class MainWindow(QMainWindow):
                 view.setPlainText(empty)
             return
         self.detail_stack.setCurrentIndex(1)
-        self.selection_label.setText(f"{vm.name}  -  {vm.state}  -  {vm.lab_id or 'sin laboratorio'}")
+        self.selection_label.setText(f"{vm.name}  -  {humanize_vm_status(vm.state)}  -  {vm.lab_id or 'sin laboratorio'}")
         self.detail_views["General"].setPlainText(
             details_block(
                 ("Nombre", vm.name),
-                ("Estado", vm.state),
+                ("Estado", humanize_vm_status(vm.state)),
                 ("Laboratorio", vm.lab_id or "desconocido"),
                 ("URI de libvirt", "qemu:///system"),
             )
@@ -3679,8 +3701,11 @@ class MainWindow(QMainWindow):
         return self.selected_vm.name
 
     def show_error(self, message: str) -> None:
-        self.status.showMessage(message)
-        QMessageBox.critical(self, "HyperGery", message)
+        # Jerga técnica (virsh, archivos que faltan…) → resumen humano con el
+        # detalle técnico al final; los mensajes ya claros pasan sin cambios.
+        human = humanize_error_message(message)
+        self.status.showMessage(human.splitlines()[0] if human else human)
+        QMessageBox.critical(self, "HyperGery", human)
         self.refresh_logs()
 
     def show_cleanup_preview(self) -> None:

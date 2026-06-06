@@ -7,8 +7,13 @@ import unittest
 
 from hypergery_ubuntu.ui_qt.humanize import (
     V1_TAB_TITLES,
+    humanize_command_status,
     humanize_error,
+    humanize_error_message,
+    humanize_lab_action,
+    humanize_network_label,
     humanize_v1,
+    humanize_vm_status,
 )
 
 
@@ -198,6 +203,95 @@ class HumanizeRobustnessTest(unittest.TestCase):
         self.assertIn("No se ha podido cargar", html)
         self.assertIn("&lt;script&gt;", html)
         self.assertIn("Copias en el NAS", html)
+
+
+class HumanizeVmStatusTest(unittest.TestCase):
+    def test_table_style_uses_uppercase_spanish(self):
+        self.assertEqual(humanize_vm_status("shut off", "table"), "APAGADA")
+        self.assertEqual(humanize_vm_status("shutoff", "table"), "APAGADA")
+        self.assertEqual(humanize_vm_status("running", "table"), "ENCENDIDA")
+        self.assertEqual(humanize_vm_status("paused", "table"), "EN PAUSA")
+        self.assertEqual(humanize_vm_status("not created", "table"), "NO CREADA")
+        self.assertEqual(humanize_vm_status("unknown", "table"), "DESCONOCIDA")
+
+    def test_detail_style_uses_capitalized_spanish(self):
+        self.assertEqual(humanize_vm_status("shut off"), "Apagada")
+        self.assertEqual(humanize_vm_status("running"), "Encendida")
+        self.assertEqual(humanize_vm_status("paused"), "En pausa")
+        self.assertEqual(humanize_vm_status("unknown"), "Desconocida")
+
+    def test_libvirt_variants_and_empty_values(self):
+        # Los valores internos de libvirt no se modifican: esto solo presenta.
+        self.assertEqual(humanize_vm_status("in shutdown running"), "Encendida")
+        self.assertEqual(humanize_vm_status(""), "Desconocida")
+        self.assertEqual(humanize_vm_status(None), "Desconocida")
+
+
+class HumanizeCommandStatusTest(unittest.TestCase):
+    def test_known_statuses(self):
+        self.assertEqual(humanize_command_status("pending"), "PENDIENTE")
+        self.assertEqual(humanize_command_status("running"), "EN CURSO")
+        self.assertEqual(humanize_command_status("done"), "COMPLETADA")
+        self.assertEqual(humanize_command_status("failed"), "FALLÓ")
+        self.assertEqual(humanize_command_status("done", "detail"), "Completada")
+
+    def test_unknown_status_passes_through_uppercased(self):
+        self.assertEqual(humanize_command_status("weird"), "WEIRD")
+        self.assertEqual(humanize_command_status(""), "DESCONOCIDA")
+
+
+class HumanizeLabActionTest(unittest.TestCase):
+    def test_actions_in_spanish(self):
+        self.assertEqual(humanize_lab_action("start"), "arranque")
+        self.assertEqual(humanize_lab_action("shutdown"), "apagado")
+        self.assertEqual(humanize_lab_action("otra"), "otra")
+
+
+class HumanizeNetworkLabelTest(unittest.TestCase):
+    def test_network_jargon_in_spanish(self):
+        self.assertEqual(humanize_network_label("subnet"), "Subred")
+        self.assertEqual(humanize_network_label("bridge"), "Puente")
+        self.assertEqual(humanize_network_label("unknown"), "desconocido")
+        self.assertEqual(humanize_network_label("nat"), "NAT")
+
+
+class HumanizeErrorMessageTest(unittest.TestCase):
+    def test_missing_iso_english_marker(self):
+        error = (
+            "virsh --connect qemu:///system start ubuntu-test-v07 failed: "
+            "error: Failed to start domain 'ubuntu-test-v07'\n"
+            "error: Cannot access storage file "
+            "'/mnt/hypergery-nas/ubuntu-26.04-live-server-amd64.iso': "
+            "No such file or directory"
+        )
+        human = humanize_error_message(error)
+        self.assertIn("falta la ISO ubuntu-26.04-live-server-amd64.iso", human)
+        self.assertIn("Qué puedes hacer", human)
+        self.assertIn("NAS está montado", human)
+        self.assertIn("Detalle técnico:", human)
+        # El detalle técnico no se pierde, pero va al final.
+        self.assertLess(human.index("falta la ISO"), human.index("virsh"))
+
+    def test_missing_file_spanish_marker(self):
+        error = (
+            "Failed to start domain: no se puede acceder al archivo almacén "
+            "'/home/gerard/NAS_Gerard/disco.qcow2': No existe el archivo o el directorio"
+        )
+        human = humanize_error_message(error)
+        self.assertIn("falta un archivo de disco (disco.qcow2)", human)
+        self.assertIn("Detalle técnico:", human)
+
+    def test_technical_start_error_without_path_gets_generic_summary(self):
+        error = "virsh --connect qemu:///system start vm1 failed: error: Failed to start domain 'vm1'"
+        human = humanize_error_message(error)
+        self.assertTrue(human.startswith("No se pudo completar la operación"))
+        self.assertIn("Detalle técnico:", human)
+        self.assertNotIn("Traceback", human)
+
+    def test_plain_spanish_message_passes_through_unchanged(self):
+        message = "Selecciona una máquina primero."
+        self.assertEqual(humanize_error_message(message), message)
+        self.assertEqual(humanize_error_message(""), "")
 
 
 if __name__ == "__main__":

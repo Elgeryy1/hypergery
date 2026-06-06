@@ -40,6 +40,7 @@ from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
 from ..config import CONFIG_FIELDS, HyperGeryConfig, config_path, default_config_values, effective_config
 from ..registry import RegistryClient
 from ..templates import normalize_template_id
+from .humanize import humanize_vm_status
 from .lab_helpers import build_lab_preview
 from .styles import details_block
 
@@ -1064,7 +1065,7 @@ class LiveMigrationDialog(QDialog):
         name = QLabel(self.vm.name)
         name.setObjectName("sectionTitle")
         running = "running" in (self.vm.state or "").lower()
-        state_chip = QLabel(self.vm.state.upper() if self.vm.state else "UNKNOWN")
+        state_chip = QLabel(humanize_vm_status(self.vm.state, "table"))
         state_chip.setObjectName("statusChipBad" if running else "statusChipOk")
         must_off = QLabel("Debe estar apagada")
         must_off.setObjectName("statusChipWarn")
@@ -1308,7 +1309,7 @@ class LiveMigrationDialog(QDialog):
         for host in hosts:
             host_id = str(host.get("host_id") or "")
             status = str(host.get("status") or "offline")
-            label = f"{host_id} ({status})"
+            label = f"{host_id} ({'en línea' if status == 'online' else 'sin conexión'})"
             if host.get("hostname"):
                 label += f" - {host.get('hostname')}"
             self.target_host.addItem(label, host_id)
@@ -1463,12 +1464,14 @@ class LiveMigrationDialog(QDialog):
     def _format_hosts(self, hosts: list[dict]) -> str:
         lines = ["Equipos remotos:"]
         for host in hosts:
-            active = ", ".join(host.get("active_vms") or []) or "none"
+            active = ", ".join(host.get("active_vms") or []) or "ninguna"
+            status = "en línea" if str(host.get("status")) == "online" else "sin conexión"
             lines.append(
-                f"- {host.get('host_id')} status={host.get('status')} last_seen={host.get('last_seen')} "
-                f"ram={host.get('ram_free_mib')}/{host.get('ram_total_mib')} MiB "
-                f"disk_free={host.get('disk_free_mib')} MiB "
-                f"kvm={host.get('kvm_ok')} libvirt={host.get('libvirt_ok')} active_vms={active}"
+                f"- {host.get('host_id')} · {status} · última señal {host.get('last_seen')} · "
+                f"RAM libre {host.get('ram_free_mib')}/{host.get('ram_total_mib')} MiB · "
+                f"disco libre {host.get('disk_free_mib')} MiB · "
+                f"KVM {'sí' if host.get('kvm_ok') else 'NO'} · libvirt {'sí' if host.get('libvirt_ok') else 'NO'} · "
+                f"máquinas activas: {active}"
             )
         return "\n".join(lines)
 
