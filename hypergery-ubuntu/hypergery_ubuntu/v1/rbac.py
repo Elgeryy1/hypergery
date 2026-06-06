@@ -134,8 +134,11 @@ class UserStore:
             raise HyperGeryError(f"Cannot read users file {self.path}: {exc}") from exc
 
     def _write(self, data: dict[str, dict[str, Any]]) -> None:
+        # Atomic write so a concurrent reader never sees a partial file.
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp_path.replace(self.path)
 
     def add_user(self, user: User) -> User:
         data = self._read()
