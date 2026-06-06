@@ -2,12 +2,15 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v0.7.0-blue)
+![Version](https://img.shields.io/badge/main-v0.7.0-blue)
+![Develop](https://img.shields.io/badge/develop-v0.9%2Fv1.0--dev-purple)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 HyperGery is a real desktop virtual machine manager for Ubuntu, functionally inspired by VirtualBox workflows but using KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
+
+**Branch status**: `main` holds the latest stable release, **v0.7.0**. `develop` contains **v0.8 (closed)** plus the **v0.9/v1.0 service layer** ("functional raw" — implemented, tested, and validated on real hardware, pending the two-physical-host smoke and a release decision). See [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) for the v1 quick start.
 
 HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
 
@@ -127,7 +130,7 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - Remote Hosts also shows Hub URL, Hub status, last check, online host count, VM record count, and NAS staging writability.
 - **Live Migration** dialog lists real online target hosts, blocks offline/unready targets, runs local preflight, creates the source package in NAS staging, queues `import_vm_package` on the target host, and records migration status for polling.
 - v0.6.0 CLI: hub, registry compatibility alias, agent, host, doctor, and migrate commands.
-- Real two-host smoke validated `hg-source` -> `hg-target` through Hub `http://192.168.1.44:8765`, NAS package `hg-v06-2host-source-f67154f7803b`, source preservation, target UUID/MAC regeneration, target boot to `running`, target cleanup, and retained NAS package.
+- Real two-host smoke validated `hg-source` -> `hg-target` (historical v0.6 smoke; the Hub ran at `http://192.168.1.44:8765` at the time — the current reference Hub is the NAS at `http://192.168.1.150:8765`), NAS package `hg-v06-2host-source-f67154f7803b`, source preservation, target UUID/MAC regeneration, target boot to `running`, target cleanup, and retained NAS package.
 
 v0.6.0 must not delete the source VM or original disks. Running VM copy is blocked unless HyperGery can use a real safe libvirt/QEMU strategy; otherwise users must choose paused/offline NAS Clone Migration.
 
@@ -160,7 +163,7 @@ python -m hypergery_ubuntu.cli migrate status --migration-id <migration_id>
 
 See [docs/NAS_LIVE_MIGRATION.md](docs/NAS_LIVE_MIGRATION.md) for the package layout and safety model.
 
-### Remote Cluster Workflows (v0.8, in development)
+### Remote Cluster Workflows (v0.8, closed on develop)
 
 - **Remote VM Power Control**: Start / ACPI Shutdown / Force Off for VMs on other hosts, flowing App → Hub → target Agent → libvirt. Double allowlist (Hub and Agent); Force Off always asks for confirmation. No remote delete, no remote shell, no remote console.
 - **Remote VM Details**: Remote Hosts → View VMs shows per-VM details from the Hub inventory (disks, ISOs, display, MACs, networks, last update) with a staleness warning.
@@ -175,13 +178,26 @@ python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --dry-r
 python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --confirm
 ```
 
+### v0.9 / v1.0 service layer (develop, unreleased)
+
+On top of the closed v0.8 base, `develop` adds the `hypergery_ubuntu/v1/` service layer — everything dry-run-first, injectable, and fully tested. See [CHANGELOG.md](CHANGELOG.md), [ARCHITECTURE_V1.md](ARCHITECTURE_V1.md), [V09_REPORT.md](V09_REPORT.md), [V10_REPORT.md](V10_REPORT.md), and [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md).
+
+- **Core (v0.9)**: structured JSONL logging with operation ids, stable error hierarchy with machine codes, central typed `V1Settings`, unified host registry (local + Hub + loopback), real telemetry with alerts, labs workspace v0.9 fields and validation, VM provider abstraction (Local/Agent/Simulated).
+- **NAS commit/restore**: checksum-verified lab packages, atomic staging, dry-run by default, hash-validated restore that never overwrites.
+- **Auto-Boost orchestrator**: explainable placement plans (battery tiers, RAM headroom, VM weights, host roles); never executes by itself.
+- **Battery manager**: real battery (sysfs/psutil), configurable tiers 50/30/20/10, modes from `disabled` to `auto_execute_safe` (only data-safe actions ever auto-execute).
+- **Teleport engine**: `dry_run`, `local_loopback` (validated E2E on real KVM), `suspend_copy_start` (suspend → package → Hub → import → start, resume-on-failure rollback), and **`save_restore`** — state-preserving teleport: the VM's RAM/CPU state is saved (`virsh save`), shipped, and restored so the VM **continues where it left off** instead of rebooting. Validated on real KVM with safe local resume if shipping fails.
+- **Per-lab network manager, local RBAC (4 roles, audit log), external node connector.**
+- **Android-ready local API v1**: uniform ok/data/error envelope, 15 GET + 3 POST endpoints, confirm-guarded teleport start, loopback-only by default (`--allow-remote` required otherwise). See [docs/API_V1.md](docs/API_V1.md).
+- **CLI `v1` group** for every workflow and a **Control Center** UI page (8 tabs over real services, read-only/dry-run, export report).
+- Honest scope: no true live-RAM migration, no API/Hub authentication yet (planned for v1.2, see [NEXT_STEPS_V12_SECURITY.md](NEXT_STEPS_V12_SECURITY.md)); rich per-module UI screens planned for v1.1 ([NEXT_STEPS_V11.md](NEXT_STEPS_V11.md)). MemDiff is experimental.
+
 ### Not yet implemented
 
-- True live RAM migration with custom dirty-page transfer.
-- HG-MEMDIFF or any custom RAM dirty-page transfer protocol.
-- AutoBoost.
-- Android Hub.
-- IsardVDI.
+- True live RAM migration with custom dirty-page transfer (HG-MEMDIFF remains an experimental block-delta estimator, not live-RAM).
+- AutoBoost auto-execution (the orchestrator only produces explainable plans; it never executes by itself).
+- Android Hub app (the v1 API is Android-ready, but no mobile client exists yet).
+- IsardVDI (the external node connector is manual registration only).
 - SPICE integrated console.
 - Remote console (remote VM consoles are intentionally not exposed yet).
 - Remote VM delete/undefine (intentionally not supported).
@@ -314,11 +330,14 @@ System Python (no PySide6 — Qt tests are skipped cleanly):
 cd hypergery-ubuntu && python3 -m unittest discover -s tests
 ```
 
-Full suite inside the venv (all 315 tests pass including Qt offscreen tests):
+Full suite inside the venv (includes Qt offscreen tests; pytest also picks the suite up unchanged):
 
 ```bash
 cd hypergery-ubuntu && ~/.venvs/hypergery/bin/python -m unittest discover -s tests
+# or: QT_QPA_PLATFORM=offscreen ~/.venvs/hypergery/bin/python -m pytest
 ```
+
+The full suite on `develop` is green on both interpreters (the only venv skip is a hardware-dependent battery test). Exact test counts quoted in older docs (315 for v0.8; 463/474/487 in the v0.9/v1 session reports) are snapshots taken at different points of the same development session — the suite keeps growing, so always trust the live run over a quoted number.
 
 ## Safety
 
@@ -339,8 +358,12 @@ The repository `.gitignore` excludes ISOs, virtual disks, logs, local runtime fo
 - v0.5.0 — Lab Topology view, planned VM editor, ISO reuse, resource overview, CLI update/instantiate ✓
 - v0.6.0 — NAS Live Migration: registry, agents, host discovery, NAS staging, migration package export/import, UI action, CLI helpers ✓
 - v0.7.0 — Visual Refresh & UX Stabilization: PySide6/QSS UI redesign, Hub on the NAS, Hub Transfer migrations, migrations history, agent user service ✓
-- v0.8.0 — Remote cluster workflows (in development): remote VM power control via Hub→Agent ✓, remote VM details ✓, command queue view ✓, Hub staging cleanup ✓, Labs workspace with lab power actions ✓; extra Settings sections moved to a later version
-- v1.0.0 — stable classroom-ready release
+- v0.8.0 — Remote cluster workflows: remote VM power control via Hub→Agent ✓, remote VM details ✓, command queue view ✓, Hub staging cleanup ✓, Labs workspace with lab power actions ✓ (closed on develop; extra Settings sections moved to a later version)
+- v0.9.0 — Core stabilization: structured logging/errors/settings, unified host registry, telemetry + alerts, labs workspace v0.9, VM providers, NAS commit/restore ✓ (develop, unreleased)
+- v1.0.0 — Full vision, functional raw: Auto-Boost orchestrator, battery manager, teleport engine (incl. state-preserving `save_restore`), networks, RBAC, external nodes, API v1, CLI v1, Control Center UI ✓ (develop, unreleased — pending two-physical-host smoke and release decision)
+- v1.1.0 — bugfix/UX (see NEXT_STEPS_V11.md)
+- v1.2.0 — security hardening: API/Hub auth, TLS (see NEXT_STEPS_V12_SECURITY.md)
+- Stable classroom-ready release after v1.x stabilization
 
 ## License
 

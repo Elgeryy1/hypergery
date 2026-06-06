@@ -2,7 +2,7 @@
 
 HyperGery v0.6.0 uses the product label **Live Migration**, but the safe shipped implementation is NAS Clone Migration.
 
-Final release status: local NAS Clone Migration E2E passed with two logical agents on one libvirt host, and a real two-physical-host NAS Clone Migration smoke passed with `hg-source` and `hg-target` through Hub `http://192.168.1.44:8765`.
+Final release status: local NAS Clone Migration E2E passed with two logical agents on one libvirt host, and a real two-physical-host NAS Clone Migration smoke passed with `hg-source` and `hg-target` through Hub `http://192.168.1.44:8765` (historical v0.6 smoke address — the current reference Hub is the NAS at `http://192.168.1.150:8765`, see below).
 
 The source VM, source disks, source lab manifest, and source templates are not deleted or modified by migration packaging.
 
