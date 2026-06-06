@@ -61,6 +61,9 @@ dry-run), Control Center UI, y api.py — confirmados limpios.
    - Repro: teleport real; el origen queda `paused` hasta verificación.
    - Workaround: `virsh resume` o stop manual tras verificar el destino.
    - v1.1: acción guiada post-verificación en UI.
+   - NOTA: el flujo host→host está **validado en real** (segundo agente en
+     una sola máquina, import a KVM real, UUID/MAC regenerados). Solo falta
+     el smoke con dos máquinas físicas (PC de casa).
 
 5. **API sin autenticación ni TLS**
    - Severidad: media (solo si se expone fuera de la LAN de confianza).

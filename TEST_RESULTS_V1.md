@@ -58,3 +58,26 @@ across 8 new test modules:
 - `v1 network validate` validated the real `default-lab` network.
 - v0.8 regression suite untouched and green throughout (no existing test
   modified except sidebar additions for the new pages).
+
+### Single-machine REAL validation (no second physical host needed)
+
+Using a second agent on the same laptop (separate host_id + data dir,
+importing into the same live libvirt) against a local isolated Hub:
+
+- **NAS commit `--confirm` REAL** to the mounted NAS: wrote
+  `labs-commits/default-lab/<id>/` with checksums, verified, and **restored**
+  it back with hash validation. (3.7 TB free on the NAS share.)
+- **Teleport `local_loopback` REAL**: exported `ubuntu-test-v07` and imported
+  it as `loop-test-v07` into live KVM, then cleaned up. Source untouched.
+- **Teleport `suspend_copy_start` host→host REAL** (the previously
+  "blocked" flow): source (shut off) packaged → uploaded to the local Hub →
+  the second agent downloaded and imported it into **live libvirt** as
+  `tp-real-v07` with a **regenerated UUID and MAC** (verified different from
+  the source); migration status `done`; source VM left untouched; test VM,
+  second agent, local Hub, and temp dirs all cleaned up afterward.
+- This real run surfaced one improvement (teleport now supports
+  `include_iso=False` / `--no-iso`, committed) — a VM whose ISO path is gone
+  could not be teleported before.
+
+The user's three real VMs (ubuntu-hub-e2e, ubuntu-migrated, ubuntu-test-v07)
+were verified intact after every test.
