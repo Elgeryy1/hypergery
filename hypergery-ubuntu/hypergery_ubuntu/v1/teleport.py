@@ -110,6 +110,8 @@ class TeleportEngine:
                 return self._dry_run(vm_name, mode, target_host_id, operation_id, memdiff_base_state, include_iso)
             if mode == "local_loopback":
                 return self._local_loopback(vm_name, target_vm_name, staging_dir, operation_id, include_iso, include_snapshots)
+            if mode == "save_restore":
+                return self._save_restore(vm_name, target_host_id, staging_dir, operation_id)
             return self._suspend_copy_start(
                 vm_name, target_host_id, target_vm_name, staging_dir, operation_id, start_after_import,
                 include_iso, include_snapshots,
@@ -229,6 +231,110 @@ class TeleportEngine:
             "dry_run": False,
             "ok": True,
             "imported": imported,
+        }
+
+    def _save_restore(
+        self,
+        vm_name: str,
+        target_host_id: str,
+        staging_dir: str | Path | None,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """State-preserving teleport: freeze the running VM, dump its RAM+CPU
+        state, ship disk+state through the Hub, and have the target agent
+        restore it so it CONTINUES where it left off (not a reboot). The source
+        ends shut off (its state now lives on the target); nothing is deleted.
+        """
+        from ..migration import hub_transfer_staging_dir
+        from .state_migration import export_vm_state_package
+
+        if self.hub_client is None:
+            raise TeleportError("save_restore needs a Hub client to reach the target host.")
+        self._target_online(target_host_id)
+        from .state_migration import MEMSTATE_FILENAME
+
+        out_dir = Path(staging_dir).expanduser() if staging_dir else hub_transfer_staging_dir(self.backend) / "state-outgoing"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # This freezes the VM and captures its full state into the package.
+        export = export_vm_state_package(self.backend, vm_name, out_dir)
+        package_dir = export["package_dir"]
+        memstate = Path(package_dir) / MEMSTATE_FILENAME
+        migration_id = f"state-{vm_name}-{operation_id.split('-')[-1]}"
+
+        def resume_source_locally(reason: str) -> str:
+            """Bring the just-frozen source VM back to running from its saved
+            state so a shipping failure never leaves it stopped."""
+            try:
+                self.backend.restore_vm(memstate)
+                get_logger().warning(
+                    "teleport",
+                    f"save_restore shipping failed for {vm_name}; resumed it locally from saved state",
+                    vm_id=vm_name,
+                    operation_id=operation_id,
+                    details={"reason": reason},
+                )
+                return "resumed locally (continues where it was)"
+            except Exception as resume_exc:
+                get_logger().error(
+                    "teleport",
+                    f"save_restore shipping failed AND local resume failed for {vm_name}",
+                    vm_id=vm_name,
+                    operation_id=operation_id,
+                    details={"resume_error": str(resume_exc)},
+                )
+                return (
+                    f"left shut off with its state preserved in {package_dir} "
+                    f"(automatic resume failed: {resume_exc}; restore it with: virsh restore {memstate})"
+                )
+
+        # Reading the saved state to upload it requires the invoking user to
+        # be able to read the libvirt state file. On qemu:///system the file is
+        # root-owned, so detect that early and resume the VM instead of failing
+        # mid-upload.
+        try:
+            with memstate.open("rb"):
+                pass
+        except OSError as exc:
+            recovery = resume_source_locally("state file not readable for transfer")
+            raise TeleportError(
+                f"save_restore cannot ship {vm_name}: its libvirt saved-state file is not readable by "
+                f"this user ({exc}). Cross-host state migration needs read access to the state file "
+                "(run libvirt as the session user, or use suspend_copy_start). Source VM " + recovery + "."
+            ) from exc
+
+        try:
+            self.hub_client.upload_package(migration_id, package_dir)
+            command = self.hub_client.create_command(
+                target_host_id, "restore_vm_state_package", {"migration_id": migration_id}
+            )
+        except Exception as exc:
+            recovery = resume_source_locally(str(exc))
+            raise TeleportError(
+                f"save_restore failed while shipping {vm_name}: {exc}. Source VM " + recovery + "."
+            ) from exc
+        get_logger().info(
+            "teleport",
+            f"save_restore queued: {vm_name} -> {target_host_id} (state preserved)",
+            vm_id=vm_name,
+            host=self.source_host_id,
+            operation_id=operation_id,
+            details={"migration_id": migration_id, "command_id": command.get("command_id", "")},
+        )
+        return {
+            "operation_id": operation_id,
+            "mode": "save_restore",
+            "vm_name": vm_name,
+            "target_host_id": target_host_id,
+            "migration_id": migration_id,
+            "command_id": str(command.get("command_id") or ""),
+            "state_preserved": True,
+            "dry_run": False,
+            "ok": True,
+            "note": (
+                "Running state captured and shipped; the target agent will RESTORE the VM so it "
+                "continues from where it was (not a reboot). The source VM is shut off with its "
+                "state already transferred; do not start it on the source after the target restores."
+            ),
         }
 
     def _suspend_copy_start(

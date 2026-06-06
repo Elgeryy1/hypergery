@@ -93,6 +93,13 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     teleport_loop.add_argument("--staging-dir", required=True)
     teleport_loop.add_argument("--target-vm-name", default="")
     teleport_loop.add_argument("--no-iso", action="store_true", help="Do not require/transfer the attached ISO.")
+    teleport_state = teleport_sub.add_parser(
+        "save-restore",
+        help="State-preserving teleport: freeze a RUNNING VM and continue it on the target (not a reboot).",
+    )
+    teleport_state.add_argument("--vm", required=True)
+    teleport_state.add_argument("--target", required=True)
+    teleport_state.add_argument("--staging-dir", default="")
 
     network = v1_sub.add_parser("network", help="Lab network validation.")
     network_sub = network.add_subparsers(dest="network_command", required=True)
@@ -210,6 +217,15 @@ def v1_action(args: argparse.Namespace) -> int:
                     staging_dir=args.staging_dir,
                     target_vm_name=args.target_vm_name,
                     include_iso=not args.no_iso,
+                )
+            )
+        if args.teleport_command == "save-restore":
+            return _print_json(
+                engine.teleport_vm(
+                    args.vm,
+                    mode="save_restore",
+                    target_host_id=args.target,
+                    staging_dir=args.staging_dir or None,
                 )
             )
     if args.v1_command == "network" and args.network_command == "validate":

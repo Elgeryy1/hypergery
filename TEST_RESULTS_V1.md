@@ -90,3 +90,27 @@ importing into the same live libvirt) against a local isolated Hub:
 
 The user's three real VMs (ubuntu-hub-e2e, ubuntu-migrated, ubuntu-test-v07)
 were verified intact after every test.
+
+### State-preserving teleport (save_restore) — REAL validation
+
+A new `save_restore` teleport mode was added for the battery-offload use case
+(move a *working* VM to another host **without losing its state**). Validated
+on real KVM on this machine:
+
+- `virsh save` → `virsh restore` continues a running VM from its exact RAM/CPU
+  state (not a reboot) — confirmed standalone.
+- `export_vm_state_package` / `import_vm_state_package`: a running throwaway VM
+  was frozen, packaged (disk + 2.4 MiB RAM state), and **restored on a separate
+  data dir** where it **continued running** from the saved state — confirmed
+  real, identity (name/UUID) preserved.
+- Safety: if shipping the state fails after the freeze (e.g. the libvirt
+  saved-state file is root-owned on qemu:///system and not readable for
+  upload), the engine **resumes the VM locally** so it is never left stopped,
+  and returns a clear actionable error — confirmed real (VM went back to
+  `running`). Nothing lost.
+
+Honest limitation: cross-host shipping needs the source to read the libvirt
+state file (qemu:///session, shared storage, or an ACL grant on
+qemu:///system). The mechanism and the safe recovery are validated; the
+two-physical-host shipping over a system-libvirt setup needs that one
+permission. 16 new tests (state_migration + agent restore command).

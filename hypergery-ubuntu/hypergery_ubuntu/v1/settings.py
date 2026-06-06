@@ -9,7 +9,7 @@ from .errors import HyperGeryError
 
 BATTERY_MODES = ("disabled", "recommend_only", "auto_prepare", "auto_execute_safe")
 LOG_LEVELS = ("debug", "info", "warning", "error")
-TELEPORT_MODES = ("dry_run", "local_loopback", "suspend_copy_start", "experimental_memdiff")
+TELEPORT_MODES = ("dry_run", "local_loopback", "suspend_copy_start", "save_restore", "experimental_memdiff")
 
 ENV_PREFIX = "HYPERGERY_V1_"
 

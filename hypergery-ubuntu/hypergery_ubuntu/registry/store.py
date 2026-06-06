@@ -23,6 +23,9 @@ ALLOWED_COMMAND_TYPES = {
     "vm_start",
     "vm_shutdown",
     "vm_force_off",
+    # v1 state-preserving teleport: the target restores a VM from its saved
+    # RAM+CPU state (continues, not reboot). Still no destructive ops.
+    "restore_vm_state_package",
 }
 
 MIGRATION_STATUSES = {

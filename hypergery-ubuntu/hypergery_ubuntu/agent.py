@@ -346,6 +346,34 @@ class HyperGeryAgent:
                     result["hub_package_delete_error"] = str(exc)
             report("done", result["target_vm_name"], result)
             return "done", result
+        if command_type == "restore_vm_state_package":
+            from .migration import hub_transfer_staging_dir
+            from .v1.state_migration import import_vm_state_package
+
+            migration_id = str(payload.get("migration_id") or "")
+            if not migration_id:
+                raise HyperGeryError("restore_vm_state_package requires a migration_id.")
+            downloaded_dir = hub_transfer_staging_dir(self.backend) / "incoming-state" / migration_id
+            self.client.download_package(migration_id, downloaded_dir)
+            try:
+                result = import_vm_state_package(
+                    self.backend,
+                    downloaded_dir,
+                    target_lab_id=str(payload.get("target_lab_id") or ""),
+                )
+                try:
+                    self.client.delete_package(migration_id)
+                    result["hub_package_deleted"] = True
+                except Exception as exc:
+                    result["hub_package_deleted"] = False
+                    result["hub_package_delete_error"] = str(exc)
+            finally:
+                shutil.rmtree(downloaded_dir, ignore_errors=True)
+            try:
+                self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
+            except Exception:
+                pass
+            return "done", result
         if command_type == "migration_status":
             from .migration import list_migration_packages, validate_vm_package
 

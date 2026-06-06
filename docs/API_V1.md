@@ -89,3 +89,33 @@ Error codes: `HOST_OFFLINE` (503), `PERMISSION_DENIED` (403),
 - The API never returns credentials and stores none.
 - A missing dependency (no NAS configured, no local backend) returns a clear
   `HYPERGERY_ERROR` instead of a stack trace.
+
+## State-preserving teleport (save_restore)
+
+For the battery-offload use case ("a VM is *doing* something, I'm running out
+of battery, move it to another host **without losing its state**"), there is a
+`save_restore` teleport mode:
+
+```bash
+python -m hypergery_ubuntu.cli v1 teleport save-restore --vm <vm> --target <host_id>
+```
+
+It freezes the running VM, dumps its full RAM+CPU state (`virsh save`), ships
+disk + state through the Hub, and the target agent **restores** it so it
+**continues exactly where it left off** — not a reboot. The VM is offline only
+during the transfer (not zero-downtime live migration), but its state is
+preserved (open apps, in-progress work, RAM).
+
+Identity (name + UUID) is kept, because that is literally the same VM
+continuing elsewhere; the target host must therefore not already define a VM
+with that name.
+
+Requirement / limitation: shipping the state requires the source process to be
+able to **read the libvirt saved-state file**. On `qemu:///system` that file is
+root-owned, so on a typical system-libvirt setup cross-host `save_restore`
+needs the source to run libvirt as the session user (or an ACL/privilege grant
+on the state file). When the file is not readable, the engine **detects it,
+resumes the VM locally** (so it is never left stopped), and returns a clear
+error — nothing is lost. The save→restore mechanism itself is validated on real
+KVM (a running VM restored on a separate data dir continued from its saved
+state). For shared-storage or qemu:///session setups it works directly.
