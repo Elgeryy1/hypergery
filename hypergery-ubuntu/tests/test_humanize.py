@@ -7,7 +7,11 @@ import unittest
 
 from hypergery_ubuntu.ui_qt.humanize import (
     V1_TAB_TITLES,
+    humanize_activity_log,
+    humanize_command_message,
     humanize_command_status,
+    humanize_command_type,
+    humanize_command_value,
     humanize_error,
     humanize_error_message,
     humanize_lab_action,
@@ -292,6 +296,146 @@ class HumanizeErrorMessageTest(unittest.TestCase):
         message = "Selecciona una máquina primero."
         self.assertEqual(humanize_error_message(message), message)
         self.assertEqual(humanize_error_message(""), "")
+
+
+class HumanizeCommandTypeTest(unittest.TestCase):
+    def test_known_command_types_in_spanish(self):
+        self.assertEqual(humanize_command_type("vm_start"), "Encender máquina")
+        self.assertEqual(humanize_command_type("vm_shutdown"), "Apagar máquina")
+        self.assertEqual(humanize_command_type("vm_force_off"), "Apagado forzado")
+        self.assertEqual(humanize_command_type("import_vm_package"), "Importar máquina")
+        self.assertEqual(humanize_command_type("receive_vm_package"), "Recibir máquina")
+        self.assertEqual(humanize_command_type("ping"), "Comprobar equipo")
+        self.assertEqual(humanize_command_type("migration_status"), "Estado del traslado")
+        self.assertEqual(humanize_command_type("restore_vm_state_package"), "Reanudar máquina trasladada")
+
+    def test_unknown_type_passes_through(self):
+        # Los command_type internos nunca se inventan ni se modifican.
+        self.assertEqual(humanize_command_type("weird_command"), "weird_command")
+        self.assertEqual(humanize_command_type(""), "")
+        self.assertEqual(humanize_command_type(None), "")
+
+
+class HumanizeCommandMessageTest(unittest.TestCase):
+    def test_executed_message_with_states(self):
+        human = humanize_command_message("start executed on ubuntu (shut off -> running).")
+        self.assertEqual(human, "Encendido ejecutado en ubuntu (antes apagada, ahora encendida)")
+
+    def test_executed_message_other_actions(self):
+        self.assertEqual(
+            humanize_command_message("shutdown executed on web-01 (running -> shut off)."),
+            "Apagado ejecutado en web-01 (antes encendida, ahora apagada)",
+        )
+        self.assertTrue(
+            humanize_command_message("force off executed on web-01 (running -> shut off).").startswith(
+                "Apagado forzado ejecutado en web-01"
+            )
+        )
+
+    def test_backend_failed_to_start(self):
+        human = humanize_command_message("Backend failed to start ubuntu: boom")
+        self.assertIn("No se pudo encender la máquina ubuntu", human)
+        self.assertIn("boom", human)
+
+    def test_cannot_action_due_to_state(self):
+        human = humanize_command_message(
+            "Cannot start ubuntu: VM state is 'running'. Allowed states: shut off, shutoff."
+        )
+        self.assertEqual(human, "No se puede encender la máquina ubuntu: ahora mismo está encendida")
+
+    def test_target_vm_already_exists(self):
+        self.assertEqual(
+            humanize_command_message("Target VM already exists: ubuntu-migrated"),
+            "La máquina de destino ya existe: ubuntu-migrated",
+        )
+        self.assertEqual(
+            humanize_command_message("Target VM name already exists locally: ubuntu-migrated"),
+            "La máquina de destino ya existe en ese equipo: ubuntu-migrated",
+        )
+
+    def test_unknown_message_passes_through(self):
+        self.assertEqual(humanize_command_message("hola"), "hola")
+        self.assertEqual(humanize_command_message(""), "")
+
+
+class HumanizeCommandValueTest(unittest.TestCase):
+    def test_dict_with_message_is_translated(self):
+        value = {
+            "vm_name": "ubuntu",
+            "message": "start executed on ubuntu (shut off -> running).",
+        }
+        self.assertIn("Encendido ejecutado en ubuntu", humanize_command_value(value))
+
+    def test_dict_with_error_is_translated(self):
+        value = {"error": "Backend failed to start ubuntu: boom"}
+        self.assertIn("No se pudo encender la máquina ubuntu", humanize_command_value(value))
+
+    def test_ping_result(self):
+        self.assertEqual(
+            humanize_command_value({"pong": True, "host_id": "gerard-MS-7E26"}),
+            "El equipo gerard-MS-7E26 responde",
+        )
+
+    def test_payload_fields_without_json_braces(self):
+        text = humanize_command_value({"vm_name": "ubuntu"})
+        self.assertEqual(text, "máquina: ubuntu")
+        self.assertNotIn("{", text)
+
+    def test_opaque_dict_points_to_technical_detail(self):
+        text = humanize_command_value({"items": [1, 2, 3]})
+        self.assertIn("Detalle técnico", text)
+        self.assertNotIn("{", text)
+
+
+class HumanizeActivityLogTest(unittest.TestCase):
+    QEMU_IMG_BLOCK = (
+        "2026-06-07 20:21:59,887 INFO run: qemu-img info --output=json /tmp/ubuntu.qcow2\n"
+        "2026-06-07 20:21:59,890 INFO stdout: {\n"
+        '    "virtual-size": 42949672960,\n'
+        '    "filename": "/tmp/ubuntu.qcow2",\n'
+        '    "format": "qcow2",\n'
+        '    "actual-size": 5793210368,\n'
+        '    "dirty-flag": false\n'
+        "}\n"
+        "2026-06-07 20:22:00,100 INFO run: virsh --connect qemu:///system domstate ubuntu"
+    )
+
+    def test_qemu_img_json_collapses_to_spanish_summary(self):
+        human = humanize_activity_log(self.QEMU_IMG_BLOCK)
+        self.assertNotIn("dirty-flag", human)
+        self.assertIn("sin cambios pendientes", human)
+        self.assertIn("ubuntu.qcow2", human)
+        self.assertIn("qcow2", human)
+        # Las líneas normales no se tocan.
+        self.assertIn("run: qemu-img info", human)
+        self.assertIn("run: virsh --connect", human)
+
+    def test_dirty_disk_is_flagged(self):
+        text = '2026-06-07 10:00:00,000 INFO stdout: {"filename": "/x/a.qcow2", "format": "qcow2", "dirty-flag": true}'
+        human = humanize_activity_log(text)
+        self.assertIn("cambios pendientes: sí", human)
+
+    def test_xml_dump_collapses_to_one_line(self):
+        text = (
+            "2026-06-07 10:00:00,000 INFO stdout: <domain type='kvm'>\n"
+            "  <name>ubuntu</name>\n"
+            "</domain>"
+        )
+        human = humanize_activity_log(text)
+        self.assertNotIn("<domain", human)
+        self.assertIn("Configuración de «ubuntu» leída (XML)", human)
+
+    def test_plain_lines_are_untouched(self):
+        text = (
+            "2026-06-07 10:00:00,000 INFO run: virsh --connect qemu:///system domstate ubuntu\n"
+            "2026-06-07 10:00:00,010 INFO stdout: shut off\n"
+            "2026-06-07 10:00:00,020 INFO Creado laboratorio default-lab"
+        )
+        self.assertEqual(humanize_activity_log(text), text)
+
+    def test_empty_log(self):
+        self.assertEqual(humanize_activity_log(""), "")
+        self.assertEqual(humanize_activity_log(None), "")
 
 
 if __name__ == "__main__":

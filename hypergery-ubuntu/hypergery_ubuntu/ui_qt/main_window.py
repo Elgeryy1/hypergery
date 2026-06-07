@@ -63,6 +63,7 @@ from .dialogs import (
     SettingsDialog,
     SnapshotDialog,
     VMWizard,
+    confirm,
 )
 from .console import VmConsoleWindow
 from .console_helpers import should_autoconnect_console
@@ -76,7 +77,10 @@ from .lab_helpers import (
 )
 from .humanize import (
     V1_TAB_TITLES,
+    humanize_activity_log,
     humanize_command_status,
+    humanize_command_type,
+    humanize_command_value,
     humanize_error,
     humanize_error_message,
     humanize_lab_action,
@@ -970,14 +974,12 @@ class MainWindow(QMainWindow):
         host_id = str(getattr(dialog, "host_id", ""))
         vm_name = str(vm.get("vm_name") or vm.get("name") or "")
         if action == "force_off":
-            answer = QMessageBox.question(
+            if not confirm(
                 dialog,
                 "Apagar a la fuerza",
                 f"Apagar a la fuerza puede dañar datos dentro de {vm_name}. ¿Continuar?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+                danger=True,
+            ):
                 return
         url = self.registry_url()
 
@@ -1760,7 +1762,9 @@ class MainWindow(QMainWindow):
         migration_id = str(last.get("migration_id") or "?")
         status = str(last.get("status") or "unknown")
         vm_name = str(last.get("vm_name") or last.get("source_vm_name") or "?")
-        self.dash_migration_label.setText(f"{migration_id}\n{vm_name} · estado: {status}")
+        self.dash_migration_label.setText(
+            f"{migration_id}\n{vm_name} · estado: {humanize_command_status(status, 'detail').lower()}"
+        )
 
     # ------------------------------------------------------------------ #
     # Labs workspace (v0.8)                                               #
@@ -1867,8 +1871,10 @@ class MainWindow(QMainWindow):
         detail_layout.addLayout(lab_actions)
 
         self.lab_ws_feedback = QLabel(
-            "Start Lab starts every shut off VM in the lab (local backend or Hub → Agent for remote VMs). "
-            "Shutdown Lab sends ACPI shutdown to every running VM. There is no lab-wide Force Off."
+            "«Encender laboratorio» inicia todas las máquinas apagadas del laboratorio, "
+            "tanto locales como remotas. «Apagar laboratorio» envía un apagado suave ACPI "
+            "a las máquinas encendidas. No existe apagado a la fuerza de todo el laboratorio "
+            "para evitar pérdidas de datos."
         )
         self.lab_ws_feedback.setObjectName("calloutInfo")
         self.lab_ws_feedback.setWordWrap(True)
@@ -2117,14 +2123,11 @@ class MainWindow(QMainWindow):
         else:
             question = f"Se pedirá el apagado suave de {len(targets)} máquina(s) encendida(s)."
         names = ", ".join(vm["name"] for vm in targets[:8]) + ("…" if len(targets) > 8 else "")
-        answer = QMessageBox.question(
+        if not confirm(
             self,
             "Encender laboratorio" if action == "start" else "Apagar laboratorio",
             f"{question}\n\nMáquinas: {names}\n\n¿Continuar?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
+        ):
             return
         self._execute_lab_power(str(lab.get("lab_id", "")), action, targets)
 
@@ -2184,7 +2187,9 @@ class MainWindow(QMainWindow):
             busy=False,
         )
 
-    MIGRATIONS_TABLE_COLUMNS = ("ID", "Máquina origen", "Máquina destino", "Origen → Destino", "Método", "Estado", "Actualizado")
+    # Cabeceras cortas para que no se trunquen ("áquina orige…"). Origen y
+    # Destino son nombres de máquina; Ruta es el trayecto entre equipos.
+    MIGRATIONS_TABLE_COLUMNS = ("ID", "Origen", "Destino", "Ruta", "Método", "Estado", "Actualizado")
 
     def _build_migrations_page(self) -> QWidget:
         page = QWidget()
@@ -2339,7 +2344,7 @@ class MainWindow(QMainWindow):
         oldest = max((float(p.get("age_hours") or 0) for p in packages), default=0.0)
         self.staging_stats_label.setText(
             f"Carpeta temporal: {result.get('staging_dir', '')} · "
-            f"{len(packages)} package(s) · {total} · {orphans} orphan(s) · "
+            f"{len(packages)} paquete(s) · {total} · {orphans} huérfano(s) · "
             f"el más antiguo {oldest:.1f}h"
         )
         if not packages:
@@ -2350,7 +2355,7 @@ class MainWindow(QMainWindow):
             status = package.get("migration_status") or "sin registro de traslado (huérfano)"
             lines.append(
                 f"{package.get('migration_id', '')} · {self._format_size(package.get('size_bytes') or 0)} · "
-                f"{package.get('file_count', 0)} file(s) · {package.get('age_hours', 0)}h · {status}"
+                f"{package.get('file_count', 0)} archivo(s) · {package.get('age_hours', 0)}h · {status}"
             )
         self.staging_detail.setPlainText("\n".join(lines))
 
@@ -2380,7 +2385,7 @@ class MainWindow(QMainWindow):
 
     def confirm_hub_cleanup(self) -> None:
         hours = int(self.staging_hours_spin.value())
-        answer = QMessageBox.warning(
+        if not confirm(
             self,
             "Limpiar archivos temporales del Hub",
             (
@@ -2389,10 +2394,10 @@ class MainWindow(QMainWindow):
                 "Las máquinas y los discos importados no se tocan nunca.\n\n"
                 "Los paquetes de traslados en curso siempre se conservan."
             ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
+            yes_text="Sí, borrar",
+            no_text="Cancelar",
+            danger=True,
+        ):
             return
         self._run_hub_cleanup(dry_run=False)
 
@@ -2484,6 +2489,11 @@ class MainWindow(QMainWindow):
                     status_colors = {"done": "#22C55E", "failed": "#EF4444"}
                     item.setForeground(QColor(status_colors.get(status, "#F59E0B")))
                 self.migrations_table.setItem(row, column, item)
+        # Ajusta el ancho al contenido para que estados como COMPLETADA se
+        # vean enteros (la última columna sigue estirándose), sin dejar que
+        # los ID acaparen todo el ancho.
+        self.migrations_table.resizeColumnsToContents()
+        self.migrations_table.setColumnWidth(0, min(self.migrations_table.columnWidth(0), 230))
         if migrations:
             done = sum(1 for record in migrations if record.get("status") == "done")
             failed = sum(1 for record in migrations if record.get("status") == "failed")
@@ -2655,10 +2665,9 @@ class MainWindow(QMainWindow):
     def _summarize_command_value(value: Any, limit: int = 80) -> str:
         if not value:
             return "—"
-        if isinstance(value, dict):
-            text = str(value.get("message") or value.get("error") or json.dumps(value, sort_keys=True))
-        else:
-            text = str(value)
+        # Resumen en español, sin JSON crudo; el JSON completo sigue
+        # disponible con «Copiar resultado».
+        text = humanize_command_value(value)
         return text[: limit - 1] + "…" if len(text) > limit else text
 
     def _command_age_text(self, command: dict[str, Any]) -> str:
@@ -2682,7 +2691,7 @@ class MainWindow(QMainWindow):
             cells = (
                 str(command.get("command_id") or ""),
                 str(command.get("target_host_id") or ""),
-                str(command.get("command_type") or ""),
+                humanize_command_type(command.get("command_type")),
                 humanize_command_status(status),
                 str(command.get("created_at") or ""),
                 self._command_age_text(command),
@@ -2694,6 +2703,10 @@ class MainWindow(QMainWindow):
                 if column == 3:
                     item.setForeground(QColor(self.COMMAND_STATUS_COLORS.get(status, "#F59E0B")))
                 self.commands_table.setItem(row, column, item)
+        # Evita estados truncados (COMPLETADA…) ajustando al contenido,
+        # sin dejar que los ID (UUID) acaparen todo el ancho.
+        self.commands_table.resizeColumnsToContents()
+        self.commands_table.setColumnWidth(0, min(self.commands_table.columnWidth(0), 230))
         if self.commands_history:
             counts = {"pending": 0, "running": 0, "done": 0, "failed": 0}
             for command in self.commands_history:
@@ -3111,7 +3124,7 @@ class MainWindow(QMainWindow):
         self.hub_latency_label.setText(f"{latency_ms} ms" if latency_ms is not None else "—")
         self.remote_status_label.setText(f"{len(hosts)} equipo(s)")
         if hosts:
-            self.remote_detail.setPlainText(details_block(("Hub", self.registry_url()), ("Status", "reachable")))
+            self.remote_detail.setPlainText(details_block(("Hub", self.registry_url()), ("Estado", "accesible")))
         else:
             self.remote_detail.setPlainText(
                 "El Hub responde pero no tiene equipos. Arranca el agente de HyperGery en cada equipo."
@@ -3122,10 +3135,11 @@ class MainWindow(QMainWindow):
     def render_hub_status(self, hosts: list[dict[str, Any]], *, reachable: bool, vm_count: int | None = None) -> None:
         config = effective_config()
         nas_path = os.path.expanduser(config["nas_staging_path"].value)
-        nas_label = f"{nas_path} writable={os.path.isdir(nas_path) and os.access(nas_path, os.W_OK)}"
-        vm_count_label = "unknown"
+        nas_writable = os.path.isdir(nas_path) and os.access(nas_path, os.W_OK)
+        nas_label = "Listo para migraciones" if nas_writable else "No escribible — revisa el montaje"
+        vm_count_label = "desconocido"
         if reachable:
-            vm_count_label = str(vm_count) if vm_count is not None else "unavailable"
+            vm_count_label = str(vm_count) if vm_count is not None else "no disponible"
         self.hub_url_label.setText(self.registry_url())
         self.hub_status_label.setText("EN LÍNEA" if reachable else "SIN CONEXIÓN")
         self.hub_status_label.setObjectName("statusChipOk" if reachable else "statusChipBad")
@@ -3138,7 +3152,7 @@ class MainWindow(QMainWindow):
         self.hub_hosts_online_label.setText(str(sum(1 for host in hosts if host.get("status") == "online")))
         self.hub_vm_count_label.setText(vm_count_label)
         self.hub_nas_label.setText(nas_label)
-        nas_writable = os.path.isdir(nas_path) and os.access(nas_path, os.W_OK)
+        self.hub_nas_label.setToolTip(nas_path)
         self.hub_chip.setText(f"Hub: {'en línea' if reachable else 'sin conexión'}")
         self.hub_chip.setObjectName("statusChipOk" if reachable else "statusChipBad")
         self.nas_chip.setText(f"NAS: {'funciona' if nas_writable else 'no escribible'}")
@@ -3621,7 +3635,9 @@ class MainWindow(QMainWindow):
         self.render_logs(logs)
 
     def render_logs(self, logs: str) -> None:
-        self.activity_log.setPlainText(logs)
+        # Los volcados técnicos (JSON de qemu-img, XML de libvirt) se resumen
+        # en español; el detalle completo sigue en el archivo hypergery.log.
+        self.activity_log.setPlainText(humanize_activity_log(logs))
         self.activity_log.moveCursor(QTextCursor.MoveOperation.End)
 
     def _set_table_item(self, table: QTableWidget, row: int, column: int, text: str, *, status: str = "", chip: bool = False) -> None:
@@ -3781,21 +3797,20 @@ class MainWindow(QMainWindow):
         if wizard.exec() != QDialog.DialogCode.Accepted:
             return
         values = wizard.values()
-        if (
-            QMessageBox.question(
-                self,
-                "Crear máquina",
-                (
-                    f"¿Crear {values['name']}?\n\n"
-                    f"ISO: {values['iso_path']}\n"
-                    f"RAM: {values['ram_mib']} MiB\n"
-                    f"vCPUs: {values['vcpus']}\n"
-                    f"Disco: {values['disk_gb']} GiB\n"
-                    f"Red: {values['network_mode']}\n"
-                    f"Laboratorio: {values['lab_id']}"
-                ),
-            )
-            != QMessageBox.StandardButton.Yes
+        if not confirm(
+            self,
+            "Crear máquina",
+            (
+                f"¿Crear {values['name']}?\n\n"
+                f"ISO: {values['iso_path']}\n"
+                f"RAM: {values['ram_mib']} MiB\n"
+                f"vCPUs: {values['vcpus']}\n"
+                f"Disco: {values['disk_gb']} GiB\n"
+                f"Red: {values['network_mode']}\n"
+                f"Laboratorio: {values['lab_id']}"
+            ),
+            yes_text="Crear",
+            no_text="Cancelar",
         ):
             return
         self.run_operation(f"Creando {values['name']}", lambda: self.backend.create_vm(**values))
@@ -3845,14 +3860,12 @@ class MainWindow(QMainWindow):
         except HyperGeryError as exc:
             self.show_error(str(exc))
             return
-        if (
-            QMessageBox.warning(
-                self,
-                "Apagar a la fuerza",
-                f"¿Apagar {name} a la fuerza?\n\nEquivale a desenchufarla y puede corromper datos del sistema invitado.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            )
-            != QMessageBox.StandardButton.Yes
+        if not confirm(
+            self,
+            "Apagar a la fuerza",
+            f"¿Apagar {name} a la fuerza?\n\nEquivale a desenchufarla y puede corromper datos del sistema invitado.",
+            no_text="Cancelar",
+            danger=True,
         ):
             return
         self.run_operation(f"Apagando a la fuerza {name}", lambda: self.backend.force_off_vm(name))
@@ -4199,21 +4212,20 @@ class MainWindow(QMainWindow):
         if wizard.exec() != QDialog.DialogCode.Accepted:
             return
         values = wizard.values()
-        if (
-            QMessageBox.question(
-                self,
-                "Crear máquina desde plantilla",
-                (
-                    f"¿Crear {values['name']} desde la plantilla {template_id}?\n\n"
-                    f"ISO: {values['iso_path']}\n"
-                    f"RAM: {values['ram_mib']} MiB\n"
-                    f"vCPUs: {values['vcpus']}\n"
-                    f"Disco: {values['disk_gb']} GiB\n"
-                    f"Red: {values['network_mode']}\n"
-                    f"Laboratorio: {values['lab_id']}"
-                ),
-            )
-            != QMessageBox.StandardButton.Yes
+        if not confirm(
+            self,
+            "Crear máquina desde plantilla",
+            (
+                f"¿Crear {values['name']} desde la plantilla {template_id}?\n\n"
+                f"ISO: {values['iso_path']}\n"
+                f"RAM: {values['ram_mib']} MiB\n"
+                f"vCPUs: {values['vcpus']}\n"
+                f"Disco: {values['disk_gb']} GiB\n"
+                f"Red: {values['network_mode']}\n"
+                f"Laboratorio: {values['lab_id']}"
+            ),
+            yes_text="Crear",
+            no_text="Cancelar",
         ):
             return
 

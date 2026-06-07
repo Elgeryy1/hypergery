@@ -50,6 +50,43 @@ if TYPE_CHECKING:
 
 FILE_DIALOG_OPTIONS = QFileDialog.Option.DontUseNativeDialog
 
+# Qt no carga traducciones: los botones estándar saldrían en inglés
+# (Save/Cancel/OK). Aquí se ponen en español sin tocar su comportamiento.
+_STANDARD_BUTTON_TEXTS_ES = (
+    (QDialogButtonBox.StandardButton.Save, "Guardar"),
+    (QDialogButtonBox.StandardButton.Cancel, "Cancelar"),
+    (QDialogButtonBox.StandardButton.Ok, "Aceptar"),
+)
+
+
+def spanish_buttons(buttons: QDialogButtonBox) -> QDialogButtonBox:
+    """Traduce los botones estándar de un QDialogButtonBox al español."""
+    for standard, text in _STANDARD_BUTTON_TEXTS_ES:
+        button = buttons.button(standard)
+        if button is not None:
+            button.setText(text)
+    return buttons
+
+
+def spanish_wizard_buttons(wizard: QWizard) -> None:
+    """Traduce los botones de navegación de un QWizard al español."""
+    wizard.setButtonText(QWizard.WizardButton.BackButton, "< Atrás")
+    wizard.setButtonText(QWizard.WizardButton.NextButton, "Siguiente >")
+    wizard.setButtonText(QWizard.WizardButton.CancelButton, "Cancelar")
+
+
+def confirm(parent, title: str, text: str, *, yes_text: str = "Sí", no_text: str = "No", danger: bool = False) -> bool:
+    """Cuadro de confirmación con botones en español (Sí/No por defecto)."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Warning if danger else QMessageBox.Icon.Question)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    box.button(QMessageBox.StandardButton.Yes).setText(yes_text)
+    box.button(QMessageBox.StandardButton.No).setText(no_text)
+    box.setDefaultButton(QMessageBox.StandardButton.No)
+    return box.exec() == QMessageBox.StandardButton.Yes
+
 
 class AppSettingsDialog(QDialog):
     SECTIONS = ("General", "Hub", "Agente", "NAS", "Valores por defecto", "Consola", "Apariencia", "Avanzado")
@@ -149,7 +186,7 @@ class AppSettingsDialog(QDialog):
 
         reset = QPushButton("Restaurar valores")
         reset.clicked.connect(self.reset_defaults)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel))
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
         bottom = QHBoxLayout()
@@ -173,7 +210,7 @@ class AppSettingsDialog(QDialog):
         elif source == "config":
             text, name = "CONFIG", "srcChipConfig"
         else:
-            text, name = "DEFAULT", "srcChipDefault"
+            text, name = "POR DEFECTO", "srcChipDefault"
         chip = QLabel(text)
         chip.setObjectName(name)
         chip.setToolTip(source)
@@ -492,6 +529,7 @@ class VMWizard(QWizard):
         self.addPage(self.integration_page)
         self.addPage(self.review_page)
         self.setButtonText(QWizard.WizardButton.FinishButton, "Crear")
+        spanish_wizard_buttons(self)
         self.resize(760, 520)
         if defaults:
             self._apply_defaults(defaults)
@@ -549,7 +587,7 @@ class NewLabDialog(QDialog):
         self.preview_label.setWordWrap(True)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
         self.create_button = buttons.addButton("Crear", QDialogButtonBox.ButtonRole.AcceptRole)
         self.create_button.setObjectName("primaryButton")
         self.create_button.clicked.connect(self.accept)
@@ -615,7 +653,7 @@ class RenameLabDialog(QDialog):
         notice = QLabel("Solo cambia el nombre visible y la descripción. El ID del laboratorio y su red no se tocan.")
         notice.setObjectName("mutedLabel")
         notice.setWordWrap(True)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form = QFormLayout()
@@ -655,7 +693,7 @@ class DeleteLabDialog(QDialog):
         self.confirm_lab.setPlaceholderText(lab_id)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
         self.delete_button = buttons.addButton("Eliminar laboratorio", QDialogButtonBox.ButtonRole.DestructiveRole)
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setEnabled(False)
@@ -705,7 +743,7 @@ class DuplicateLabDialog(QDialog):
             self.clone_vms.setToolTip("Este laboratorio no tiene máquinas que clonar.")
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
         self.duplicate_button = buttons.addButton("Duplicar", QDialogButtonBox.ButtonRole.AcceptRole)
         self.duplicate_button.setObjectName("primaryButton")
         self.duplicate_button.clicked.connect(self.accept)
@@ -796,7 +834,7 @@ class SettingsDialog(QDialog):
         display_hint.setObjectName("mutedLabel")
         form.addRow("", display_hint)
         form.addRow("", self.error_label)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -850,7 +888,7 @@ class CloneDialog(QDialog):
         form.addRow("Origen", QLabel(source_name))
         form.addRow("Nombre del clon", self.name_edit)
         form.addRow("", self.error_label)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Clonar")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -882,7 +920,7 @@ class DeleteConfirmationDialog(QDialog):
         self.confirm_name.setPlaceholderText(vm.name)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
         self.delete_button = buttons.addButton("Eliminar máquina", QDialogButtonBox.ButtonRole.DestructiveRole)
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setEnabled(False)
@@ -1738,13 +1776,10 @@ class SnapshotDialog(QDialog):
         except HyperGeryError as exc:
             self.main_window.show_error(str(exc))
             return
-        if (
-            QMessageBox.question(
-                self,
-                "Restaurar instantánea",
-                f"¿Devolver {self.vm_name} al estado de {snapshot}?\n\nEl disco volverá al estado de esa instantánea.",
-            )
-            != QMessageBox.StandardButton.Yes
+        if not confirm(
+            self,
+            "Restaurar instantánea",
+            f"¿Devolver {self.vm_name} al estado de {snapshot}?\n\nEl disco volverá al estado de esa instantánea.",
         ):
             return
         self.main_window.run_operation(
@@ -1759,7 +1794,7 @@ class SnapshotDialog(QDialog):
         except HyperGeryError as exc:
             self.main_window.show_error(str(exc))
             return
-        if QMessageBox.question(self, "Eliminar instantánea", f"¿Eliminar la instantánea {snapshot} de {self.vm_name}?") != QMessageBox.StandardButton.Yes:
+        if not confirm(self, "Eliminar instantánea", f"¿Eliminar la instantánea {snapshot} de {self.vm_name}?"):
             return
         self.main_window.run_operation(
             f"Eliminando instantánea {snapshot}",
@@ -1819,7 +1854,7 @@ class NewVmTemplateDialog(QDialog):
 
         layout.addLayout(form)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Crear")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -1884,7 +1919,7 @@ class NewLabTemplateDialog(QDialog):
 
         layout.addLayout(form)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Crear")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -1932,7 +1967,7 @@ class DeleteVmTemplateDialog(QDialog):
         self.confirm_id.setPlaceholderText(template_id)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
         self.delete_button = buttons.addButton("Eliminar plantilla", QDialogButtonBox.ButtonRole.DestructiveRole)
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setEnabled(False)
@@ -1973,7 +2008,7 @@ class DeleteLabTemplateDialog(QDialog):
         self.confirm_id.setPlaceholderText(template_id)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
         self.delete_button = buttons.addButton("Eliminar plantilla", QDialogButtonBox.ButtonRole.DestructiveRole)
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setEnabled(False)
@@ -2043,7 +2078,7 @@ class CreateLabFromTemplateDialog(QDialog):
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
         self.create_button = buttons.addButton("Crear laboratorio", QDialogButtonBox.ButtonRole.AcceptRole)
         self.create_button.setObjectName("primaryButton")
         self.create_button.clicked.connect(self.accept)
@@ -2326,6 +2361,7 @@ class InstantiateLabTemplateWizard(QWizard):
         self.addPage(self.iso_page)
         self.addPage(self.review_page)
         self.setButtonText(QWizard.WizardButton.FinishButton, "Crear laboratorio")
+        spanish_wizard_buttons(self)
         self.resize(760, 500)
 
     def values(self) -> dict:
@@ -2376,9 +2412,9 @@ class EditVmTemplateDialog(QDialog):
             self.display.setCurrentIndex(disp_idx)
         self.notes_edit = QTextEdit(str(template.get("notes", "")))
         self.notes_edit.setMaximumHeight(80)
-        buttons = QDialogButtonBox(
+        buttons = spanish_buttons(QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
+        ))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form = QFormLayout()
@@ -2453,9 +2489,9 @@ class PlannedVmDialog(QDialog):
         self.iso_required.setChecked(bool(existing.get("iso_required", True)) if existing else True)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(
+        buttons = spanish_buttons(QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        ))
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         form = QFormLayout()
@@ -2552,9 +2588,9 @@ class EditLabTemplateDialog(QDialog):
         vm_buttons.addWidget(remove_btn)
         vm_buttons.addStretch()
 
-        buttons = QDialogButtonBox(
+        buttons = spanish_buttons(QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
+        ))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 

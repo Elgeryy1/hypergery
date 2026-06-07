@@ -246,7 +246,7 @@ class QtUiTests(unittest.TestCase):
                 "migrations": [{"migration_id": "hg-mig-1", "vm_name": "hg-src", "status": "done"}],
             })
             self.assertIn("hg-mig-1", window.dash_migration_label.text())
-            self.assertIn("done", window.dash_migration_label.text())
+            self.assertIn("completada", window.dash_migration_label.text())
             window.close()
         self.assertIsNotNone(app)
 
@@ -392,7 +392,7 @@ class QtUiTests(unittest.TestCase):
             window = MainWindow()
             window.render_hub_status([FAKE_ONLINE_HOST], reachable=True, vm_count=None)
 
-            self.assertEqual(window.hub_vm_count_label.text(), "unavailable")
+            self.assertEqual(window.hub_vm_count_label.text(), "no disponible")
             window.close()
         self.assertIsNotNone(app)
 
@@ -784,10 +784,10 @@ class QtUiTests(unittest.TestCase):
 
                 # Force Off asks for confirmation; declining queues nothing.
                 client.queue_vm_power_command.reset_mock()
-                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+                with patch("hypergery_ubuntu.ui_qt.main_window.confirm", return_value=False):
                     window.remote_vm_force_off_button.click()
                 client.queue_vm_power_command.assert_not_called()
-                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                with patch("hypergery_ubuntu.ui_qt.main_window.confirm", return_value=True):
                     window.remote_vm_force_off_button.click()
                 client.queue_vm_power_command.assert_called_once_with("gery-lenovo", "ubuntu-migrated", "force_off")
                 window._remote_power_poll_timer.stop()
@@ -1183,7 +1183,7 @@ class QtHubStagingTests(unittest.TestCase):
                 }
             )
             self.assertIn("/data/staging", window.staging_stats_label.text())
-            self.assertIn("1 orphan(s)", window.staging_stats_label.text())
+            self.assertIn("1 huérfano(s)", window.staging_stats_label.text())
             self.assertIn("mig-orphan", window.staging_detail.toPlainText())
             self.assertIn("sin registro de traslado (huérfano)", window.staging_detail.toPlainText())
             window.close()
@@ -1249,18 +1249,18 @@ class QtHubStagingTests(unittest.TestCase):
             with (
                 patch.object(window, "_run_hub_cleanup") as run_cleanup,
                 patch(
-                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.warning",
-                    return_value=QMessageBox.StandardButton.Cancel,
-                ) as warning,
+                    "hypergery_ubuntu.ui_qt.main_window.confirm",
+                    return_value=False,
+                ) as confirmation,
             ):
                 window.confirm_hub_cleanup()
-                warning.assert_called_once()
+                confirmation.assert_called_once()
                 run_cleanup.assert_not_called()
             with (
                 patch.object(window, "_run_hub_cleanup") as run_cleanup,
                 patch(
-                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.warning",
-                    return_value=QMessageBox.StandardButton.Yes,
+                    "hypergery_ubuntu.ui_qt.main_window.confirm",
+                    return_value=True,
                 ),
             ):
                 window.confirm_hub_cleanup()
@@ -1348,8 +1348,12 @@ class QtCommandQueueTests(unittest.TestCase):
             self.assertIn("1 fallidas", window.commands_status_label.text())
             statuses = {window.commands_table.item(row, 3).text() for row in range(3)}
             self.assertEqual(statuses, {"COMPLETADA", "FALLÓ", "PENDIENTE"})
+            types = [window.commands_table.item(row, 2).text() for row in range(3)]
+            self.assertIn("Encender máquina", types)
+            self.assertIn("Importar máquina", types)
+            self.assertIn("Comprobar equipo", types)
             results = [window.commands_table.item(row, 7).text() for row in range(3)]
-            self.assertTrue(any("start executed" in text for text in results))
+            self.assertTrue(any("Encendido ejecutado en vm1" in text for text in results))
             self.assertTrue(any("target offline" in text for text in results))
             window.close()
         self.assertIsNotNone(app)
@@ -1365,10 +1369,10 @@ class QtCommandQueueTests(unittest.TestCase):
             self.assertEqual(window.commands_table.item(0, 0).text(), "cmd-mig-1")
             window.commands_filter.setCurrentText("De encendido/apagado")
             self.assertEqual(window.commands_table.rowCount(), 1)
-            self.assertEqual(window.commands_table.item(0, 2).text(), "vm_start")
+            self.assertEqual(window.commands_table.item(0, 2).text(), "Encender máquina")
             window.commands_filter.setCurrentText("De traslado")
             self.assertEqual(window.commands_table.rowCount(), 1)
-            self.assertEqual(window.commands_table.item(0, 2).text(), "import_vm_package")
+            self.assertEqual(window.commands_table.item(0, 2).text(), "Importar máquina")
             window.commands_filter.setCurrentText("Todas")
             self.assertEqual(window.commands_table.rowCount(), 3)
             window.close()
@@ -1641,8 +1645,8 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             with (
                 patch.object(window, "_execute_lab_power") as execute,
                 patch(
-                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.question",
-                    return_value=QMessageBox.StandardButton.No,
+                    "hypergery_ubuntu.ui_qt.main_window.confirm",
+                    return_value=False,
                 ) as question,
             ):
                 window.start_lab()
@@ -1652,8 +1656,8 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             with (
                 patch.object(window, "_execute_lab_power") as execute,
                 patch(
-                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.question",
-                    return_value=QMessageBox.StandardButton.Yes,
+                    "hypergery_ubuntu.ui_qt.main_window.confirm",
+                    return_value=True,
                 ),
             ):
                 window.start_lab()
@@ -1674,8 +1678,8 @@ class QtLabsWorkspaceTests(unittest.TestCase):
             with (
                 patch.object(window, "_execute_lab_power") as execute,
                 patch(
-                    "hypergery_ubuntu.ui_qt.main_window.QMessageBox.question",
-                    return_value=QMessageBox.StandardButton.Yes,
+                    "hypergery_ubuntu.ui_qt.main_window.confirm",
+                    return_value=True,
                 ) as question,
             ):
                 window.shutdown_lab()

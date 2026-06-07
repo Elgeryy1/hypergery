@@ -9,6 +9,7 @@ se resume lo importante.
 from __future__ import annotations
 
 import html
+import json
 import re
 from datetime import datetime
 from typing import Any
@@ -545,3 +546,204 @@ def humanize_error_message(error_text: Any) -> str:
             "3. Vuelve a intentarlo; si sigue fallando, copia el detalle técnico."
         )
     return f"{summary}\n\n{steps}\n\nDetalle técnico:\n{text}"
+
+
+# --------------------------------------------------------------------------- #
+# Tareas remotas: tipos de orden y mensajes del agente (solo presentación;     #
+# los command_type y payloads del Hub no se tocan)                             #
+# --------------------------------------------------------------------------- #
+
+_COMMAND_TYPES_ES = {
+    "ping": "Comprobar equipo",
+    "preflight": "Comprobación previa",
+    "list_vms": "Listar máquinas",
+    "receive_vm_package": "Recibir máquina",
+    "import_vm_package": "Importar máquina",
+    "migration_status": "Estado del traslado",
+    "vm_start": "Encender máquina",
+    "vm_shutdown": "Apagar máquina",
+    "vm_force_off": "Apagado forzado",
+    "restore_vm_state_package": "Reanudar máquina trasladada",
+}
+
+
+def humanize_command_type(command_type: Any) -> str:
+    """Tipo de orden del Hub (vm_start, ping…) → texto visible en español."""
+    value = str(command_type or "").strip()
+    return _COMMAND_TYPES_ES.get(value, value)
+
+
+# "start"/"shutdown"/"force off" tal y como los escribe el agente en sus
+# mensajes (action.replace("_", " ")).
+_VM_ACTION_NOUNS_ES = {"start": "Encendido", "shutdown": "Apagado", "force off": "Apagado forzado"}
+_VM_ACTION_VERBS_ES = {"start": "encender", "shutdown": "apagar", "force off": "forzar el apagado de"}
+
+_EXECUTED_RE = re.compile(r"^(start|shutdown|force off) executed on (\S+?)(?: \(([^)]+) -> ([^)]+)\))?\.?$")
+_BACKEND_FAILED_RE = re.compile(r"^Backend failed to (start|shutdown|force off) (\S+?): ?(.*)$", re.DOTALL)
+_CANNOT_STATE_RE = re.compile(r"^Cannot (start|shutdown|force off) (\S+?): VM state is '([^']+)'\.", re.DOTALL)
+_TARGET_EXISTS_RE = re.compile(r"^Target VM (name )?already exists( locally)?:? ?(\S*)$")
+
+
+def humanize_command_message(message: Any) -> str:
+    """Mensaje/error técnico del agente → frase en español.
+
+    Si el texto no coincide con ningún patrón conocido se devuelve tal cual:
+    nunca se inventa una traducción.
+    """
+    text = str(message or "").strip()
+    if not text:
+        return text
+
+    match = _EXECUTED_RE.match(text)
+    if match:
+        noun = _VM_ACTION_NOUNS_ES[match.group(1)]
+        states = ""
+        if match.group(3) and match.group(4):
+            before = humanize_vm_status(match.group(3)).lower()
+            after = humanize_vm_status(match.group(4)).lower()
+            states = f" (antes {before}, ahora {after})"
+        return f"{noun} ejecutado en {match.group(2)}{states}"
+
+    match = _BACKEND_FAILED_RE.match(text)
+    if match:
+        verb = _VM_ACTION_VERBS_ES[match.group(1)]
+        base = f"No se pudo {verb} la máquina {match.group(2)}"
+        detail = match.group(3).strip()
+        return f"{base}: {detail}" if detail else base
+
+    match = _CANNOT_STATE_RE.match(text)
+    if match:
+        verb = _VM_ACTION_VERBS_ES[match.group(1)]
+        state = humanize_vm_status(match.group(3)).lower()
+        return f"No se puede {verb} la máquina {match.group(2)}: ahora mismo está {state}"
+
+    match = _TARGET_EXISTS_RE.match(text)
+    if match:
+        name = match.group(3)
+        where = " en ese equipo" if match.group(2) else ""
+        suffix = f": {name}" if name else ""
+        return f"La máquina de destino ya existe{where}{suffix}"
+
+    return text
+
+
+# Campos habituales de payload/result de las órdenes → etiqueta en español.
+_COMMAND_FIELDS_ES = (
+    ("vm_name", "máquina"),
+    ("source_vm_name", "máquina origen"),
+    ("target_vm_name", "máquina destino"),
+    ("host_id", "equipo"),
+    ("target_host_id", "equipo destino"),
+    ("migration_id", "traslado"),
+)
+
+
+def humanize_command_value(value: Any) -> str:
+    """Datos/Resultado de una orden del Hub → resumen corto en español.
+
+    Evita enseñar JSON crudo en la tabla; el JSON completo sigue disponible
+    con «Copiar resultado».
+    """
+    if isinstance(value, dict):
+        message = value.get("message") or value.get("error")
+        if message:
+            return humanize_command_message(str(message))
+        if value.get("pong"):
+            host = str(value.get("host_id") or "")
+            return f"El equipo {host} responde" if host else "El equipo responde"
+        parts = [f"{label}: {value[key]}" for key, label in _COMMAND_FIELDS_ES if value.get(key)]
+        if parts:
+            return " · ".join(parts)
+        return "Detalle técnico (JSON) — usa «Copiar resultado»"
+    return humanize_command_message(str(value))
+
+
+# --------------------------------------------------------------------------- #
+# Registro de actividad: resumen de los bloques técnicos (JSON de qemu-img,    #
+# XML de libvirt). El detalle completo sigue en el archivo de registro.        #
+# --------------------------------------------------------------------------- #
+
+_LOG_LINE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[,.]\d+)\s+(INFO|WARNING|ERROR|DEBUG|CRITICAL)\s(.*)$"
+)
+
+
+def _gib_bytes(value: Any) -> str:
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return "?"
+    if size < 0:
+        return "?"
+    return f"{size / 1024 ** 3:.1f}".rstrip("0").rstrip(".")
+
+
+def _summarize_disk_info(info: dict[str, Any]) -> str:
+    """JSON de `qemu-img info` → una línea en español."""
+    name = str(info.get("filename") or "").rsplit("/", 1)[-1] or "disco"
+    fmt = str(info.get("format") or "?")
+    if bool(info.get("dirty-flag")):
+        pending = "cambios pendientes: sí (la máquina no se cerró limpiamente)"
+    else:
+        pending = "sin cambios pendientes"
+    return (
+        f"Disco {name} ({fmt}): {pending} · "
+        f"tamaño máximo {_gib_bytes(info.get('virtual-size'))} GiB, "
+        f"ocupa {_gib_bytes(info.get('actual-size'))} GiB"
+    )
+
+
+def _summarize_log_message(message: str) -> str | None:
+    """Resumen en español de un mensaje del registro, o None si se deja igual."""
+    stripped = message.strip()
+    for head in ("stdout: ", "stderr: "):
+        if stripped.startswith(head):
+            payload_text = stripped[len(head):].strip()
+            break
+    else:
+        return None
+    if payload_text.startswith("{"):
+        try:
+            data = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, dict) and ("dirty-flag" in data or "virtual-size" in data):
+            return _summarize_disk_info(data)
+        if isinstance(data, dict):
+            return f"Datos técnicos (JSON, {len(data)} campos) — detalle en el archivo de registro"
+        return None
+    if payload_text.startswith("<"):
+        name_match = re.search(r"<name>([^<]+)</name>", payload_text)
+        target = f" de «{name_match.group(1)}»" if name_match else ""
+        return f"Configuración{target} leída (XML) — detalle en el archivo de registro"
+    return None
+
+
+def humanize_activity_log(text: Any) -> str:
+    """Tail del registro → mismo registro con los bloques técnicos resumidos.
+
+    Las líneas normales no se tocan; solo los volcados multilínea (JSON de
+    qemu-img, XML de libvirt) se sustituyen por una línea en español. El
+    detalle completo sigue en el archivo hypergery.log.
+    """
+    prefixes: list[str] = []
+    entries: list[list[str]] = []
+    for line in str(text or "").splitlines():
+        match = _LOG_LINE_RE.match(line)
+        if match:
+            prefixes.append(f"{match.group(1)} {match.group(2)} ")
+            entries.append([match.group(3)])
+        elif entries:
+            entries[-1].append(line)
+        else:
+            prefixes.append("")
+            entries.append([line])
+    out: list[str] = []
+    for prefix, body in zip(prefixes, entries):
+        summary = _summarize_log_message("\n".join(body))
+        if summary is not None:
+            out.append(prefix + summary)
+        else:
+            out.append(prefix + body[0])
+            out.extend(body[1:])
+    return "\n".join(out)
