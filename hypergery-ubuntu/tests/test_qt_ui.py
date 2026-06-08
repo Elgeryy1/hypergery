@@ -28,6 +28,28 @@ def migration_fake_backend():
         from test_migration import FakeBackend
     return FakeBackend
 
+
+def _import_doctor():
+    """Import ``hypergery_ubuntu.doctor``.
+
+    The module imports the Unix-only ``grp`` standard library module at the top
+    level. On Windows ``grp`` is unavailable, so we register a minimal stub
+    before importing — it is never exercised by these tests (only
+    ``collect_doctor_items`` touches ``grp``).
+    """
+    import importlib
+    import sys
+    import types
+
+    if "grp" not in sys.modules:
+        try:
+            import grp  # noqa: F401
+        except ModuleNotFoundError:
+            stub = types.ModuleType("grp")
+            stub.getgrgid = lambda gid: types.SimpleNamespace(gr_name="")
+            sys.modules["grp"] = stub
+    return importlib.import_module("hypergery_ubuntu.doctor")
+
 if HAS_PYSIDE6:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
@@ -130,7 +152,8 @@ class QtUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
-            sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
+            # Navigation lives in the "Ver" menu now (no "Ajustes" entry).
+            sections = list(window._view_actions.keys())
             self.assertEqual(
                 sections,
                 [
@@ -143,22 +166,27 @@ class QtUiTests(unittest.TestCase):
                     "Tareas remotas",
                     "Centro de control",
                     "Diagnóstico",
-                    "Ajustes",
                 ],
             )
-            self.assertEqual(window.sidebar_nav.currentItem().text(), "Máquinas virtuales")
+
+            def active_section():
+                return next(name for name, act in window._view_actions.items() if act.isChecked())
+
+            self.assertEqual(active_section(), "Máquinas virtuales")
             self.assertEqual(window.main_tabs.currentIndex(), 0)
             self.assertFalse(window.main_tabs.tabBar().isVisible())
 
-            window.sidebar_nav.setCurrentRow(sections.index("Otros equipos"))
+            window._show_section("Otros equipos")
+            self.assertEqual(active_section(), "Otros equipos")
             self.assertEqual(window.main_tabs.currentIndex(), 2)
-            window.sidebar_nav.setCurrentRow(sections.index("Inicio"))
+            window._show_section("Inicio")
             self.assertEqual(window.main_tabs.currentIndex(), window.dashboard_page_index)
             with patch.object(window, "refresh_commands") as refresh_commands:
-                window.sidebar_nav.setCurrentRow(sections.index("Tareas remotas"))
+                window._show_section("Tareas remotas")
                 refresh_commands.assert_called_once()
             self.assertEqual(window.main_tabs.currentIndex(), window.commands_page_index)
-            window.sidebar_nav.setCurrentRow(sections.index("Diagnóstico"))
+            window._show_section("Diagnóstico")
+            self.assertEqual(active_section(), "Diagnóstico")
             self.assertEqual(window.main_tabs.currentIndex(), window.diagnostics_page_index)
             window.close()
         self.assertIsNotNone(app)
@@ -171,11 +199,23 @@ class QtUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
-            sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
-            with patch.object(window, "app_settings") as app_settings:
-                window.sidebar_nav.setCurrentRow(sections.index("Ajustes"))
-                app_settings.assert_called_once()
-            self.assertEqual(window.sidebar_nav.currentItem().text(), "Máquinas virtuales")
+
+            def active_section():
+                return next(name for name, act in window._view_actions.items() if act.isChecked())
+
+            # Settings is no longer a navigation row: it opens via Archivo→Ajustes…
+            # (app_settings) and must not change the current section/selection.
+            self.assertEqual(active_section(), "Máquinas virtuales")
+            fake_dialog = Mock()
+            fake_dialog.exec.return_value = QDialog.DialogCode.Rejected
+            with patch(
+                "hypergery_ubuntu.ui_qt.main_window.AppSettingsDialog", return_value=fake_dialog
+            ) as dialog_cls:
+                window.app_settings()
+                dialog_cls.assert_called_once()
+                fake_dialog.exec.assert_called_once()
+            self.assertEqual(active_section(), "Máquinas virtuales")
+            self.assertEqual(window.main_tabs.currentIndex(), 0)
             window.close()
         self.assertIsNotNone(app)
 
@@ -419,7 +459,7 @@ class QtUiTests(unittest.TestCase):
     def test_diagnostics_renders_grouped_results_and_counts(self, backend_cls):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QLabel
-        from hypergery_ubuntu.doctor import DoctorItem
+        DoctorItem = _import_doctor().DoctorItem
         from hypergery_ubuntu.ui_qt.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -567,6 +607,7 @@ class QtUiTests(unittest.TestCase):
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_vm_page_header_chips_and_empty_state(self, backend_cls):
         app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
         from hypergery_ubuntu.backend import VmSummary
         from hypergery_ubuntu.ui_qt.main_window import MainWindow
 
@@ -576,21 +617,45 @@ class QtUiTests(unittest.TestCase):
             window = MainWindow()
             self.assertEqual(window.vm_page_title.text(), "Máquinas virtuales")
             self.assertIn("Las máquinas de este equipo", window.vm_page_subtitle.text())
-            self.assertEqual(window.vm_table.columnCount(), 7)
 
             window.render_vms([])
             self.assertEqual(window.vm_stack.currentIndex(), 1)
             self.assertIn("Crea tu primera máquina desde una ISO", window.vm_empty_subtitle.text())
 
-            window.render_vms([
+            vms = [
                 VmSummary(name="dc01", state="running", lab_id="lab", ram_mib=4096, vcpus=2, graphics="vnc"),
                 VmSummary(name="cl01", state="shut off", lab_id="lab", ram_mib=2048, vcpus=1, graphics="spice"),
                 VmSummary(name="p01", state="paused", lab_id="lab", ram_mib=1024, vcpus=1),
-            ])
-            self.assertEqual(window.vm_table.rowCount(), 3)
-            states = [window.vm_table.item(row, 1).text() for row in range(3)]
-            self.assertEqual(states, ["ENCENDIDA", "APAGADA", "EN PAUSA"])
-            self.assertEqual(window.vm_table.item(0, 6).text(), "VNC")
+            ]
+            window.render_vms(vms)
+            # VMs render in the tree grouped by lab; count the VM leaves.
+            self.assertEqual(window.vm_stack.currentIndex(), 0)
+            tree = window.vm_tree
+            leaf_count = sum(
+                tree.topLevelItem(i).childCount() for i in range(tree.topLevelItemCount())
+            )
+            self.assertEqual(leaf_count, 3)
+            # State is shown via icon + tooltip, not a text column.
+            tooltips = []
+            for top in range(tree.topLevelItemCount()):
+                group = tree.topLevelItem(top)
+                for child in range(group.childCount()):
+                    tooltips.append(group.child(child).toolTip(0))
+            self.assertIn("dc01 — ENCENDIDA", tooltips)
+            self.assertIn("cl01 — APAGADA", tooltips)
+            self.assertIn("p01 — EN PAUSA", tooltips)
+
+            # Selecting the running VNC VM shows it in the detail panel, including
+            # the console availability that used to live in the VM table.
+            self.assertTrue(window.vm_tree.select_vm_by_name("dc01"))
+            window.render_selected()
+            self.assertEqual(window.detail_panel.currentIndex(), 1)
+            detail_text = "\n".join(
+                label.text() for label in window.detail_panel.findChildren(QLabel)
+            )
+            self.assertIn("Consola integrada", detail_text)
+            self.assertIn("Disponible (VNC)", detail_text)
+            self.assertIn("Ctrl derecho", detail_text)
 
             # Destructive actions keep the danger style; core attributes survive.
             self.assertEqual(window.force_button.objectName(), "dangerButton")
@@ -598,11 +663,6 @@ class QtUiTests(unittest.TestCase):
             for attr in ("start_button", "console_button", "external_console_button", "snapshots_button",
                          "clone_button", "migrate_button", "settings_button"):
                 self.assertTrue(hasattr(window, attr))
-
-            # Console detail card shows console status and Host Key.
-            console_text = window.detail_views["Consola"].toPlainText()
-            self.assertIn("Consola integrada", console_text)
-            self.assertIn("Ctrl derecho", console_text)
             window.close()
         self.assertIsNotNone(app)
 
@@ -614,13 +674,16 @@ class QtUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
-            sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
-            window.sidebar_nav.setCurrentRow(sections.index("Laboratorios"))
+            window._show_section("Laboratorios")
             # Labs is a dedicated workspace page now, not the shared VM view.
             self.assertEqual(window.main_tabs.currentIndex(), window.labs_page_index)
-            self.assertFalse(window.right_panel.isVisible())
-            window.sidebar_nav.setCurrentRow(sections.index("Máquinas virtuales"))
+            # The right detail panel is hidden outside the VM section. We assert on
+            # the explicit hidden flag (isVisible() is always False for an
+            # off-screen, never-shown window).
+            self.assertTrue(window.right_panel.isHidden())
+            window._show_section("Máquinas virtuales")
             self.assertEqual(window.main_tabs.currentIndex(), 0)
+            self.assertFalse(window.right_panel.isHidden())
             window.close()
         self.assertIsNotNone(app)
 
@@ -643,10 +706,14 @@ class QtUiTests(unittest.TestCase):
             self.assertTrue(window.migrations_refresh_button.isEnabled())
             self.assertFalse(window.copy_migration_id_button.isEnabled())
             self.assertFalse(window.copy_migration_summary_button.isEnabled())
-            # Quick action without a selected VM navigates instead of crashing.
+            # Quick action without a selected VM navigates to the VM section
+            # instead of crashing. _open_live_migration_from_page routes through
+            # _dashboard_go_vms, which is wired to the new section navigation.
             window.selected_vm = None
             window._open_live_migration_from_page()
-            self.assertEqual(window.sidebar_nav.currentItem().text(), "Máquinas virtuales")
+            active = next(name for name, act in window._view_actions.items() if act.isChecked())
+            self.assertEqual(active, "Máquinas virtuales")
+            self.assertEqual(window.main_tabs.currentIndex(), 0)
             window.close()
         self.assertIsNotNone(app)
 
@@ -1806,12 +1873,11 @@ class QtControlCenterTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as tmp:
             window = self.make_window(backend_cls, tmp)
-            sections = [window.sidebar_nav.item(i).text() for i in range(window.sidebar_nav.count())]
             with patch.object(window, "refresh_v1_all") as refresh:
-                window.sidebar_nav.setCurrentRow(sections.index("Centro de control"))
+                window._show_section("Centro de control")
                 refresh.assert_called_once()
-                window.sidebar_nav.setCurrentRow(sections.index("Inicio"))
-                window.sidebar_nav.setCurrentRow(sections.index("Centro de control"))
+                window._show_section("Inicio")
+                window._show_section("Centro de control")
                 refresh.assert_called_once()  # only loads automatically the first time
             self.assertEqual(window.main_tabs.currentIndex(), window.control_center_page_index)
             window.close()
@@ -1820,13 +1886,32 @@ class QtControlCenterTests(unittest.TestCase):
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_views_render_fetched_text_and_errors_inline(self, backend_cls):
         app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel
+
+        def container_text(window, key):
+            # The human summary now lives as rich widgets in a layout; collect the
+            # text from every QLabel inside that layout's widgets. The error case
+            # adds a bare QLabel callout directly, so include the widget itself.
+            layout = window.v1_containers[key]
+            texts = []
+            for index in range(layout.count()):
+                widget = layout.itemAt(index).widget()
+                if widget is None:
+                    continue
+                if isinstance(widget, QLabel):
+                    texts.append(widget.text())
+                texts.extend(label.text() for label in widget.findChildren(QLabel))
+            return "\n".join(texts)
+
         with tempfile.TemporaryDirectory() as tmp:
             window = self.make_window(backend_cls, tmp)
             window._set_v1_view("Battery", '{"battery": {"available": true, "percent": 57, "charging": true}}')
+            # Raw JSON view keeps the indented payload (so "57" is present there).
             self.assertIn("57", window.v1_views["Battery"].toPlainText())
             # El resumen humano también se rellena, en español.
-            self.assertIn("57", window.v1_summaries["Battery"].toPlainText())
-            self.assertIn("Batería", window.v1_summaries["Battery"].toPlainText())
+            battery_summary = container_text(window, "Battery")
+            self.assertIn("57", battery_summary)
+            self.assertIn("Batería", battery_summary)
 
             def fake_run_operation(label, fn, *, on_success=None, **kwargs):
                 result = fn()
@@ -1838,8 +1923,9 @@ class QtControlCenterTests(unittest.TestCase):
                 patch.object(window, "_v1_collect", side_effect=Exception("service exploded")),
             ):
                 window.refresh_v1_tab("NAS")
+            # The error text goes both to the raw view and to a callout label.
             self.assertIn("service exploded", window.v1_views["NAS"].toPlainText())
-            self.assertIn("No se ha podido cargar", window.v1_summaries["NAS"].toPlainText())
+            self.assertIn("No se ha podido cargar", container_text(window, "NAS"))
             window.close()
         self.assertIsNotNone(app)
 

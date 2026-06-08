@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QTextCursor
+from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -20,20 +20,24 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QInputDialog,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
     QStatusBar,
+    QStyle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QToolBar,
     QVBoxLayout,
     QWidget,
 )
@@ -89,6 +93,9 @@ from .humanize import (
     humanize_vm_status,
 )
 from .topology import LabTopologyWidget
+from .vm_tree import VmTree
+from .detail_panel import VmDetailPanel
+from . import v1_render
 from .styles import (
     APP_DISPLAY_VERSION,
     APP_STYLESHEET,
@@ -129,29 +136,37 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.refresh_all)
 
     def _build_ui(self) -> None:
+        # Botones "fantasma": set_busy/update_actions los referencian, pero las
+        # acciones ahora viven en el menú y la barra de herramientas.
+        self.new_button = self._button("Nueva máquina", self.new_vm, primary=True)
+        self.refresh_button = self._button("Actualizar", self.refresh_all)
+        self.app_settings_button = self._button("Ajustes", self.app_settings)
+        for ghost in (self.new_button, self.refresh_button, self.app_settings_button):
+            ghost.hide()
+
+        self._build_tool_bar()
+        self._build_menu_bar()
+
         root = QWidget()
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
-        root_layout.addWidget(self._build_top_bar())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_left_panel())
         self.right_panel = self._build_right_panel()
         splitter.addWidget(self.right_panel)
-        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
-
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
-        body.addWidget(self._build_sidebar())
-        body.addWidget(splitter, 1)
-        root_layout.addLayout(body, 1)
+        splitter.setSizes([360, 920])
+        root_layout.addWidget(splitter, 1)
         self.setCentralWidget(root)
+
         self.status = QStatusBar()
         self.setStatusBar(self.status)
+        self._build_status_chips()
         self.status.showMessage("Listo")
+        self._show_section("Máquinas virtuales")
 
     SIDEBAR_SECTIONS = (
         "Inicio",
@@ -166,33 +181,124 @@ class MainWindow(QMainWindow):
         "Ajustes",
     )
 
-    def _build_sidebar(self) -> QWidget:
-        frame = QFrame()
-        frame.setObjectName("sidebar")
-        frame.setFixedWidth(196)
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(0, 10, 0, 10)
-        layout.setSpacing(0)
-        self.sidebar_nav = QListWidget()
-        self.sidebar_nav.setObjectName("sidebarNav")
-        self.sidebar_nav.addItems(list(self.SIDEBAR_SECTIONS))
-        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Máquinas virtuales"))
-        self.sidebar_nav.currentRowChanged.connect(self._on_sidebar_changed)
-        layout.addWidget(self.sidebar_nav, 1)
-        return frame
+    def _std_icon(self, name: str) -> QIcon:
+        """Icono estándar de Qt por nombre de StandardPixmap (sin assets)."""
+        pixmap = getattr(QStyle.StandardPixmap, name, None)
+        if pixmap is None:
+            return QIcon()
+        return self.style().standardIcon(pixmap)
 
-    def _on_sidebar_changed(self, row: int) -> None:
-        if row < 0:
-            return
-        section = self.SIDEBAR_SECTIONS[row]
-        if section == "Ajustes":
-            previous = getattr(self, "_sidebar_previous_row", self.SIDEBAR_SECTIONS.index("Máquinas virtuales"))
-            self.sidebar_nav.blockSignals(True)
-            self.sidebar_nav.setCurrentRow(previous)
-            self.sidebar_nav.blockSignals(False)
-            self.app_settings()
-            return
-        self._sidebar_previous_row = row
+    def _build_menu_bar(self) -> None:
+        menubar = self.menuBar()
+        menubar.clear()
+
+        archivo = menubar.addMenu("&Archivo")
+        act_new = archivo.addAction("Nueva máquina…", self.new_vm)
+        act_new.setShortcut(QKeySequence.StandardKey.New)
+        archivo.addAction("Importar laboratorio…", self.import_lab)
+        archivo.addSeparator()
+        act_prefs = archivo.addAction("Ajustes…", self.app_settings)
+        act_prefs.setShortcut(QKeySequence("Ctrl+,"))
+        archivo.addSeparator()
+        act_quit = archivo.addAction("Salir", self.close)
+        act_quit.setShortcut(QKeySequence.StandardKey.Quit)
+
+        maquina = menubar.addMenu("&Máquina")
+        maquina.addAction(self.act_settings_vm)
+        maquina.addSeparator()
+        maquina.addAction(self.act_start)
+        maquina.addAction(self.act_shutdown)
+        maquina.addAction(self.act_force)
+        maquina.addSeparator()
+        maquina.addAction(self.act_console)
+        maquina.addAction(self.act_ext_console)
+        maquina.addAction(self.act_snapshots)
+        maquina.addAction(self.act_clone)
+        maquina.addAction(self.act_migrate)
+        maquina.addSeparator()
+        maquina.addAction(self.act_delete)
+
+        ver = menubar.addMenu("&Ver")
+        self._view_actions = {}
+        for section in self.SIDEBAR_SECTIONS:
+            if section == "Ajustes":
+                continue
+            action = ver.addAction(section)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, s=section: self._show_section(s))
+            self._view_actions[section] = action
+        ver.addSeparator()
+        act_refresh = ver.addAction("Actualizar todo", self.refresh_all)
+        act_refresh.setShortcut(QKeySequence.StandardKey.Refresh)
+        act_find = ver.addAction("Buscar máquina", self._focus_vm_filter)
+        act_find.setShortcut(QKeySequence.StandardKey.Find)
+
+        ayuda = menubar.addMenu("A&yuda")
+        ayuda.addAction("Acerca de HyperGery", self.show_about)
+
+    def _build_tool_bar(self) -> None:
+        # Acciones de máquina (su estado lo sincroniza update_actions).
+        self.act_settings_vm = QAction(self._std_icon("SP_FileDialogDetailedView"), "Configuración", self)
+        self.act_settings_vm.triggered.connect(self.settings_vm)
+        self.act_start = QAction(self._std_icon("SP_MediaPlay"), "Iniciar", self)
+        self.act_start.triggered.connect(self.start_vm)
+        self.act_shutdown = QAction(self._std_icon("SP_MediaStop"), "Apagar", self)
+        self.act_shutdown.triggered.connect(self.shutdown_vm)
+        self.act_force = QAction(self._std_icon("SP_BrowserStop"), "Apagar a la fuerza", self)
+        self.act_force.triggered.connect(self.force_off_vm)
+        self.act_console = QAction(self._std_icon("SP_ComputerIcon"), "Consola", self)
+        self.act_console.triggered.connect(self.open_console)
+        self.act_ext_console = QAction(self._std_icon("SP_DesktopIcon"), "Consola externa", self)
+        self.act_ext_console.triggered.connect(self.open_external_console)
+        self.act_snapshots = QAction(self._std_icon("SP_DialogSaveButton"), "Instantáneas", self)
+        self.act_snapshots.triggered.connect(self.snapshots_vm)
+        self.act_clone = QAction(self._std_icon("SP_FileDialogContentsView"), "Clonar", self)
+        self.act_clone.triggered.connect(self.clone_vm)
+        self.act_migrate = QAction(self._std_icon("SP_ArrowForward"), "Mover a otro equipo", self)
+        self.act_migrate.triggered.connect(self.live_migration_vm)
+        self.act_delete = QAction(self._std_icon("SP_TrashIcon"), "Eliminar", self)
+        self.act_delete.triggered.connect(self.delete_vm)
+
+        toolbar = QToolBar("Acciones")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(24, 24))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.toolbar = toolbar
+        self.addToolBar(toolbar)
+
+        act_new = QAction(self._std_icon("SP_FileIcon"), "Nueva", self)
+        act_new.triggered.connect(self.new_vm)
+        toolbar.addAction(act_new)
+        toolbar.addAction(self.act_settings_vm)
+        toolbar.addSeparator()
+        toolbar.addAction(self.act_start)
+        toolbar.addAction(self.act_shutdown)
+        toolbar.addAction(self.act_force)
+        toolbar.addSeparator()
+        toolbar.addAction(self.act_console)
+        toolbar.addAction(self.act_snapshots)
+        toolbar.addAction(self.act_clone)
+        toolbar.addAction(self.act_migrate)
+        toolbar.addSeparator()
+        toolbar.addAction(self.act_delete)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+        act_refresh = QAction(self._std_icon("SP_BrowserReload"), "Actualizar", self)
+        act_refresh.triggered.connect(self.refresh_all)
+        toolbar.addAction(act_refresh)
+
+    def _build_status_chips(self) -> None:
+        config = effective_config()
+        self.host_chip = QLabel(f"Equipo: {config['host_id'].value}")
+        self.hub_chip = QLabel("Hub: sin comprobar")
+        self.nas_chip = QLabel("NAS: sin comprobar")
+        self.battery_chip = QLabel("🔋 —")
+        for chip in (self.host_chip, self.hub_chip, self.nas_chip, self.battery_chip):
+            chip.setObjectName("statusChip")
+            self.status.addPermanentWidget(chip)
+
+    def _show_section(self, section: str) -> None:
         page_map = {
             "Inicio": self.dashboard_page_index,
             "Máquinas virtuales": 0,
@@ -204,7 +310,11 @@ class MainWindow(QMainWindow):
             "Centro de control": self.control_center_page_index,
             "Diagnóstico": self.diagnostics_page_index,
         }
+        if section not in page_map:
+            return
         self.main_tabs.setCurrentIndex(page_map[section])
+        for name, action in getattr(self, "_view_actions", {}).items():
+            action.setChecked(name == section)
         if section == "Migraciones" and not getattr(self, "_migrations_loaded", False):
             self.refresh_migrations()
             self.refresh_hub_staging()
@@ -217,39 +327,42 @@ class MainWindow(QMainWindow):
             self.render_labs_workspace()
         self.right_panel.setVisible(section == "Máquinas virtuales")
 
-    def _build_top_bar(self) -> QWidget:
-        bar = QFrame()
-        bar.setObjectName("topBar")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 12, 20, 12)
-        layout.setSpacing(10)
-        brand = QVBoxLayout()
-        brand.setSpacing(0)
-        title = QLabel("HyperGery")
-        title.setObjectName("brandTitle")
-        subtitle = QLabel(f"v{APP_DISPLAY_VERSION} · develop · KVM / QEMU / libvirt")
-        subtitle.setObjectName("brandSubtle")
-        brand.addWidget(title)
-        brand.addWidget(subtitle)
-        layout.addLayout(brand)
-        layout.addSpacing(14)
+    def _focus_vm_filter(self) -> None:
+        self._show_section("Máquinas virtuales")
+        if hasattr(self, "vm_filter_edit"):
+            self.vm_filter_edit.setFocus()
+            self.vm_filter_edit.selectAll()
 
-        config = effective_config()
-        self.hub_chip = QLabel("Hub: sin comprobar")
-        self.host_chip = QLabel(f"Equipo: {config['host_id'].value}")
-        self.nas_chip = QLabel("NAS: sin comprobar")
-        for chip in (self.hub_chip, self.host_chip, self.nas_chip):
-            chip.setObjectName("statusChip")
-            layout.addWidget(chip)
-        layout.addStretch()
+    def show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "Acerca de HyperGery",
+            f"<b>HyperGery</b> v{APP_DISPLAY_VERSION}<br>"
+            "Gestor de máquinas virtuales KVM / QEMU / libvirt.<br><br>"
+            "Interfaz estilo VirtualBox.",
+        )
 
-        self.new_button = self._button("Nueva máquina", self.new_vm, primary=True)
-        self.refresh_button = self._button("Actualizar", self.refresh_all)
-        self.app_settings_button = self._button("Ajustes", self.app_settings)
-        layout.addWidget(self.new_button)
-        layout.addWidget(self.refresh_button)
-        layout.addWidget(self.app_settings_button)
-        return bar
+    def _update_battery_chip(self) -> None:
+        try:
+            from ..v1.battery import BatteryService
+            from ..v1.settings import V1Settings
+
+            try:
+                settings = V1Settings.load()
+            except Exception:
+                settings = V1Settings()
+            state = BatteryService(settings=settings).read()
+            data = state.to_dict() if hasattr(state, "to_dict") else {}
+            percent = data.get("percent")
+            tier = data.get("tier")
+            present = data.get("present", percent is not None)
+            if not present or percent is None:
+                self.battery_chip.setText("🔋 sin batería")
+            else:
+                tier_txt = f" · {tier}" if tier else ""
+                self.battery_chip.setText(f"🔋 {int(round(float(percent)))}%{tier_txt}")
+        except Exception:
+            self.battery_chip.setText("🔋 —")
 
     def _build_vm_actions_bar(self) -> QWidget:
         bar = QWidget()
@@ -330,28 +443,28 @@ class MainWindow(QMainWindow):
         self.vm_filter = QComboBox()
         self.vm_filter.addItems(["Todas las máquinas", "Laboratorio seleccionado"])
         self.vm_filter.currentIndexChanged.connect(self.on_vm_filter_changed)
+        self.vm_filter_edit = QLineEdit()
+        self.vm_filter_edit.setPlaceholderText("Buscar máquina…  (Ctrl+F)")
+        self.vm_filter_edit.setClearButtonEnabled(True)
+        self.vm_filter_edit.setMaximumWidth(220)
+        self.vm_filter_edit.textChanged.connect(self._on_vm_search_text)
         header.addLayout(head_col)
         header.addStretch()
+        header.addWidget(self.vm_filter_edit)
         header.addWidget(self.vm_filter)
         header.addWidget(self.vm_count_label)
         layout.addLayout(header)
-        layout.addWidget(self._build_vm_actions_bar())
 
-        self.vm_table = QTableWidget(0, 7)
-        self.vm_table.setHorizontalHeaderLabels(["Nombre", "Estado", "Laboratorio", "CPU", "RAM", "Disco", "Pantalla"])
-        self.vm_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.vm_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.vm_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.vm_table.setAlternatingRowColors(True)
-        self.vm_table.verticalHeader().setVisible(False)
-        self.vm_table.horizontalHeader().setStretchLastSection(True)
-        self.vm_table.setColumnWidth(0, 190)
-        self.vm_table.setColumnWidth(1, 100)
-        self.vm_table.setColumnWidth(2, 130)
-        self.vm_table.setColumnWidth(3, 52)
-        self.vm_table.itemSelectionChanged.connect(self.on_vm_selection_changed)
+        # La barra de botones clásica se conserva (set_busy la referencia) pero
+        # oculta: las acciones viven ahora en la barra de herramientas.
+        self._vm_actions_bar = self._build_vm_actions_bar()
+        self._vm_actions_bar.hide()
+
+        self.vm_tree = VmTree()
+        self.vm_tree.currentVmChanged.connect(self._on_tree_vm_changed)
+        self.vm_tree.vmActivated.connect(self._on_tree_vm_activated)
         self.vm_stack = QStackedWidget()
-        self.vm_stack.addWidget(self.vm_table)
+        self.vm_stack.addWidget(self.vm_tree)
         self.vm_stack.addWidget(self._build_vm_empty_state())
         layout.addWidget(self.vm_stack, 1)
 
@@ -1175,7 +1288,7 @@ class MainWindow(QMainWindow):
 
         self.v1_tabs = QTabWidget()
         self.v1_views: dict[str, QTextEdit] = {}
-        self.v1_summaries: dict[str, QTextEdit] = {}
+        self.v1_containers: dict[str, QVBoxLayout] = {}
         for key in self.V1_TAB_KEYS:
             tab = QWidget()
             tab_layout = QVBoxLayout(tab)
@@ -1190,10 +1303,18 @@ class MainWindow(QMainWindow):
             bar.addWidget(details_toggle)
             tab_layout.addLayout(bar)
 
-            summary = QTextEdit()
-            summary.setReadOnly(True)
-            summary.setPlaceholderText("Pulsa «Actualizar» para cargar esta sección.")
-            tab_layout.addWidget(summary, 2)
+            summary_scroll = QScrollArea()
+            summary_scroll.setWidgetResizable(True)
+            summary_holder = QWidget()
+            summary_layout = QVBoxLayout(summary_holder)
+            summary_layout.setContentsMargins(0, 0, 0, 0)
+            summary_layout.setSpacing(8)
+            placeholder = QLabel("Pulsa «Actualizar» para cargar esta sección.")
+            placeholder.setObjectName("mutedLabel")
+            summary_layout.addWidget(placeholder)
+            summary_layout.addStretch()
+            summary_scroll.setWidget(summary_holder)
+            tab_layout.addWidget(summary_scroll, 2)
 
             view = QTextEdit()
             view.setReadOnly(True)
@@ -1208,7 +1329,7 @@ class MainWindow(QMainWindow):
 
             details_toggle.toggled.connect(toggle_details)
 
-            self.v1_summaries[key] = summary
+            self.v1_containers[key] = summary_layout
             self.v1_views[key] = view
             self.v1_tabs.addTab(tab, V1_TAB_TITLES.get(key, key))
         layout.addWidget(self.v1_tabs, 1)
@@ -1310,15 +1431,28 @@ class MainWindow(QMainWindow):
         else:
             details_text = json.dumps(payload, indent=2, sort_keys=True, default=str)
 
-        summary = self.v1_summaries.get(key)
-        if summary is not None:
+        container = self.v1_containers.get(key)
+        if container is not None:
+            self._clear_layout(container)
             if isinstance(payload, dict):
-                summary.setHtml(humanize_v1(key, payload))
+                widget = v1_render.build_v1_widget(key, payload)
             else:
-                summary.setHtml(humanize_error(key, details_text))
+                widget = QLabel(details_text or "Sin datos.")
+                widget.setObjectName("calloutDanger")
+                widget.setWordWrap(True)
+            container.addWidget(widget)
+            container.addStretch()
         view = self.v1_views.get(key)
         if view is not None:
             view.setPlainText(details_text)
+
+    @staticmethod
+    def _clear_layout(layout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
     def refresh_v1_tab(self, key: str) -> None:
         title = V1_TAB_TITLES.get(key, key)
@@ -1700,10 +1834,10 @@ class MainWindow(QMainWindow):
         return page
 
     def _dashboard_go_vms(self) -> None:
-        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Máquinas virtuales"))
+        self._show_section("Máquinas virtuales")
 
     def _dashboard_go_diagnostics(self) -> None:
-        self.sidebar_nav.setCurrentRow(self.SIDEBAR_SECTIONS.index("Diagnóstico"))
+        self._show_section("Diagnóstico")
 
     def update_dashboard_vms(self) -> None:
         counts = {"running": 0, "shutoff": 0, "paused": 0, "unknown": 0}
@@ -2866,10 +3000,12 @@ class MainWindow(QMainWindow):
         self.preflight_details_button.setText("Ocultar detalles" if checked else "Ver detalles")
 
     def _build_detail_area(self) -> QWidget:
-        self.detail_stack = QStackedWidget()
-        self.detail_stack.addWidget(self._build_main_empty_state())
-        self.detail_stack.addWidget(self._build_detail_tabs())
-        return self.detail_stack
+        self.detail_panel = VmDetailPanel()
+        self.detail_panel.consoleRequested.connect(self.open_console)
+        self.detail_panel.snapshotsRequested.connect(self.snapshots_vm)
+        self.detail_panel.settingsRequested.connect(self.settings_vm)
+        self.detail_panel.newVmRequested.connect(self.new_vm)
+        return self.detail_panel
 
     def _build_main_empty_state(self) -> QWidget:
         panel = QFrame()
@@ -3022,6 +3158,8 @@ class MainWindow(QMainWindow):
             self.lab_ws_role_button,
         ):
             button.setEnabled(not busy)
+        if hasattr(self, "toolbar"):
+            self.toolbar.setEnabled(not busy)
         if busy:
             self.status.showMessage(label)
         else:
@@ -3044,6 +3182,20 @@ class MainWindow(QMainWindow):
         self.migrate_button.setEnabled(has_vm)
         self.force_button.setEnabled(has_vm and running)
         self.delete_button.setEnabled(has_vm and shut_off)
+        # Sincroniza las acciones de la barra de herramientas y el menú Máquina.
+        self.act_settings_vm.setEnabled(has_vm and shut_off)
+        self.act_start.setEnabled(has_vm and not running)
+        self.act_shutdown.setEnabled(has_vm and running)
+        self.act_force.setEnabled(has_vm and running)
+        self.act_console.setEnabled(has_vm and running)
+        self.act_ext_console.setEnabled(has_vm and running)
+        self.act_snapshots.setEnabled(has_vm)
+        self.act_clone.setEnabled(has_vm and shut_off)
+        self.act_migrate.setEnabled(has_vm)
+        self.act_delete.setEnabled(has_vm and shut_off)
+        if hasattr(self, "detail_panel"):
+            self.detail_panel.set_console_enabled(has_vm and running)
+            self.detail_panel.set_settings_enabled(has_vm and shut_off)
         has_lab = self.selected_lab is not None
         self.rename_lab_button.setEnabled(has_lab)
         self.delete_lab_button.setEnabled(has_lab)
@@ -3245,6 +3397,7 @@ class MainWindow(QMainWindow):
                 f"Example: export HYPERGERY_HUB_URL=http://192.168.1.150:8765\n\n{errors['remote_hosts']}"
             )
         self.render_selected()
+        self._update_battery_chip()
         if not errors:
             self.status.showMessage("Listo")
         else:
@@ -3298,25 +3451,10 @@ class MainWindow(QMainWindow):
         self.update_dashboard_vms()
         selected_lab_id = self.selected_lab_id()
         self.vms = filter_vms_for_lab(vms, selected_lab_id, self.vm_filter.currentText() == "Laboratorio seleccionado")
-        self.vm_table.setRowCount(0)
-        selected_row = -1
-        for vm in self.vms:
-            row = self.vm_table.rowCount()
-            self.vm_table.insertRow(row)
-            self._set_table_item(self.vm_table, row, 0, vm.name)
-            self._set_table_item(self.vm_table, row, 1, STATE_LABELS[state_kind(vm.state)], status=vm.state, chip=True)
-            self._set_table_item(self.vm_table, row, 2, vm.lab_id or "unknown")
-            self._set_table_item(self.vm_table, row, 3, str(vm.vcpus or "-"))
-            self._set_table_item(self.vm_table, row, 4, format_mib(vm.ram_mib))
-            self._set_table_item(self.vm_table, row, 5, vm.disk_virtual or "—")
-            self._set_table_item(self.vm_table, row, 6, (vm.graphics or "—").upper() if vm.graphics else "—")
-            if vm.name == current:
-                selected_row = row
-        if selected_row < 0 and self.vms:
-            selected_row = 0
-        if selected_row >= 0:
-            self.vm_table.selectRow(selected_row)
-        else:
+        self.vm_tree.populate(self.vms, self.labs)
+        if current:
+            self.vm_tree.select_vm_by_name(current)
+        if not self.vms:
             self.selected_vm = None
         running = sum(1 for vm in self.vms if state_kind(vm.state) == "running")
         suffix = "" if len(self.vms) == 1 else "s"
@@ -3401,12 +3539,9 @@ class MainWindow(QMainWindow):
         self.lab_topology.set_topology(build_lab_topology(lab, self.all_vms))
 
     def _select_vm_by_name(self, vm_name: str) -> None:
-        for row in range(self.vm_table.rowCount()):
-            item = self.vm_table.item(row, 0)
-            if item and item.text() == vm_name:
-                self.vm_table.selectRow(row)
-                self.lab_detail_tabs.setCurrentIndex(0)
-                break
+        self._show_section("Máquinas virtuales")
+        if self.vm_tree.select_vm_by_name(vm_name):
+            self.lab_detail_tabs.setCurrentIndex(0)
 
     def log_activity(self, message: str) -> None:
         logging.info(message)
@@ -3597,6 +3732,8 @@ class MainWindow(QMainWindow):
             self.selected_lab = None
         current_lab_id = self.selected_lab_id() if keep_selection else ""
         self.labs = labs
+        if hasattr(self, "vm_tree"):
+            self.vm_tree.populate(self.vms, self.labs)
         was_blocked = self.lab_table.blockSignals(True)
         self.lab_table.setRowCount(0)
         selected_row = -1
@@ -3655,61 +3792,43 @@ class MainWindow(QMainWindow):
                 item.setFont(font)
         table.setItem(row, column, item)
 
+    def _on_tree_vm_changed(self, vm: VmSummary | None) -> None:
+        self.selected_vm = vm
+        self.render_selected()
+        self.update_actions()
+
+    def _on_tree_vm_activated(self, vm: VmSummary) -> None:
+        self.selected_vm = vm
+        state = (vm.state or "").lower()
+        if "running" in state:
+            self.open_console()
+        elif "shut" in state or "off" in state:
+            self.start_vm()
+
+    def _on_vm_search_text(self, text: str) -> None:
+        if hasattr(self, "vm_tree"):
+            self.vm_tree.set_filter(text)
+
     def on_vm_selection_changed(self) -> None:
-        indexes = self.vm_table.selectionModel().selectedRows()
-        if not indexes:
-            self.selected_vm = None
-        else:
-            row = indexes[0].row()
-            self.selected_vm = self.vms[row] if 0 <= row < len(self.vms) else None
+        # Compatibilidad: la selección ahora la conduce el árbol de VMs.
+        self.selected_vm = self.vm_tree.current_vm()
         self.render_selected()
         self.update_actions()
 
     def render_selected(self) -> None:
         vm = self.selected_vm
         if vm is None:
-            self.selection_label.setText("Inicio")
-            self.detail_stack.setCurrentIndex(0)
-            empty = "Ninguna máquina seleccionada."
-            for view in self.detail_views.values():
-                view.setPlainText(empty)
+            self.selection_label.setText("Ninguna máquina seleccionada")
+            self.detail_panel.show_welcome()
             return
-        self.detail_stack.setCurrentIndex(1)
-        self.selection_label.setText(f"{vm.name}  -  {humanize_vm_status(vm.state)}  -  {vm.lab_id or 'sin laboratorio'}")
-        self.detail_views["General"].setPlainText(
-            details_block(
-                ("Nombre", vm.name),
-                ("Estado", humanize_vm_status(vm.state)),
-                ("Laboratorio", vm.lab_id or "desconocido"),
-                ("URI de libvirt", "qemu:///system"),
-            )
+        self.selection_label.setText(
+            f"{vm.name}  ·  {humanize_vm_status(vm.state)}  ·  {vm.lab_id or 'sin laboratorio'}"
         )
-        self.detail_views["Sistema"].setPlainText(details_block(("RAM", format_mib(vm.ram_mib)), ("vCPUs", str(vm.vcpus or "desconocido"))))
-        self.detail_views["Consola"].setPlainText(
-            details_block(
-                ("Pantalla", (vm.graphics or "desconocida").upper()),
-                ("Consola integrada", "disponible (VNC)" if vm.graphics == "vnc" else "no disponible — requiere VNC"),
-                ("Visor externo", "virt-viewer o remote-viewer"),
-                ("Tecla para soltar el ratón", "Ctrl derecho"),
-                ("Al cerrar", "cerrar la ventana de la consola no apaga la máquina"),
-            )
-        )
-        self.detail_views["Almacenamiento"].setPlainText(
-            details_block(
-                ("Ruta del disco", vm.disk_path or "desconocida"),
-                ("Tamaño virtual", vm.disk_virtual or "desconocido"),
-                ("Tamaño real", vm.disk_actual or "desconocido"),
-                ("ISO de arranque", vm.iso_path or "ninguna"),
-            )
-        )
-        self.detail_views["Red"].setPlainText(details_block(("Red", vm.network or "desconocida"), ("Laboratorio", vm.lab_id or "desconocido")))
         try:
             snapshots = self.backend.list_snapshots(vm.name)
-            body = "\n".join(f"- {snapshot}" for snapshot in snapshots) if snapshots else "Sin instantáneas."
-        except Exception as exc:
-            body = f"Estado de instantáneas no disponible:\n{exc}"
-        self.detail_views["Instantáneas"].setPlainText(body)
-        self.detail_views["Registros"].setPlainText(self.backend.recent_logs(80))
+        except Exception:
+            snapshots = []
+        self.detail_panel.show_vm(vm, snapshots)
 
     def selected_name(self) -> str:
         if self.selected_vm is None:
