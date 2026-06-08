@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QTextCursor
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -128,6 +128,8 @@ class MainWindow(QMainWindow):
         self.console_windows: dict[str, VmConsoleWindow] = {}
         self.jobs: list[BackendJob] = []
         self.completed_jobs: list[BackendJob] = []
+        self._preview_jobs: list[BackendJob] = []
+        self._preview_target: str | None = None
         self.setWindowTitle(f"HyperGery v{APP_DISPLAY_VERSION}")
         self.resize(1360, 860)
         self.setMinimumSize(1120, 720)
@@ -2917,6 +2919,12 @@ class MainWindow(QMainWindow):
         screen_layout = QVBoxLayout(self.preview_screen)
         screen_layout.setContentsMargins(8, 8, 8, 8)
         screen_layout.setSpacing(4)
+        # Imagen real del invitado (oculta hasta que llega una captura).
+        self.preview_image = QLabel()
+        self.preview_image.setObjectName("previewImage")
+        self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_image.hide()
+        screen_layout.addWidget(self.preview_image)
         screen_layout.addStretch()
         self.preview_screen_name = QLabel("Sin selección")
         self.preview_screen_name.setObjectName("previewScreenName")
@@ -3946,6 +3954,12 @@ class MainWindow(QMainWindow):
     def _update_preview(self, vm: VmSummary | None) -> None:
         if not hasattr(self, "preview_screen_name"):
             return
+        # Cualquier captura en curso queda obsoleta al cambiar de selección.
+        self._preview_target = vm.name if vm else None
+        self.preview_image.hide()
+        self.preview_image.clear()
+        self.preview_screen_name.show()
+        self.preview_screen_hint.show()
         if vm is None:
             self.preview_screen_name.setText("Sin selección")
             self.preview_screen_hint.setText("Selecciona una máquina")
@@ -3954,12 +3968,60 @@ class MainWindow(QMainWindow):
             self.preview_console_button.setEnabled(False)
             return
         self.preview_screen_name.setText(vm.name)
-        self.preview_screen_hint.setText("")
         self.preview_status.setText(humanize_vm_status(vm.state))
         host_id = effective_config()["host_id"].value
         self.preview_host.setText(f"Equipo: {host_id}")
         running = "running" in (vm.state or "").lower() or "paused" in (vm.state or "").lower()
         self.preview_console_button.setEnabled(running)
+        if running:
+            # Captura real del invitado (off-thread, no bloquea ni modifica la VM).
+            self.preview_screen_hint.setText("Capturando vista…")
+            self._capture_preview(vm.name)
+        else:
+            self.preview_screen_hint.setText("Apagada — sin señal de vídeo")
+
+    def _capture_preview(self, name: str) -> None:
+        import shutil
+
+        from PySide6.QtGui import QGuiApplication
+
+        from .screenshot import capture_vm_screenshot
+
+        # Solo tiene sentido capturar con un display real; en modo «offscreen»
+        # (tests/headless) o sin virsh no se lanza ningún proceso ni hilo.
+        if QGuiApplication.platformName() == "offscreen" or shutil.which("virsh") is None:
+            self._on_preview_captured(name, None)
+            return
+        job = BackendJob(f"preview:{name}", lambda n=name: capture_vm_screenshot(n))
+        self._preview_jobs.append(job)
+
+        def done(j: BackendJob = job, n: str = name) -> None:
+            if j in self._preview_jobs:
+                self._preview_jobs.remove(j)
+            self._on_preview_captured(n, j.result)
+
+        def failed(j: BackendJob = job) -> None:
+            if j in self._preview_jobs:
+                self._preview_jobs.remove(j)
+
+        job.succeeded.connect(done)
+        job.failed.connect(failed)
+        job.start()
+
+    def _on_preview_captured(self, name: str, data: bytes | None) -> None:
+        # Ignora resultados de una VM que ya no está seleccionada.
+        if name != self._preview_target or not hasattr(self, "preview_image"):
+            return
+        pixmap = QPixmap()
+        if not data or not pixmap.loadFromData(data):
+            self.preview_screen_hint.setText("Sin vista disponible")
+            return
+        width = max(180, self.preview_screen.width() - 16)
+        scaled = pixmap.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+        self.preview_image.setPixmap(scaled)
+        self.preview_image.show()
+        self.preview_screen_name.hide()
+        self.preview_screen_hint.hide()
 
     def selected_name(self) -> str:
         if self.selected_vm is None:
