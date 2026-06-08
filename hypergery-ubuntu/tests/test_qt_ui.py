@@ -675,15 +675,72 @@ class QtUiTests(unittest.TestCase):
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
             window = MainWindow()
             window._show_section("Laboratorios")
-            # Labs is a dedicated workspace page now, not the shared VM view.
+            # Labs is a dedicated workspace page reachable from the "Ver" menu;
+            # the main window stays VM-first (no separate right panel anymore).
             self.assertEqual(window.main_tabs.currentIndex(), window.labs_page_index)
-            # The right detail panel is hidden outside the VM section. We assert on
-            # the explicit hidden flag (isVisible() is always False for an
-            # off-screen, never-shown window).
-            self.assertTrue(window.right_panel.isHidden())
             window._show_section("Máquinas virtuales")
             self.assertEqual(window.main_tabs.currentIndex(), 0)
-            self.assertFalse(window.right_panel.isHidden())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_vm_manager_three_pane_layout(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtWidgets import QLabel, QLineEdit, QTableWidget
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+        from hypergery_ubuntu.ui_qt.vm_tree import VmTree
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            # VirtualBox-style 3-pane manager: VM list | details | preview.
+            split = window.vm_manager_split
+            self.assertEqual(split.count(), 3)
+            left, center, right = split.widget(0), split.widget(1), split.widget(2)
+            # Left pane owns the VM tree + search; center is the detail panel;
+            # right is the preview with its mini-screen label.
+            self.assertIn(window.vm_tree, left.findChildren(VmTree))
+            self.assertIn(window.vm_filter_edit, left.findChildren(QLineEdit))
+            self.assertIs(center, window.detail_panel)
+            self.assertIn(window.preview_screen_name, right.findChildren(QLabel))
+            # The Laboratorios table is no longer part of the VM-first view.
+            self.assertNotIn(window.lab_table, split.findChildren(QTableWidget))
+            # The activity log strip is collapsed by default.
+            self.assertFalse(window._activity_container.isVisible())
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_vm_selection_updates_preview_and_toolbar(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.backend import VmSummary
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            backend_cls.return_value.recent_logs.return_value = ""
+            window = MainWindow()
+            window.render_vms([
+                VmSummary(name="dc01", state="running", lab_id="lab", ram_mib=2048, vcpus=2, graphics="vnc"),
+                VmSummary(name="cl01", state="shut off", lab_id="lab", ram_mib=1024, vcpus=1),
+            ])
+            # Running VNC VM: preview shows its name, console enabled in toolbar.
+            self.assertTrue(window.vm_tree.select_vm_by_name("dc01"))
+            window.render_selected()
+            window.update_actions()
+            self.assertEqual(window.preview_screen_name.text(), "dc01")
+            self.assertIn("ENCENDIDA", window.preview_status.text().upper())
+            self.assertTrue(window.preview_console_button.isEnabled())
+            self.assertTrue(window.act_console.isEnabled())
+            self.assertFalse(window.act_start.isEnabled())
+            # Shut off VM: preview updates, console disabled, start enabled.
+            self.assertTrue(window.vm_tree.select_vm_by_name("cl01"))
+            window.render_selected()
+            window.update_actions()
+            self.assertEqual(window.preview_screen_name.text(), "cl01")
+            self.assertFalse(window.preview_console_button.isEnabled())
+            self.assertFalse(window.act_console.isEnabled())
+            self.assertTrue(window.act_start.isEnabled())
             window.close()
         self.assertIsNotNone(app)
 

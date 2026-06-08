@@ -115,7 +115,12 @@ class VmDetailPanel(QStackedWidget):
     def show_welcome(self) -> None:
         self.setCurrentIndex(0)
 
-    def show_vm(self, vm: VmSummary, snapshots: list[str] | None = None) -> None:
+    def show_vm(
+        self,
+        vm: VmSummary,
+        snapshots: list[str] | None = None,
+        extra: list[tuple[str, str]] | None = None,
+    ) -> None:
         self.setCurrentIndex(1)
         self._title_icon.setPixmap(
             os_icon(vm.name, getattr(vm, "os_type", None), 22).pixmap(22, 22)
@@ -170,18 +175,42 @@ class VmDetailPanel(QStackedWidget):
             ],
         )
         self._add_group(
+            "Audio",
+            [
+                ("Controlador de anfitrión", "Predeterminado"),
+                ("Controlador", "ICH AC97"),
+            ],
+        )
+        self._add_group(
             "Red",
             [
                 ("Red", vm.network or "desconocida"),
                 ("Laboratorio", vm.lab_id or "Sin laboratorio"),
             ],
         )
+        self._add_group(
+            "USB",
+            [
+                ("Controlador USB", "Disponible"),
+                ("Filtros de dispositivos", "0 (0 activos)"),
+            ],
+        )
+        self._add_group(
+            "Carpetas compartidas",
+            [("", "Ninguna")],
+        )
+        if extra:
+            self._add_group("HyperGery", list(extra))
         if snapshots is not None:
             if snapshots:
                 rows = [(f"#{i + 1}", snap) for i, snap in enumerate(snapshots)]
             else:
                 rows = [("", "Sin instantáneas.")]
             self._add_group("Instantáneas", rows)
+        self._add_group(
+            "Descripción",
+            [("", "Ninguna")],
+        )
 
         self._content_layout.addStretch()
 
@@ -200,18 +229,29 @@ class VmDetailPanel(QStackedWidget):
                 widget.deleteLater()
 
     def _add_group(self, title: str, rows: list[tuple[str, str]]) -> None:
-        box = QFrame()
-        box.setObjectName("panel")
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(16, 12, 16, 14)
-        layout.setSpacing(8)
+        # Sección plana estilo VirtualBox: icono + título en negrita, filas
+        # etiqueta/valor y un separador horizontal fino (sin card redondeada).
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(2, 4, 2, 2)
+        layout.setSpacing(6)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(7)
+        dot = QLabel()
+        dot.setObjectName("detailGroupIcon")
+        dot.setFixedSize(11, 11)
         header = QLabel(title)
         header.setObjectName("detailGroup")
-        layout.addWidget(header)
+        header_row.addWidget(dot)
+        header_row.addWidget(header)
+        header_row.addStretch()
+        layout.addLayout(header_row)
 
         grid = QGridLayout()
+        grid.setContentsMargins(18, 0, 0, 0)
         grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(6)
+        grid.setVerticalSpacing(5)
         grid.setColumnStretch(1, 1)
         for row, (key, value) in enumerate(rows):
             key_label = QLabel(key)
@@ -224,4 +264,10 @@ class VmDetailPanel(QStackedWidget):
             grid.addWidget(key_label, row, 0)
             grid.addWidget(value_label, row, 1)
         layout.addLayout(grid)
-        self._content_layout.addWidget(box)
+
+        separator = QFrame()
+        separator.setObjectName("detailSeparator")
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFixedHeight(1)
+        layout.addWidget(separator)
+        self._content_layout.addWidget(section)

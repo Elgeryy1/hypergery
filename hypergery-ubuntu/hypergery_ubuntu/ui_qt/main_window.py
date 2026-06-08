@@ -147,20 +147,11 @@ class MainWindow(QMainWindow):
         self._build_tool_bar()
         self._build_menu_bar()
 
-        root = QWidget()
-        root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._build_left_panel())
-        self.right_panel = self._build_right_panel()
-        splitter.addWidget(self.right_panel)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        splitter.setSizes([360, 920])
-        root_layout.addWidget(splitter, 1)
-        self.setCentralWidget(root)
+        # La ventana es ahora el «manager» de VMs estilo VirtualBox: el área
+        # central es directamente el conjunto de páginas (main_tabs). La página
+        # «Máquinas virtuales» se construye como 3 paneles (lista | detalle |
+        # previsualización) dentro de _build_left_panel.
+        self.setCentralWidget(self._build_left_panel())
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -261,7 +252,7 @@ class MainWindow(QMainWindow):
 
         toolbar = QToolBar("Acciones")
         toolbar.setMovable(False)
-        toolbar.setIconSize(QSize(24, 24))
+        toolbar.setIconSize(QSize(32, 32))
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self.toolbar = toolbar
         self.addToolBar(toolbar)
@@ -325,7 +316,6 @@ class MainWindow(QMainWindow):
             self.refresh_v1_all()
         if section == "Laboratorios":
             self.render_labs_workspace()
-        self.right_panel.setVisible(section == "Máquinas virtuales")
 
     def _focus_vm_filter(self) -> None:
         self._show_section("Máquinas virtuales")
@@ -424,91 +414,32 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         panel_layout.addWidget(self.main_tabs)
 
+        # Página «Máquinas virtuales» estilo VirtualBox Manager: tres paneles
+        # (lista de VMs | detalles | previsualización) y una tira inferior
+        # colapsable con el registro de actividad y la comprobación inicial.
         instances_tab = QWidget()
-        layout = QVBoxLayout(instances_tab)
-        layout.setContentsMargins(18, 18, 12, 18)
-        layout.setSpacing(12)
-        
-        header = QHBoxLayout()
-        head_col = QVBoxLayout()
-        head_col.setSpacing(2)
-        self.vm_page_title = QLabel("Máquinas virtuales")
-        self.vm_page_title.setObjectName("pageTitle")
-        self.vm_page_subtitle = QLabel("Las máquinas de este equipo y sus laboratorios")
-        self.vm_page_subtitle.setObjectName("mutedLabel")
-        head_col.addWidget(self.vm_page_title)
-        head_col.addWidget(self.vm_page_subtitle)
-        self.vm_count_label = QLabel("Sin máquinas")
-        self.vm_count_label.setObjectName("mutedLabel")
-        self.vm_filter = QComboBox()
-        self.vm_filter.addItems(["Todas las máquinas", "Laboratorio seleccionado"])
-        self.vm_filter.currentIndexChanged.connect(self.on_vm_filter_changed)
-        self.vm_filter_edit = QLineEdit()
-        self.vm_filter_edit.setPlaceholderText("Buscar máquina…  (Ctrl+F)")
-        self.vm_filter_edit.setClearButtonEnabled(True)
-        self.vm_filter_edit.setMaximumWidth(220)
-        self.vm_filter_edit.textChanged.connect(self._on_vm_search_text)
-        header.addLayout(head_col)
-        header.addStretch()
-        header.addWidget(self.vm_filter_edit)
-        header.addWidget(self.vm_filter)
-        header.addWidget(self.vm_count_label)
-        layout.addLayout(header)
+        outer = QVBoxLayout(instances_tab)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # La barra de botones clásica se conserva (set_busy la referencia) pero
-        # oculta: las acciones viven ahora en la barra de herramientas.
-        self._vm_actions_bar = self._build_vm_actions_bar()
-        self._vm_actions_bar.hide()
+        self.vm_manager_split = QSplitter(Qt.Orientation.Horizontal)
+        self.vm_manager_split.setObjectName("vmManagerSplit")
+        self.vm_manager_split.addWidget(self._build_vm_list_pane())
+        self.vm_manager_split.addWidget(self._build_detail_area())
+        self.vm_manager_split.addWidget(self._build_preview_panel())
+        self.vm_manager_split.setStretchFactor(0, 0)
+        self.vm_manager_split.setStretchFactor(1, 1)
+        self.vm_manager_split.setStretchFactor(2, 0)
+        self.vm_manager_split.setCollapsible(0, False)
+        self.vm_manager_split.setCollapsible(1, False)
+        self.vm_manager_split.setSizes([290, 760, 260])
+        outer.addWidget(self.vm_manager_split, 1)
 
-        self.vm_tree = VmTree()
-        self.vm_tree.currentVmChanged.connect(self._on_tree_vm_changed)
-        self.vm_tree.vmActivated.connect(self._on_tree_vm_activated)
-        self.vm_stack = QStackedWidget()
-        self.vm_stack.addWidget(self.vm_tree)
-        self.vm_stack.addWidget(self._build_vm_empty_state())
-        layout.addWidget(self.vm_stack, 1)
-
-        labs_header = QHBoxLayout()
-        labs_title = QLabel("Laboratorios")
-        labs_title.setObjectName("sectionTitle")
-        self.refresh_labs_button = self._button("Actualizar laboratorios", self.refresh_labs)
-        labs_header.addWidget(labs_title)
-        labs_header.addStretch()
-        labs_header.addWidget(self.refresh_labs_button)
-        layout.addLayout(labs_header)
-        self.lab_table = QTableWidget(0, 6)
-        self.lab_table.setHorizontalHeaderLabels(["Nombre", "ID", "Modo", "Subred", "Puente", "VMs"])
-        self.lab_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.lab_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.lab_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.lab_table.setAlternatingRowColors(True)
-        self.lab_table.verticalHeader().setVisible(False)
-        self.lab_table.horizontalHeader().setStretchLastSection(True)
-        self.lab_table.setMaximumHeight(230)
-        self.lab_table.setColumnWidth(0, 150)
-        self.lab_table.setColumnWidth(1, 150)
-        self.lab_table.setColumnWidth(2, 80)
-        self.lab_table.setColumnWidth(3, 130)
-        self.lab_table.setColumnWidth(4, 110)
-        self.lab_table.itemSelectionChanged.connect(self.on_lab_selection_changed)
-        layout.addWidget(self.lab_table)
-
-        lab_actions = QGridLayout()
-        lab_actions.setHorizontalSpacing(8)
-        lab_actions.setVerticalSpacing(8)
-        self.new_lab_button = self._button("Nuevo laboratorio", self.new_lab, primary=True)
-        self.rename_lab_button = self._button("Renombrar", self.rename_lab)
-        self.delete_lab_button = self._button("Eliminar", self.delete_lab, danger=True)
-        self.duplicate_lab_button = self._button("Duplicar", self.duplicate_lab)
-        self.export_lab_button = self._button("Exportar", self.export_lab)
-        self.import_lab_button = self._button("Importar", self.import_lab)
-        lab_actions.addWidget(self.new_lab_button, 0, 0)
-        lab_actions.addWidget(self.rename_lab_button, 0, 1)
-        lab_actions.addWidget(self.delete_lab_button, 1, 0)
-        lab_actions.addWidget(self.duplicate_lab_button, 1, 1)
-        lab_actions.addWidget(self.export_lab_button, 2, 0)
-        lab_actions.addWidget(self.import_lab_button, 2, 1)
-        layout.addLayout(lab_actions)
+        outer.addWidget(self._build_vm_bottom_strip())
+        # Widgets heredados (tabla de laboratorios, acciones de lab, etiqueta de
+        # selección…) que ciertos render_* y tests siguen referenciando: se
+        # construyen pero quedan ocultos fuera de la vista principal VM-first.
+        outer.addWidget(self._build_hidden_compat_holder())
 
         self.main_tabs.addTab(instances_tab, "Instances")
 
@@ -2923,15 +2854,130 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return panel
 
-    def _build_right_panel(self) -> QWidget:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 18, 18, 18)
-        layout.setSpacing(12)
-        self.selection_label = QLabel("Ninguna máquina seleccionada")
-        self.selection_label.setObjectName("sectionTitle")
-        layout.addWidget(self.selection_label)
+    def _build_vm_list_pane(self) -> QWidget:
+        """Columna izquierda estrecha: buscador + árbol de VMs (estilo VirtualBox)."""
+        pane = QWidget()
+        pane.setObjectName("vmListPane")
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(10, 12, 8, 10)
+        layout.setSpacing(8)
 
+        header = QHBoxLayout()
+        self.vm_page_title = QLabel("Máquinas virtuales")
+        self.vm_page_title.setObjectName("sectionTitle")
+        self.vm_count_label = QLabel("Sin máquinas")
+        self.vm_count_label.setObjectName("mutedLabel")
+        header.addWidget(self.vm_page_title)
+        header.addStretch()
+        header.addWidget(self.vm_count_label)
+        layout.addLayout(header)
+
+        # Subtítulo conservado por compatibilidad (no se muestra en la columna
+        # estrecha estilo VirtualBox; algunos tests verifican su texto).
+        self.vm_page_subtitle = QLabel("Las máquinas de este equipo y sus laboratorios")
+        self.vm_page_subtitle.setObjectName("mutedLabel")
+        self.vm_page_subtitle.hide()
+        layout.addWidget(self.vm_page_subtitle)
+
+        self.vm_filter_edit = QLineEdit()
+        self.vm_filter_edit.setPlaceholderText("Buscar…  (Ctrl+F)")
+        self.vm_filter_edit.setClearButtonEnabled(True)
+        self.vm_filter_edit.textChanged.connect(self._on_vm_search_text)
+        layout.addWidget(self.vm_filter_edit)
+
+        self.vm_filter = QComboBox()
+        self.vm_filter.addItems(["Todas las máquinas", "Laboratorio seleccionado"])
+        self.vm_filter.currentIndexChanged.connect(self.on_vm_filter_changed)
+        layout.addWidget(self.vm_filter)
+
+        self.vm_tree = VmTree()
+        self.vm_tree.currentVmChanged.connect(self._on_tree_vm_changed)
+        self.vm_tree.vmActivated.connect(self._on_tree_vm_activated)
+        self.vm_stack = QStackedWidget()
+        self.vm_stack.addWidget(self.vm_tree)
+        self.vm_stack.addWidget(self._build_vm_empty_state())
+        layout.addWidget(self.vm_stack, 1)
+        return pane
+
+    def _build_preview_panel(self) -> QWidget:
+        """Columna derecha pequeña: «Previsualización» con mini pantalla."""
+        panel = QFrame()
+        panel.setObjectName("previewPane")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        title = QLabel("Previsualización")
+        title.setObjectName("previewTitle")
+        layout.addWidget(title)
+
+        self.preview_screen = QFrame()
+        self.preview_screen.setObjectName("previewScreen")
+        self.preview_screen.setMinimumHeight(150)
+        screen_layout = QVBoxLayout(self.preview_screen)
+        screen_layout.setContentsMargins(8, 8, 8, 8)
+        screen_layout.setSpacing(4)
+        screen_layout.addStretch()
+        self.preview_screen_name = QLabel("Sin selección")
+        self.preview_screen_name.setObjectName("previewScreenName")
+        self.preview_screen_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_screen_name.setWordWrap(True)
+        self.preview_screen_hint = QLabel("Selecciona una máquina")
+        self.preview_screen_hint.setObjectName("previewScreenHint")
+        self.preview_screen_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        screen_layout.addWidget(self.preview_screen_name)
+        screen_layout.addWidget(self.preview_screen_hint)
+        screen_layout.addStretch()
+        layout.addWidget(self.preview_screen)
+
+        self.preview_status = QLabel("")
+        self.preview_status.setObjectName("mutedLabel")
+        self.preview_host = QLabel("")
+        self.preview_host.setObjectName("mutedLabel")
+        self.preview_host.setWordWrap(True)
+        layout.addWidget(self.preview_status)
+        layout.addWidget(self.preview_host)
+
+        self.preview_console_button = QPushButton("Consola")
+        self.preview_console_button.clicked.connect(self.open_console)
+        self.preview_console_button.setEnabled(False)
+        layout.addWidget(self.preview_console_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch()
+        return panel
+
+    def _build_vm_bottom_strip(self) -> QWidget:
+        """Tira inferior colapsable con la comprobación inicial y el registro."""
+        strip = QWidget()
+        layout = QVBoxLayout(strip)
+        layout.setContentsMargins(10, 0, 10, 6)
+        layout.setSpacing(4)
+
+        toggle_row = QHBoxLayout()
+        self.logs_toggle_button = QPushButton("▸  Registro de actividad")
+        self.logs_toggle_button.setObjectName("ghostButton")
+        self.logs_toggle_button.setCheckable(True)
+        self.logs_toggle_button.toggled.connect(self._toggle_activity_strip)
+        toggle_row.addWidget(self.logs_toggle_button)
+        toggle_row.addStretch()
+        layout.addLayout(toggle_row)
+
+        self._activity_container = QWidget()
+        container = QVBoxLayout(self._activity_container)
+        container.setContentsMargins(0, 0, 0, 0)
+        container.setSpacing(8)
+        container.addWidget(self._build_preflight_box())
+        container.addWidget(self._build_logs_panel())
+        self._activity_container.setVisible(False)
+        layout.addWidget(self._activity_container)
+        return strip
+
+    def _toggle_activity_strip(self, checked: bool) -> None:
+        self._activity_container.setVisible(checked)
+        self.logs_toggle_button.setText(
+            "▾  Registro de actividad" if checked else "▸  Registro de actividad"
+        )
+
+    def _build_preflight_box(self) -> QWidget:
         self.preflight_summary = QLabel("Comprobación inicial pendiente")
         self.preflight_summary.setObjectName("preflightSummary")
         self.preflight_details_button = QPushButton("Ver detalles")
@@ -2959,8 +3005,9 @@ class MainWindow(QMainWindow):
         preflight_header.addWidget(self.preflight_details_button)
         preflight_layout.addLayout(preflight_header)
         preflight_layout.addWidget(self.preflight_table)
-        layout.addWidget(preflight_box)
+        return preflight_box
 
+    def _build_lab_box(self) -> QWidget:
         lab_box = QFrame()
         lab_box.setObjectName("panel")
         lab_layout = QVBoxLayout(lab_box)
@@ -2984,16 +3031,69 @@ class MainWindow(QMainWindow):
         self.lab_detail_tabs.addTab(self.lab_topology, "Topología")
         lab_layout.addLayout(lab_header)
         lab_layout.addWidget(self.lab_detail_tabs)
-        layout.addWidget(lab_box)
+        return lab_box
 
-        vertical = QSplitter(Qt.Orientation.Vertical)
-        vertical.addWidget(self._build_detail_area())
-        vertical.addWidget(self._build_logs_panel())
-        vertical.setStretchFactor(0, 3)
-        vertical.setStretchFactor(1, 1)
-        vertical.setSizes([620, 170])
-        layout.addWidget(vertical, 1)
-        return panel
+    def _build_hidden_compat_holder(self) -> QWidget:
+        """Construye los widgets heredados que render_*/tests referencian pero
+        que ya no forman parte de la vista principal VM-first (quedan ocultos).
+        Los laboratorios se gestionan desde el menú Ver → Laboratorios."""
+        holder = QWidget()
+        holder.setObjectName("compatHolder")
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Barra de acciones clásica: set_busy/update_actions referencian sus
+        # botones, que ahora viven en la barra de herramientas.
+        self._vm_actions_bar = self._build_vm_actions_bar()
+        layout.addWidget(self._vm_actions_bar)
+
+        # Etiqueta de selección heredada (la cabecera del detalle ya muestra
+        # nombre + estado).
+        self.selection_label = QLabel("Ninguna máquina seleccionada")
+        self.selection_label.setObjectName("sectionTitle")
+        layout.addWidget(self.selection_label)
+
+        self.refresh_labs_button = self._button("Actualizar laboratorios", self.refresh_labs)
+        layout.addWidget(self.refresh_labs_button)
+
+        self.lab_table = QTableWidget(0, 6)
+        self.lab_table.setHorizontalHeaderLabels(["Nombre", "ID", "Modo", "Subred", "Puente", "VMs"])
+        self.lab_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.lab_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.lab_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.lab_table.setAlternatingRowColors(True)
+        self.lab_table.verticalHeader().setVisible(False)
+        self.lab_table.horizontalHeader().setStretchLastSection(True)
+        self.lab_table.setMaximumHeight(230)
+        self.lab_table.setColumnWidth(0, 150)
+        self.lab_table.setColumnWidth(1, 150)
+        self.lab_table.setColumnWidth(2, 80)
+        self.lab_table.setColumnWidth(3, 130)
+        self.lab_table.setColumnWidth(4, 110)
+        self.lab_table.itemSelectionChanged.connect(self.on_lab_selection_changed)
+        layout.addWidget(self.lab_table)
+
+        self.new_lab_button = self._button("Nuevo laboratorio", self.new_lab, primary=True)
+        self.rename_lab_button = self._button("Renombrar", self.rename_lab)
+        self.delete_lab_button = self._button("Eliminar", self.delete_lab, danger=True)
+        self.duplicate_lab_button = self._button("Duplicar", self.duplicate_lab)
+        self.export_lab_button = self._button("Exportar", self.export_lab)
+        self.import_lab_button = self._button("Importar", self.import_lab)
+        for button in (
+            self.new_lab_button,
+            self.rename_lab_button,
+            self.delete_lab_button,
+            self.duplicate_lab_button,
+            self.export_lab_button,
+            self.import_lab_button,
+        ):
+            layout.addWidget(button)
+
+        layout.addWidget(self._build_lab_box())
+
+        holder.hide()
+        return holder
 
     def toggle_preflight_details(self, checked: bool) -> None:
         self.preflight_table.setVisible(checked)
@@ -3196,6 +3296,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "detail_panel"):
             self.detail_panel.set_console_enabled(has_vm and running)
             self.detail_panel.set_settings_enabled(has_vm and shut_off)
+        if hasattr(self, "preview_console_button"):
+            self.preview_console_button.setEnabled(has_vm and running)
         has_lab = self.selected_lab is not None
         self.rename_lab_button.setEnabled(has_lab)
         self.delete_lab_button.setEnabled(has_lab)
@@ -3820,6 +3922,7 @@ class MainWindow(QMainWindow):
         if vm is None:
             self.selection_label.setText("Ninguna máquina seleccionada")
             self.detail_panel.show_welcome()
+            self._update_preview(None)
             return
         self.selection_label.setText(
             f"{vm.name}  ·  {humanize_vm_status(vm.state)}  ·  {vm.lab_id or 'sin laboratorio'}"
@@ -3828,7 +3931,35 @@ class MainWindow(QMainWindow):
             snapshots = self.backend.list_snapshots(vm.name)
         except Exception:
             snapshots = []
-        self.detail_panel.show_vm(vm, snapshots)
+        self.detail_panel.show_vm(vm, snapshots, extra=self._hypergery_detail_rows(vm))
+        self._update_preview(vm)
+
+    def _hypergery_detail_rows(self, vm: VmSummary) -> list[tuple[str, str]]:
+        host_id = effective_config()["host_id"].value
+        return [
+            ("Equipo (host)", str(host_id)),
+            ("Hub", self.registry_url()),
+            ("Laboratorio", vm.lab_id or "Sin laboratorio"),
+            ("Traslado", "Disponible vía «Mover a otro equipo» (NAS/Hub)"),
+        ]
+
+    def _update_preview(self, vm: VmSummary | None) -> None:
+        if not hasattr(self, "preview_screen_name"):
+            return
+        if vm is None:
+            self.preview_screen_name.setText("Sin selección")
+            self.preview_screen_hint.setText("Selecciona una máquina")
+            self.preview_status.setText("")
+            self.preview_host.setText("")
+            self.preview_console_button.setEnabled(False)
+            return
+        self.preview_screen_name.setText(vm.name)
+        self.preview_screen_hint.setText("")
+        self.preview_status.setText(humanize_vm_status(vm.state))
+        host_id = effective_config()["host_id"].value
+        self.preview_host.setText(f"Equipo: {host_id}")
+        running = "running" in (vm.state or "").lower() or "paused" in (vm.state or "").lower()
+        self.preview_console_button.setEnabled(running)
 
     def selected_name(self) -> str:
         if self.selected_vm is None:

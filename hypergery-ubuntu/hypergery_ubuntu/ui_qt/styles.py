@@ -355,6 +355,36 @@ QLabel#detailValue {
     color: #e8e8e8;
     font-weight: 600;
 }
+QLabel#detailGroupIcon {
+    background: #2a82da;
+    border-radius: 2px;
+}
+QFrame#detailSeparator {
+    background: #3a3a3a;
+    border: 0;
+}
+
+/* ---------- Previsualización estilo VirtualBox ---------- */
+QFrame#previewPane {
+    background: #1e1e1e;
+    border-left: 1px solid #333333;
+}
+QLabel#previewTitle {
+    font-weight: 700;
+    color: #f0f0f0;
+}
+QFrame#previewScreen {
+    background: #0a0a0a;
+    border: 1px solid #444444;
+    border-radius: 4px;
+}
+QLabel#previewScreenName {
+    color: #cfd6dd;
+    font-weight: 600;
+}
+QLabel#previewScreenHint {
+    color: #777777;
+}
 
 QFrame#sidebar {
     background: #262626;
