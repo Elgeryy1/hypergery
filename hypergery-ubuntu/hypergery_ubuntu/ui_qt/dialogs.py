@@ -88,6 +88,62 @@ def confirm(parent, title: str, text: str, *, yes_text: str = "Sí", no_text: st
     return box.exec() == QMessageBox.StandardButton.Yes
 
 
+# Por encima de este tamaño una ISO se considera sospechosamente grande: la
+# creación de la máquina (copia/registro) puede tardar mucho. Es solo un aviso,
+# no un bloqueo.
+ISO_LARGE_BYTES = 16 * 1024**3  # 16 GiB
+
+
+def humanize_bytes(size: int | float) -> str:
+    """Tamaño en bytes → cadena legible en español (1.5 GiB, 700 MiB…)."""
+    try:
+        value = float(size)
+    except (TypeError, ValueError):
+        return "tamaño desconocido"
+    if value < 0:
+        return "tamaño desconocido"
+    units = ("bytes", "KiB", "MiB", "GiB", "TiB", "PiB")
+    index = 0
+    while value >= 1024 and index < len(units) - 1:
+        value /= 1024
+        index += 1
+    if index == 0:
+        return f"{int(value)} {units[0]}"
+    return f"{value:.1f}".rstrip("0").rstrip(".") + f" {units[index]}"
+
+
+def validate_iso_path(path: str | None, *, required: bool = False) -> tuple[bool, str]:
+    """Valida la ruta de una ISO de instalación. Función pura y testeable.
+
+    Devuelve `(ok, mensaje)`. `ok=False` debe bloquear el avance; `ok=True` con
+    un mensaje no vacío es un aviso que permite continuar. La ISO es opcional:
+    arrancar sin medio de instalación está permitido salvo que `required=True`.
+    """
+    text = (path or "").strip()
+    if not text:
+        if required:
+            return (False, "Selecciona una imagen ISO")
+        return (True, "")
+    iso = Path(text).expanduser()
+    if not iso.exists():
+        return (False, f"El archivo ISO no existe: {text}")
+    if not iso.is_file():
+        return (False, "La ruta no es un archivo válido")
+    try:
+        size = iso.stat().st_size
+    except OSError:
+        return (False, "La ruta no es un archivo válido")
+    if not os.access(iso, os.R_OK):
+        return (False, "La ruta no es un archivo válido")
+    if size == 0:
+        return (False, "El archivo ISO está vacío (0 bytes)")
+    if iso.suffix.lower() != ".iso":
+        return (True, "Aviso: el archivo no tiene extensión .iso")
+    if size > ISO_LARGE_BYTES:
+        return (True, f"Aviso: ISO muy grande ({humanize_bytes(size)}), la creación puede tardar")
+    return (True, "")
+
+
 class AppSettingsDialog(QDialog):
     SECTIONS = ("General", "Hub", "Agente", "NAS", "Valores por defecto", "Consola", "Apariencia", "Avanzado")
 
@@ -351,6 +407,9 @@ class IdentityPage(QWizardPage):
         self.iso_edit.setPlaceholderText("/path/to/ubuntu.iso")
         browse = QPushButton("Examinar")
         browse.clicked.connect(self.pick_iso)
+        self.iso_info_label = QLabel("")
+        self.iso_info_label.setObjectName("mutedLabel")
+        self.iso_info_label.setWordWrap(True)
         self.os_type = QComboBox()
         self.os_type.addItems(["Linux", "Windows", "Otro"])
 
@@ -361,6 +420,7 @@ class IdentityPage(QWizardPage):
         form = QFormLayout()
         form.addRow("Nombre", self.name_edit)
         form.addRow("ISO de arranque", iso_row)
+        form.addRow("", self.iso_info_label)
         form.addRow("Sistema operativo", self.os_type)
         form.addRow("", self.error_label)
         wrapper = QVBoxLayout(self)
@@ -372,6 +432,7 @@ class IdentityPage(QWizardPage):
         self.registerField("os_type", self.os_type, "currentText", self.os_type.currentTextChanged)
         self.name_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
         self.iso_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
+        self.iso_edit.textChanged.connect(lambda _text: self._refresh_iso_info())
 
     def pick_iso(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
@@ -384,6 +445,27 @@ class IdentityPage(QWizardPage):
         )
         if path:
             self.iso_edit.setText(path)
+            self._refresh_iso_info()
+
+    def _refresh_iso_info(self) -> None:
+        """Muestra el tamaño de la ISO elegida (o el motivo por el que no vale)."""
+        text = self.iso_edit.text().strip()
+        if not text:
+            self.iso_info_label.setText("")
+            return
+        ok, message = validate_iso_path(text, required=True)
+        iso = Path(text).expanduser()
+        if ok:
+            try:
+                size_text = humanize_bytes(iso.stat().st_size)
+            except OSError:
+                size_text = "tamaño desconocido"
+            info = f"Tamaño: {size_text}"
+            if message:
+                info += f" · {message}"
+            self.iso_info_label.setText(info)
+        else:
+            self.iso_info_label.setText(message)
 
     def isComplete(self) -> bool:
         return bool(self.name_edit.text().strip() and self.iso_edit.text().strip())
@@ -393,10 +475,19 @@ class IdentityPage(QWizardPage):
         if not self.name_edit.text().strip():
             self.error_label.setText("El nombre de la máquina es obligatorio.")
             return False
-        iso = Path(self.iso_edit.text()).expanduser()
-        if not iso.is_file():
-            self.error_label.setText(f"La ISO de arranque no existe: {iso}")
+        ok, message = validate_iso_path(self.iso_edit.text(), required=True)
+        if not ok:
+            self.error_label.setText(message)
             return False
+        if message:
+            # Aviso (extensión no .iso, ISO muy grande): se permite continuar.
+            return confirm(
+                self,
+                "Confirmar ISO",
+                f"{message}.\n\n¿Quieres continuar de todas formas?",
+                yes_text="Continuar",
+                no_text="Cancelar",
+            )
         return True
 
 

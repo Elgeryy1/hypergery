@@ -33,6 +33,30 @@ HG_NS = "https://hypergery.local/schema/0.1"
 ET.register_namespace("hg", HG_NS)
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read a positive integer from the environment, falling back on default."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# Timeout por defecto para órdenes virsh/qemu-img cortas (consultas, listados,
+# definiciones). Se mantiene en 120s por compatibilidad con las llamadas
+# existentes que no especifican timeout.
+DEFAULT_COMMAND_TIMEOUT = 120
+
+# Timeout para operaciones largas que copian/convierten discos completos
+# (clonado con `qemu-img convert`, exportación/importación/migración). Por
+# defecto 1800s (30 min) y configurable con HYPERGERY_LONG_OP_TIMEOUT para
+# discos muy grandes o NAS lentos.
+LONG_OPERATION_TIMEOUT = _env_int("HYPERGERY_LONG_OP_TIMEOUT", 1800)
+
+
 class HyperGeryError(RuntimeError):
     pass
 
@@ -228,7 +252,7 @@ class HyperGeryBackend:
         )
         self.ensure_default_lab()
 
-    def run(self, args: list[str], *, timeout: int = 120, check: bool = True) -> CommandResult:
+    def run(self, args: list[str], *, timeout: int = DEFAULT_COMMAND_TIMEOUT, check: bool = True) -> CommandResult:
         logging.info("run: %s", " ".join(args))
         env = os.environ.copy()
         env["LC_ALL"] = "C"
@@ -259,10 +283,10 @@ class HyperGeryBackend:
             raise HyperGeryError(f"{' '.join(args)} failed: {msg}")
         return result
 
-    def virsh(self, args: list[str], *, timeout: int = 120, check: bool = True) -> CommandResult:
+    def virsh(self, args: list[str], *, timeout: int = DEFAULT_COMMAND_TIMEOUT, check: bool = True) -> CommandResult:
         return self.run(["virsh", "--connect", LIBVIRT_URI, *args], timeout=timeout, check=check)
 
-    def qemu_img(self, args: list[str], *, timeout: int = 120, check: bool = True) -> CommandResult:
+    def qemu_img(self, args: list[str], *, timeout: int = DEFAULT_COMMAND_TIMEOUT, check: bool = True) -> CommandResult:
         return self.run(["qemu-img", *args], timeout=timeout, check=check)
 
     def preflight(self) -> list[PreflightItem]:
@@ -1134,7 +1158,9 @@ class HyperGeryBackend:
         clone_dir = self.vms_dir / clone_name
         clone_dir.mkdir(parents=True, exist_ok=True)
         clone_disk = clone_dir / f"{clone_name}.qcow2"
-        self.qemu_img(["convert", "-O", "qcow2", source.disk_path, str(clone_disk)], timeout=3600)
+        # Convertir/copiar el disco completo es una operación larga; usar el
+        # timeout extendido y configurable en vez del de 120s por defecto.
+        self.qemu_img(["convert", "-O", "qcow2", source.disk_path, str(clone_disk)], timeout=LONG_OPERATION_TIMEOUT)
         self.grant_libvirt_qemu_access(clone_disk)
         root = ET.fromstring(source.xml)
         root.find("name").text = clone_name

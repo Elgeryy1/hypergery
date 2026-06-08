@@ -7,7 +7,7 @@ import shutil
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .backend import HG_NS, HyperGeryError, now_iso, validate_lab_id, validate_vm_name
 from .labs import LabStore
@@ -373,6 +373,7 @@ def export_vm_package(
     allow_paused: bool = False,
     include_iso: bool = True,
     include_snapshots: bool = True,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> dict:
     vm_name = validate_vm_name(vm_name)
     preflight = migration_preflight(
@@ -390,50 +391,64 @@ def export_vm_package(
     migration_id = migration_id or f"{vm_name}-{uuid.uuid4().hex[:12]}"
     package_dir = Path(output_dir).expanduser().resolve() / PACKAGE_ROOT_NAME / migration_id
     package_dir.mkdir(parents=True, exist_ok=False)
-    manifest = create_migration_manifest(
-        backend,
-        vm_name,
-        migration_id=migration_id,
-        target_vm_name=target_vm_name,
-        include_iso=include_iso,
-        include_snapshots=include_snapshots,
-    )
-    vm = backend.get_vm(vm_name)
-    (package_dir / "logs").mkdir(parents=True, exist_ok=True)
-    (package_dir / "domain.xml").write_text(vm.xml, encoding="utf-8")
-    (package_dir / "logs" / "migration.log").write_text(
-        f"{now_iso()} exported source_vm={vm_name} strategy=offline-copy source_will_be_deleted=false\n",
-        encoding="utf-8",
-    )
+    # A partir de aquí el directorio del paquete ya existe; si algo falla al
+    # copiar los discos/ISO lo borramos para no dejar un paquete corrupto a
+    # medias y re-lanzamos el error original.
+    try:
+        manifest = create_migration_manifest(
+            backend,
+            vm_name,
+            migration_id=migration_id,
+            target_vm_name=target_vm_name,
+            include_iso=include_iso,
+            include_snapshots=include_snapshots,
+        )
+        vm = backend.get_vm(vm_name)
+        (package_dir / "logs").mkdir(parents=True, exist_ok=True)
+        (package_dir / "domain.xml").write_text(vm.xml, encoding="utf-8")
+        (package_dir / "logs" / "migration.log").write_text(
+            f"{now_iso()} exported source_vm={vm_name} strategy=offline-copy source_will_be_deleted=false\n",
+            encoding="utf-8",
+        )
 
-    used_names: dict[str, set[str]] = {"disk": set(), "iso": set(), "snapshot": set()}
-    for asset in manifest["assets"]:
-        if not asset.get("exists"):
-            continue
-        asset_type = asset["type"]
-        source = Path(asset["path"])
-        subdir = {"disk": "disks", "iso": "isos", "snapshot": "snapshots"}[asset_type]
-        filename = _unique_name(used_names[asset_type], source.name)
-        destination = package_dir / subdir / filename
-        copied = _copy_file(source, destination)
-        asset["relative_path"] = str(destination.relative_to(package_dir))
-        asset["package_size_bytes"] = copied["size_bytes"]
-        asset["sha256"] = copied["sha256"]
+        copyable_assets = [asset for asset in manifest["assets"] if asset.get("exists")]
+        total_assets = len(copyable_assets)
+        used_names: dict[str, set[str]] = {"disk": set(), "iso": set(), "snapshot": set()}
+        for index, asset in enumerate(copyable_assets, start=1):
+            asset_type = asset["type"]
+            source = Path(asset["path"])
+            if progress_callback is not None:
+                progress_callback(f"Copiando {asset_type}: {source.name}", index, total_assets)
+            subdir = {"disk": "disks", "iso": "isos", "snapshot": "snapshots"}[asset_type]
+            filename = _unique_name(used_names[asset_type], source.name)
+            destination = package_dir / subdir / filename
+            copied = _copy_file(source, destination)
+            asset["relative_path"] = str(destination.relative_to(package_dir))
+            asset["package_size_bytes"] = copied["size_bytes"]
+            asset["sha256"] = copied["sha256"]
 
-    lab = manifest.get("lab")
-    if lab:
-        lab_dir = package_dir / "labs"
-        lab_dir.mkdir(parents=True, exist_ok=True)
-        (lab_dir / "lab.json").write_text(json.dumps(lab, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        lab = manifest.get("lab")
+        if lab:
+            lab_dir = package_dir / "labs"
+            lab_dir.mkdir(parents=True, exist_ok=True)
+            (lab_dir / "lab.json").write_text(json.dumps(lab, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    template_dir = package_dir / "templates"
-    for kind, entries in manifest.get("templates", {}).items():
-        for template_id, template in entries.items():
-            destination = template_dir / kind / f"{template_id}.json"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(json.dumps(template, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        template_dir = package_dir / "templates"
+        for kind, entries in manifest.get("templates", {}).items():
+            for template_id, template in entries.items():
+                destination = template_dir / kind / f"{template_id}.json"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(json.dumps(template, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    (package_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (package_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except BaseException:
+        # Limpieza best-effort del paquete parcial; nunca enmascarar el error
+        # original con un fallo de borrado (ni siquiera si rmtree falla).
+        try:
+            shutil.rmtree(package_dir, ignore_errors=True)
+        except Exception:  # pragma: no cover - defensivo
+            pass
+        raise
     logging.info("exported migration package vm=%s package=%s", vm_name, package_dir)
     return {
         "migration_id": migration_id,
