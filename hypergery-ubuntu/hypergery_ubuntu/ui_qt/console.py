@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
@@ -26,6 +26,10 @@ from .console_helpers import (
     HOST_KEY_NAME,
     SPICE_INTEGRATED_MESSAGE,
     SPICE_STATUS_MESSAGE,
+    VNC_CONNECT_TIMEOUT,
+    VNC_CONNECTING_MESSAGE,
+    VNC_FAILED_MESSAGE,
+    blocking_vnc_connect,
     can_capture_input,
     can_switch_display_to_vnc,
     centered_offset,
@@ -34,8 +38,45 @@ from .console_helpers import (
     is_host_key,
     scale_to_fit_size,
     should_autoconnect_console,
+    vnc_connect_error_reason,
     widget_to_framebuffer,
 )
+
+
+class VncConnectWorker(QObject):
+    """Open the VNC TCP socket off the UI thread with a hard connect timeout.
+
+    Lives in its own :class:`QThread`. ``run`` performs the blocking connect and
+    emits exactly one terminal signal: ``connected`` with a live socket file
+    descriptor, ``timed_out`` when the connect exceeds ``timeout`` seconds, or
+    ``failed`` with a short Spanish reason for any other error.
+    """
+
+    connected = Signal(int)
+    failed = Signal(str)
+    timed_out = Signal()
+    finished = Signal()
+
+    def __init__(self, host: str, port: int, timeout: float = VNC_CONNECT_TIMEOUT) -> None:
+        super().__init__()
+        self._host = host
+        self._port = int(port)
+        self._timeout = timeout
+
+    def run(self) -> None:
+        try:
+            descriptor = blocking_vnc_connect(self._host, self._port, self._timeout)
+        except (TimeoutError, OSError) as exc:
+            if isinstance(exc, TimeoutError):
+                self.timed_out.emit()
+            else:
+                self.failed.emit(vnc_connect_error_reason(exc))
+        except Exception as exc:  # pragma: no cover - defensive, keep UI alive.
+            self.failed.emit(vnc_connect_error_reason(exc))
+        else:
+            self.connected.emit(int(descriptor))
+        finally:
+            self.finished.emit()
 
 
 def _keysym(event: QKeyEvent) -> int:
@@ -153,6 +194,9 @@ class IntegratedConsoleWidget(QWidget):
         self.graphics = ""
         self.display: dict[str, object] | None = None
         self.socket: QTcpSocket | None = None
+        self.connect_thread: QThread | None = None
+        self.connect_worker: VncConnectWorker | None = None
+        self.connecting = False
         self.buffer = bytearray()
         self.state = "idle"
         self.framebuffer: QImage | None = None
@@ -183,6 +227,8 @@ class IntegratedConsoleWidget(QWidget):
         self.mode_stack.addWidget(self.scroll_area)
         self.spice_card = self._build_spice_card()
         self.mode_stack.addWidget(self.spice_card)
+        self.error_card = self._build_error_card()
+        self.mode_stack.addWidget(self.error_card)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 18)
@@ -255,6 +301,45 @@ class IntegratedConsoleWidget(QWidget):
         outer_layout.addStretch()
         return outer
 
+    def _build_error_card(self) -> QWidget:
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(24, 24, 24, 24)
+        outer_layout.addStretch()
+        card = QFrame()
+        card.setObjectName("spiceCard")
+        card.setMaximumWidth(680)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(28, 26, 28, 26)
+        card_layout.setSpacing(14)
+        title = QLabel(VNC_FAILED_MESSAGE)
+        title.setObjectName("consoleCardTitle")
+        self.error_detail = QLabel("")
+        self.error_detail.setWordWrap(True)
+        self.error_detail.setObjectName("mutedLabel")
+        self.retry_button = QPushButton("Reintentar")
+        self.retry_button.setObjectName("primaryButton")
+        self.error_external_button = QPushButton("Abrir visor externo")
+        self.retry_button.clicked.connect(self.reconnect_console)
+        self.error_external_button.clicked.connect(self.open_external)
+        actions = QHBoxLayout()
+        actions.addWidget(self.retry_button)
+        actions.addWidget(self.error_external_button)
+        actions.addStretch()
+        card_layout.addWidget(title)
+        card_layout.addWidget(self.error_detail)
+        card_layout.addLayout(actions)
+        outer_layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
+        outer_layout.addStretch()
+        return outer
+
+    def show_connection_error(self, reason: str) -> None:
+        full_reason = f"{reason} Comprueba que la máquina está encendida y vuelve a intentarlo, o usa «Abrir visor externo»."
+        self.error_detail.setText(full_reason)
+        self.set_status(f"{VNC_FAILED_MESSAGE}: {reason}")
+        self.mode_stack.setCurrentWidget(self.error_card)
+        self.update_controls(console_mode_for_graphics(self.graphics) == "integrated-vnc")
+
     def set_vm(self, vm) -> None:
         name = getattr(vm, "name", "") if vm else ""
         state = str(getattr(vm, "state", "") if vm else "").lower()
@@ -306,6 +391,9 @@ class IntegratedConsoleWidget(QWidget):
     def connect_console(self) -> None:
         if not self.vm_name:
             return
+        if self.connecting:
+            # A connect attempt is already running on the worker thread.
+            return
         if "running" not in self.vm_state and "paused" not in self.vm_state:
             self.set_status("La máquina no está encendida. Enciéndela para abrir la consola.")
             self.screen.setText("La máquina no está encendida. Enciéndela para abrir la consola.")
@@ -329,24 +417,118 @@ class IntegratedConsoleWidget(QWidget):
         self.disconnect_console()
         self.display = display
         self.buffer.clear()
-        self.state = "protocol"
-        self.socket = QTcpSocket(self)
-        self.socket.readyRead.connect(self.on_ready_read)
-        self.socket.errorOccurred.connect(self.on_socket_error)
-        self.socket.disconnected.connect(lambda: self.update_controls(True))
-        self.socket.connectToHost(str(display["host"]), int(display["port"]))
-        self.set_status(f"Conectando con {display['uri']}...")
+        self.state = "idle"
+        # The TCP connect can block indefinitely if the host/VM is unreachable,
+        # so it runs on a worker thread with a hard timeout. The UI shows a
+        # non-blocking "Conectando…" state until the worker reports back.
+        self._start_connect_worker(str(display["host"]), int(display["port"]))
+        self.mode_stack.setCurrentWidget(self.scroll_area)
+        self.screen.setText(f"{VNC_CONNECTING_MESSAGE}\nConectando con {display['uri']}…")
+        self.set_status(f"{VNC_CONNECTING_MESSAGE} {display['uri']}")
         self.update_controls(True)
+
+    def _start_connect_worker(self, host: str, port: int) -> None:
+        self.connecting = True
+        thread = QThread(self)
+        worker = VncConnectWorker(host, port, VNC_CONNECT_TIMEOUT)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.connected.connect(self._on_worker_connected)
+        worker.failed.connect(self._on_worker_failed)
+        worker.timed_out.connect(self._on_worker_timed_out)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_connect_thread_finished)
+        self.connect_thread = thread
+        self.connect_worker = worker
+        thread.start()
+
+    def _on_connect_thread_finished(self) -> None:
+        self.connecting = False
+        self.connect_thread = None
+        self.connect_worker = None
+
+    def _stop_connect_worker(self) -> None:
+        thread = self.connect_thread
+        if thread is None:
+            self.connecting = False
+            return
+        # Detach our slots so a late result cannot drive the UI after we bailed,
+        # then wait for the blocking connect (bounded by the 10 s timeout) to end.
+        worker = self.connect_worker
+        if worker is not None:
+            for signal in (worker.connected, worker.failed, worker.timed_out):
+                try:
+                    signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        thread.quit()
+        thread.wait()
+        self.connecting = False
+        self.connect_thread = None
+        self.connect_worker = None
+
+    def _on_worker_connected(self, descriptor: int) -> None:
+        if not self.connecting:
+            # We were cancelled while connecting; close the orphaned descriptor.
+            self._discard_descriptor(descriptor)
+            return
+        self.connecting = False
+        socket = QTcpSocket(self)
+        if not socket.setSocketDescriptor(descriptor, QAbstractSocket.SocketState.ConnectedState):
+            socket.deleteLater()
+            self._discard_descriptor(descriptor)
+            self.show_connection_error("No se pudo adoptar la conexión con la consola.")
+            return
+        self.socket = socket
+        self.buffer.clear()
+        self.state = "protocol"
+        socket.readyRead.connect(self.on_ready_read)
+        socket.errorOccurred.connect(self.on_socket_error)
+        socket.disconnected.connect(lambda: self.update_controls(True))
+        self.mode_stack.setCurrentWidget(self.scroll_area)
+        self.set_status(f"Conectada. Negociando con el servidor VNC… Tecla para soltar: {HOST_KEY_NAME}")
+        self.update_controls(True)
+        # The server speaks first in RFB, but if any bytes are already buffered,
+        # process them now so the handshake is not stalled waiting for readyRead.
+        if socket.bytesAvailable():
+            self.on_ready_read()
+
+    def _on_worker_failed(self, reason: str) -> None:
+        if not self.connecting:
+            return
+        self.connecting = False
+        self.show_connection_error(reason)
+
+    def _on_worker_timed_out(self) -> None:
+        if not self.connecting:
+            return
+        self.connecting = False
+        self.show_connection_error("Se agotó el tiempo de espera (10 s) al conectar con la consola.")
+
+    @staticmethod
+    def _discard_descriptor(descriptor: int) -> None:
+        try:
+            import socket as _socket
+
+            _socket.socket(fileno=int(descriptor)).close()
+        except OSError:
+            pass
 
     def disconnect_console(self) -> None:
         was_connected = self.is_connected()
+        was_connecting = self.connecting
         self.release_input()
+        self._stop_connect_worker()
         if self.socket:
             self.socket.disconnectFromHost()
             self.socket.deleteLater()
             self.socket = None
         self.buffer.clear()
         self.state = "idle"
+        if was_connecting and not was_connected:
+            self.set_status("Conexión con la consola cancelada.")
         if was_connected:
             self.framebuffer = None
             self.screen.setText(f"Consola desconectada. Pulsa «Conectar» para reconectar.\nTecla para soltar: {HOST_KEY_NAME}")
@@ -685,9 +867,11 @@ class VmConsoleWindow(QMainWindow):
         self.state_label.setText(text)
 
     def update_action_state(self, vm_can_connect: bool, connected: bool) -> None:
-        self.connect_action.setEnabled(vm_can_connect and not connected)
-        self.disconnect_action.setEnabled(connected)
-        self.reconnect_action.setEnabled(vm_can_connect)
+        connecting = self.console.connecting
+        self.connect_action.setEnabled(vm_can_connect and not connected and not connecting)
+        # Desconectar también cancela un intento de conexión en curso.
+        self.disconnect_action.setEnabled(connected or connecting)
+        self.reconnect_action.setEnabled(vm_can_connect and not connecting)
         self.cad_action.setEnabled(connected)
         self.release_action.setEnabled(self.console.input_captured)
         self.external_action.setEnabled(bool(self.console.vm_name))
