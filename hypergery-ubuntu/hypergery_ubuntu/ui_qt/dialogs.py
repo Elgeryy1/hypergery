@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -23,10 +24,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QSpinBox,
     QStackedWidget,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -889,7 +892,11 @@ class SettingsDialog(QDialog):
     def __init__(self, vm: VmSummary, parent=None) -> None:
         super().__init__(parent)
         self.vm = vm
-        self.setWindowTitle(f"Ajustes: {vm.name}")
+        self.setWindowTitle(f"Configuración: {vm.name}")
+
+        # Campos (idénticos a antes; values() no cambia).
+        self.name_value = QLineEdit(vm.name)
+        self.name_value.setReadOnly(True)
         self.ram = QSpinBox()
         self.ram.setRange(256, 262144)
         self.ram.setSingleStep(512)
@@ -913,28 +920,92 @@ class SettingsDialog(QDialog):
         self.lab_id = QLineEdit(vm.lab_id or "default-lab")
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
+        self.error_label.setWordWrap(True)
 
-        form = QFormLayout()
-        form.addRow("RAM", self.ram)
-        form.addRow("vCPUs", self.vcpus)
-        form.addRow("ISO de arranque", iso_row)
-        form.addRow("Red", self.network)
-        form.addRow("Pantalla", self.display)
-        form.addRow("Laboratorio", self.lab_id)
         display_hint = QLabel("La consola integrada requiere VNC. SPICE usa el visor externo.")
         display_hint.setObjectName("mutedLabel")
-        form.addRow("", display_hint)
-        form.addRow("", self.error_label)
+        display_hint.setWordWrap(True)
+
+        # Navegación lateral con páginas, al estilo del diálogo de Ajustes de
+        # VirtualBox (General / Sistema / Pantalla / Almacenamiento / Red).
+        self.section_nav = QListWidget()
+        self.section_nav.setObjectName("sidebarNav")
+        self.section_nav.setFixedWidth(184)
+        self.pages = QStackedWidget()
+        self.section_nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+
+        sections = (
+            ("General", "SP_ComputerIcon", (
+                ("Nombre", self.name_value),
+                ("Laboratorio", self.lab_id),
+            )),
+            ("Sistema", "SP_DriveHDIcon", (
+                ("Memoria base", self.ram),
+                ("Procesadores", self.vcpus),
+            )),
+            ("Pantalla", "SP_DesktopIcon", (
+                ("Controlador gráfico", self.display),
+                ("", display_hint),
+            )),
+            ("Almacenamiento", "SP_DriveFDIcon", (
+                ("ISO de arranque", iso_row),
+            )),
+            ("Red", "SP_DriveNetIcon", (
+                ("Adaptador 1", self.network),
+            )),
+        )
+        for title_text, icon_name, rows in sections:
+            self.section_nav.addItem(QListWidgetItem(self._std_icon(icon_name), title_text))
+            self.pages.addWidget(self._form_page(rows))
+        self.section_nav.setCurrentRow(0)
+
+        header = QLabel("Configuración")
+        header.setObjectName("pageTitle")
+        subtitle = QLabel(f"{vm.name} · {humanize_vm_status(vm.state)}")
+        subtitle.setObjectName("mutedLabel")
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        body.addWidget(self.section_nav)
+        pages_frame = QFrame()
+        pages_frame.setObjectName("panel")
+        pages_frame_layout = QVBoxLayout(pages_frame)
+        pages_frame_layout.setContentsMargins(18, 16, 18, 16)
+        pages_frame_layout.addWidget(self.pages)
+        body.addWidget(pages_frame, 1)
+
         buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
         hint = QLabel("Los ajustes se aplican a través de libvirt y la máquina debe estar apagada.")
         hint.setObjectName("mutedLabel")
+        hint.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.addWidget(header)
+        layout.addWidget(subtitle)
+        layout.addLayout(body, 1)
+        layout.addWidget(self.error_label)
         layout.addWidget(hint)
         layout.addWidget(buttons)
-        self.resize(640, 360)
+        self.resize(760, 470)
+
+    def _std_icon(self, name: str) -> QIcon:
+        pixmap = getattr(QStyle.StandardPixmap, name, None)
+        if pixmap is None:
+            return QIcon()
+        app = QApplication.instance()
+        return app.style().standardIcon(pixmap) if app else QIcon()
+
+    def _form_page(self, rows: tuple) -> QWidget:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(4, 6, 4, 6)
+        form.setSpacing(12)
+        for label, field in rows:
+            form.addRow(label, field)
+        return page
 
     def pick_iso(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
