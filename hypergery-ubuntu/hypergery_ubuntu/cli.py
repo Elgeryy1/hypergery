@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from .backend import HyperGeryBackend, HyperGeryError
 from .labs import LabStore
 from .templates import TemplateStore
+from .ui_qt.formatting import format_size
 
 
 def default_hub_url() -> str:
@@ -253,15 +254,6 @@ def registry_action(args: argparse.Namespace) -> int:
             raise HyperGeryError(f"Registry health check failed for {url}: {exc}") from exc
         return print_json(data)
     return 2
-
-
-def format_size(size_bytes: int) -> str:
-    size = float(size_bytes or 0)
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if size < 1024 or unit == "GiB":
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-        size /= 1024
-    return f"{int(size)} B"
 
 
 def print_staged_packages(listing: dict) -> int:
