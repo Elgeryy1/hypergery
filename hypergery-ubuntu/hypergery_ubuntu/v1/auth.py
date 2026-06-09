@@ -90,7 +90,16 @@ class ApiTokenStore:
     def resolve(self, token: str) -> str | None:
         if not token:
             return None
-        return self._load().get(token)
+        import hmac
+
+        # HG-BUG-0026: comparación en tiempo constante también para los
+        # tokens de usuario (antes era un lookup de dict); se recorre el
+        # almacén completo para no filtrar la posición del match.
+        matched: str | None = None
+        for stored, user_id in self._load().items():
+            if hmac.compare_digest(stored, token):
+                matched = user_id
+        return matched
 
 
 def resolve_user(

@@ -12,6 +12,7 @@ from .hosts import HostRegistry
 from .labsx import filter_labs, validate_lab
 from .nas import NasService
 from .networks import networks_from_labs, validate_networks
+from ..registry.auth import AuthRateLimiter
 from .auth import ApiTokenStore, load_or_create_api_token, resolve_user
 from .orchestrator import OrchestratorService
 from .providers import VmInfo
@@ -198,6 +199,9 @@ class ApiServer(ThreadingHTTPServer):
         # explícitamente (solo loopback/desarrollo; queda registrado).
         self.auth_token = load_or_create_api_token() if auth_token is None else auth_token
         self.token_store = token_store or ApiTokenStore()
+        # HG-BUG-0027: el mismo anti fuerza bruta del Hub también aquí (el
+        # API companion lo consumirá un móvil expuesto en la VPN).
+        self.auth_limiter = AuthRateLimiter()
         if not self.auth_token:
             get_logger().warning("api", "v1 API auth is DISABLED (explicit empty token).")
 
@@ -241,6 +245,13 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             from .auth import OWNER_USER
 
             return OWNER_USER
+        client_ip = self.client_address[0] if self.client_address else "?"
+        if self.server.auth_limiter.is_blocked(client_ip):
+            self._send(
+                429,
+                envelope(error={"code": "rate_limited", "message": "Too many failed authentication attempts. Try again later."}),
+            )
+            return None
         header = (self.headers.get("Authorization") or "").strip()
         token = header[7:].strip() if header.lower().startswith("bearer ") else ""
         user = resolve_user(
@@ -250,8 +261,9 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             user_store=self.server.context.user_store,
         )
         if user is not None:
+            self.server.auth_limiter.record_success(client_ip)
             return user
-        client_ip = self.client_address[0] if self.client_address else "?"
+        self.server.auth_limiter.record_failure(client_ip)
         get_logger().warning(
             "api",
             f"auth failure: {self.command} {urlparse(self.path).path} from {client_ip}",
