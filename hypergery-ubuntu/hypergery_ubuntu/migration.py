@@ -622,6 +622,22 @@ def import_vm_package(
     if result.returncode == 0:
         raise HyperGeryError(f"Target VM already exists: {target_vm_name}")
 
+    # HG-BUG-0013: preflight de espacio en el DESTINO antes de copiar nada
+    # (el export ya lo hacía; el import fallaba a mitad de copia).
+    needed_bytes = sum(
+        int(asset.get("package_size_bytes") or asset.get("size_bytes") or 0)
+        for asset in manifest.get("assets", [])
+        if asset.get("relative_path")
+    )
+    free_bytes = shutil.disk_usage(backend.vms_dir).free
+    margin_bytes = 256 * 1024 * 1024
+    if needed_bytes and needed_bytes + margin_bytes > free_bytes:
+        raise HyperGeryError(
+            f"Not enough free space to import {target_vm_name}: needs "
+            f"{needed_bytes // (1024 * 1024)} MiB (+256 MiB margin) but only "
+            f"{free_bytes // (1024 * 1024)} MiB are free under {backend.vms_dir}."
+        )
+
     created_paths: list[Path] = []
     disk_dir = backend.vms_dir / target_vm_name
     if disk_dir.exists():
