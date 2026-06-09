@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M13 — v2.0 investigación + resumen final.
+- **Estado: NOCHE COMPLETADA.** Los 13 milestones del §10 están hechos o en cola de UAT físico. Ver «Resumen de mañana» abajo.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -25,7 +25,7 @@
 | 10 | v1.5 live migration en caliente + preflight + wizard | HECHO (código+tests; UAT físico en cola; wizard UI pendiente) |
 | 11 | v1.6 app Android nativa | HECHO (código+CI; APK y móvil real en cola UAT) |
 | 12 | v1.7 GPU passthrough VFIO | HECHO (código+tests+detección real; bind/UAT físico en cola) |
-| 13 | v2.0 investigación | EN CURSO |
+| 13 | v2.0 investigación | HECHO (docs/research/V2_0_RESEARCH.md) |
 
 ## M1 — v1.1 identidad de app (HECHO)
 
@@ -160,6 +160,59 @@
 - CLI: `v1 gpu list | iommu | propose-host-changes | preflight <addr> | bind <addr> --confirm | unbind <addr> [--driver] | attach --vm X --gpu <addr> --confirm`.
 - Gates: compileall OK; pytest = **837 passed, 9 skipped** (17 tests con sysfs falso + test real §5.8). Suite real libvirt **8/8 PASS** (incluye detección IOMMU/GPU real y la garantía hard-stop sobre la iGPU del escritorio).
 - **Cola UAT — U14:** requiere la 2ª GPU física: `v1 gpu preflight <addr>` → `v1 gpu bind <addr> --confirm` (root) → `v1 gpu attach --vm hgtest-... --gpu <addr> --confirm` → arrancar y `lspci` dentro del guest → apagar → `v1 gpu unbind <addr> --driver <orig>` y comprobar que el host recupera la GPU. La migración de esa VM debe bloquearse (preflight v1.5).
+
+## M13 — v2.0 investigación (HECHO)
+
+- Rama `feat/v2.0-research`. `docs/research/V2_0_RESEARCH.md`: HG-MEMDIFF propio → DESCARTADO con honestidad (usar dirty bitmaps/checkpoints de libvirt, prototipo 1-2 noches); dedup → delegar en backing files + filesystem; packet visualizer → MVP con contadores sysfs; vGPU → no prometer; SR-IOV i915 → solo presencial; Looking Glass → viable tras U14; plugins → posponer, el API v1 es la vía de integración.
+
+# ═══════════════ RESUMEN DE MAÑANA (para Gerard) ═══════════════
+
+## Lo que se hizo esta noche (13/13 milestones)
+
+**v1.1 completa** (M1-M5): app instalable (.deb construido en `dist/hypergery_1.1.0~dev0_all.deb`), versión única + `--version`, JobManager + closeEvent + throttle de preview, Hub robusto (WAL/busy_timeout, TTL de comandos, límites de upload), redes coherentes (fin de los falsos conflictos; colisión de octetos resuelta), suite `needsRealLibvirt` **ejecutada contra el hipervisor real (8/8)**, app_tk retirada, repo deslastrado (~5MB).
+
+**v1.2** (M6): Hub y API v1 con token bearer OBLIGATORIO (ficheros 0600, rate-limit anti fuerza bruta, auditoría de rechazos), RBAC enforced con tests de escalada, pairing (`hub pairing-info`), tokens por usuario (`v1 guests token`), docs de TLS/VPN.
+
+**v1.3** (M7): políticas de backup al NAS con retención + **Backup Verifier ejecutado de verdad contra KVM** (restaura → arranca → limpia), snapshot branching seguro, tags por VM, presupuestos por lab.
+
+**v1.4** (M8): telemetría en cada heartbeat (persistida en el Hub), orchestrator aplicable con confirmación, `GET /dashboard`, **API companion** (start/ACPI/snapshot con RBAC + lab scoping; nada destructivo).
+
+**v1.5** (M9-M10): máquina de estados de migración (origen intocable hasta switchover, rollback inverso, cancelación) + canal de progreso con long-poll + **LIVE MIGRATION REAL** sobre `virsh migrate` (pre-copy, auto-converge, postcopy opcional, block migration, downtime medido, abort con origen intacto, nunca activa en dos hosts). 21 tests con host simulado.
+
+**v1.6** (M11): app Android nativa (Kotlin+Compose) en `android/`: pairing seguro, dashboard con progreso en vivo (long-poll), acciones seguras con confirmación. CI listo en `android/ci/android.yml`.
+
+**v1.7** (M12): GPU passthrough VFIO: detección, preflight con PARADA DURA (verificada contra tu iGPU real: se niega), bind con rollback, hostdev XML + anti-Code-43 NVIDIA, cambios de host solo propuestos.
+
+**v2.0** (M13): investigación honesta en `docs/research/V2_0_RESEARCH.md`.
+
+## Métricas
+
+- pytest: **667 → 837 passed** (+170 tests nuevos), 9 skipped (8 = gated needsRealLibvirt+real-only, 1 preexistente). Cero regresiones en todas las ejecuciones.
+- Suite real libvirt: **8/8 PASS** en gerard-MS-7E26 (VMs hgtest- creadas/arrancadas/migradas-offline/verificadas/borradas; host limpio al acabar — comprobado).
+- 12 ramas pusheadas, encadenadas en orden: `feat/v1.1-app-identity` → … → `feat/v2.0-research`. **Sin tocar main, sin merges, sin tags** (regla respetada).
+- Bugs cerrados: HG-BUG-0001, 0005, 0006, 0008, 0009, 0010, 0011, 0012, 0015, 0016, 0017, 0018, 0021*(parcial: el agente ya no traga el fallo de auth, registry_token visible)*. Deuda: TD-3, TD-4, TD-5, TD-7, TD-9 cerradas.
+
+## Cola de UAT para ti (nada de esto bloquea; orden sugerido)
+
+1. **U1** instalar `dist/hypergery_1.1.0~dev0_all.deb` (sudo) y comprobar menú/icono/--version; desinstalar y ver que los datos sobreviven.
+2. **Activar el CI Android**: `git mv android/ci/android.yml .github/workflows/android.yml` (mi token git no tiene scope workflow) → el APK sale como artefacto.
+3. **U10-U12** live migration PC↔portátil (comandos exactos en la sección M10).
+4. **U13** app Android por WireGuard/Tailscale (pasos en android/README.md).
+5. **U14** GPU passthrough con la 2ª GPU (pasos en la sección M12).
+6. Revisar/mergear las 12 ramas en orden (cada una parte de la anterior, así que mergear `feat/v2.0-research` trae todo; o PRs individuales si prefieres revisar por milestone).
+
+## Fallos abiertos / riesgos conocidos
+
+- El wizard Qt de live migration no está (la lógica, CLI y progreso sí); decisión de UX para una sesión contigo.
+- El APK no se ha compilado localmente (sin Android SDK en este host): lo valida el CI al activarlo.
+- `agent.py` HG-BUG-0021 (tragar excepciones genéricas) solo se ha mitigado donde tocaba esta noche; barrido completo pendiente.
+- HG-BUG-0013/0014/0019/0020/0022/0023 siguen abiertos (ninguno era de los milestones de esta noche).
+
+## Siguiente paso recomendado
+
+Mergear v1.1 (M1-M5) a develop tras pasar U1, y atacar el wizard de migración + HG-BUG-0022 (Control Center JSON crudo) en la próxima sesión; después U10-U12 con los dos equipos.
+
+# ═══════════════════════════════════════════════════════════════
 
 ## M1 (notas de auditoría originales)
 
