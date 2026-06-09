@@ -105,6 +105,53 @@ class StateMigrationTests(unittest.TestCase):
         self.assertTrue(validation["ok"], validation["errors"])
         self.assertEqual(validation["manifest"]["source_will_be_deleted"], False)
 
+    def test_export_resumes_source_and_cleans_up_when_disk_copy_fails(self):
+        # save_vm froze the VM; then the disk copy fails. The source must be
+        # resumed from its saved state and no partial package left behind.
+        backend = StateFakeBackend(self.root, state="running")
+        backend.disk.unlink()  # disk vanishes -> copy step raises after save_vm
+        out = self.root / "out"
+        with self.assertRaises(HyperGeryError) as ctx:
+            export_vm_state_package(backend, "vm1", out)
+        self.assertIsNotNone(backend.restored_with)  # restore/resume was called
+        self.assertEqual(backend._state, "running")  # continues where it was
+        self.assertFalse((out / "state-vm1").exists())  # no partial package
+        self.assertIn("resumed locally", str(ctx.exception))
+
+    def test_export_preserves_state_when_resume_also_fails(self):
+        # Worst case: packaging fails AND the automatic resume fails too. We must
+        # keep the saved RAM state so the user can restore it by hand, and say so.
+        backend = StateFakeBackend(self.root, state="running")
+        backend.disk.unlink()
+
+        def broken_restore(state_path, xml_path=None):
+            raise HyperGeryError("restore exploded")
+
+        backend.restore_vm = broken_restore
+        out = self.root / "out"
+        with self.assertRaises(HyperGeryError) as ctx:
+            export_vm_state_package(backend, "vm1", out)
+        self.assertEqual(backend._state, "shut off")  # could not be resumed
+        self.assertTrue((out / "state-vm1" / "memory-state.save").is_file())  # preserved
+        self.assertIn("state preserved", str(ctx.exception))
+
+    def test_export_failure_before_save_leaves_source_running(self):
+        # If we fail before save_vm runs, the source was never frozen by us.
+        backend = StateFakeBackend(self.root, state="running")
+
+        def failing_virsh(args, *, check=True, timeout=120):
+            if args[:1] == ["dumpxml"]:
+                return CommandResult(["virsh", *args], 1, "", "boom")
+            return CommandResult(["virsh", *args], 0, "", "")
+
+        backend.virsh = failing_virsh
+        out = self.root / "out"
+        with self.assertRaises(HyperGeryError):
+            export_vm_state_package(backend, "vm1", out)
+        self.assertEqual(backend._state, "running")  # never frozen
+        self.assertIsNone(backend.restored_with)
+        self.assertFalse((out / "state-vm1").exists())  # partial package dropped
+
     def test_validate_detects_missing_pieces(self):
         backend = StateFakeBackend(self.root, state="running")
         package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])

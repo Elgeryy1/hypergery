@@ -51,44 +51,59 @@ def export_vm_state_package(
         raise HyperGeryError(f"State package directory already exists: {package}")
     (package / "disks").mkdir(parents=True)
 
-    # Capture the live domain XML before saving (save leaves it defined/off).
-    dump = backend.virsh(["dumpxml", vm_name], check=False)
-    if dump.returncode != 0:
-        raise HyperGeryError(f"Cannot read domain XML for {vm_name}: {dump.stderr.strip()}")
-    (package / DOMAIN_FILENAME).write_text(dump.stdout, encoding="utf-8")
+    # Everything from here on can fail mid-flight. The dangerous moment is
+    # ``save_vm``: it freezes (shuts off) the source VM, leaving its exact
+    # running state only in MEMSTATE_FILENAME. If a later step (disk copy,
+    # manifest write) raises, we must NOT leave the source stopped with a
+    # half-built package — we resume it from that saved state and clean up.
+    memstate_path = package / MEMSTATE_FILENAME
+    state_saved = False
+    try:
+        # Capture the live domain XML before saving (save leaves it defined/off).
+        dump = backend.virsh(["dumpxml", vm_name], check=False)
+        if dump.returncode != 0:
+            raise HyperGeryError(f"Cannot read domain XML for {vm_name}: {dump.stderr.strip()}")
+        (package / DOMAIN_FILENAME).write_text(dump.stdout, encoding="utf-8")
 
-    # Freeze + dump RAM/CPU state. After this the VM is shut off but its exact
-    # running state is in the file.
-    backend.save_vm(vm_name, package / MEMSTATE_FILENAME)
+        # Freeze + dump RAM/CPU state. After this the VM is shut off but its exact
+        # running state is in the file.
+        backend.save_vm(vm_name, memstate_path)
+        state_saved = True
 
-    root = ET.fromstring(dump.stdout)
-    disk_assets: list[dict[str, str]] = []
-    for disk in root.findall("./devices/disk"):
-        if disk.get("device") != "disk":
-            continue
-        source = disk.find("source")
-        if source is None or not source.attrib.get("file"):
-            continue
-        original = source.attrib["file"]
-        if not Path(original).is_file():
-            raise HyperGeryError(f"VM disk not found, cannot package state: {original}")
-        rel = f"disks/{Path(original).name}"
-        shutil.copy2(original, package / rel)
-        disk_assets.append({"original": original, "relative_path": rel})
+        root = ET.fromstring(dump.stdout)
+        disk_assets: list[dict[str, str]] = []
+        for disk in root.findall("./devices/disk"):
+            if disk.get("device") != "disk":
+                continue
+            source = disk.find("source")
+            if source is None or not source.attrib.get("file"):
+                continue
+            original = source.attrib["file"]
+            if not Path(original).is_file():
+                raise HyperGeryError(f"VM disk not found, cannot package state: {original}")
+            rel = f"disks/{Path(original).name}"
+            shutil.copy2(original, package / rel)
+            disk_assets.append({"original": original, "relative_path": rel})
 
-    manifest = {
-        "schema_version": STATE_PACKAGE_VERSION,
-        "kind": "state_migration",
-        "source_vm_name": vm_name,
-        "target_vm_name": target_vm_name,
-        "lab_id": summary.lab_id or "default-lab",
-        "memory_state": MEMSTATE_FILENAME,
-        "domain_xml": DOMAIN_FILENAME,
-        "disks": disk_assets,
-        "created_at": now_iso(),
-        "source_will_be_deleted": False,
-    }
-    (package / MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        manifest = {
+            "schema_version": STATE_PACKAGE_VERSION,
+            "kind": "state_migration",
+            "source_vm_name": vm_name,
+            "target_vm_name": target_vm_name,
+            "lab_id": summary.lab_id or "default-lab",
+            "memory_state": MEMSTATE_FILENAME,
+            "domain_xml": DOMAIN_FILENAME,
+            "disks": disk_assets,
+            "created_at": now_iso(),
+            "source_will_be_deleted": False,
+        }
+        (package / MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except BaseException as exc:  # noqa: BLE001 - we recover then re-raise
+        recovery = _recover_failed_state_export(backend, vm_name, package, memstate_path, state_saved=state_saved)
+        if isinstance(exc, Exception):
+            raise HyperGeryError(f"State export failed for {vm_name}: {exc}. Source VM {recovery}.") from exc
+        # KeyboardInterrupt / SystemExit: still recover, but don't mask them.
+        raise
     get_logger().info(
         "teleport",
         f"state package exported for {vm_name} ({len(disk_assets)} disk(s))",
@@ -96,6 +111,61 @@ def export_vm_state_package(
         details={"package": str(package)},
     )
     return {"package_dir": str(package), "manifest": manifest}
+
+
+def _recover_failed_state_export(
+    backend: Any,
+    vm_name: str,
+    package: Path,
+    memstate_path: Path,
+    *,
+    state_saved: bool,
+) -> str:
+    """Best-effort recovery after a failed ``export_vm_state_package``.
+
+    Returns a human recovery note describing the source VM's final state.
+
+    - If ``save_vm`` never ran (``state_saved`` False), the source was never
+      frozen by us; just drop the partial package.
+    - If the source was frozen, resume it from its saved RAM state so a
+      packaging failure never leaves a running VM stopped, then drop the
+      partial package. Only if the automatic resume fails do we keep the
+      memory-state file so the user can restore it manually.
+    """
+    log = get_logger()
+    if not state_saved:
+        shutil.rmtree(package, ignore_errors=True)
+        return "was not frozen (no state was saved)"
+    try:
+        backend.restore_vm(memstate_path)
+    except Exception as resume_exc:
+        log.error(
+            "teleport",
+            f"state export failed AND local resume failed for {vm_name}; source left shut off",
+            vm_id=vm_name,
+            details={"resume_error": str(resume_exc), "package": str(package)},
+        )
+        # Keep the saved state for manual recovery; remove only the disk copies.
+        disks_dir = package / "disks"
+        if disks_dir.is_dir():
+            shutil.rmtree(disks_dir, ignore_errors=True)
+        for leftover in (package / DOMAIN_FILENAME, package / MANIFEST_FILENAME):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return (
+            f"left shut off with its state preserved in {package} "
+            f"(automatic resume failed: {resume_exc}; restore it with: virsh restore {memstate_path})"
+        )
+    log.warning(
+        "teleport",
+        f"state export failed for {vm_name}; resumed it locally from saved state",
+        vm_id=vm_name,
+        details={"package": str(package)},
+    )
+    shutil.rmtree(package, ignore_errors=True)
+    return "resumed locally (continues where it was)"
 
 
 def validate_state_package(package_dir: str | Path) -> dict[str, Any]:
