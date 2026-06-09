@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M11 — v1.6 app Android nativa.
+- **Milestone actual:** M12 — v1.7 GPU passthrough VFIO.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -23,8 +23,8 @@
 | 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | HECHO |
 | 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | HECHO |
 | 10 | v1.5 live migration en caliente + preflight + wizard | HECHO (código+tests; UAT físico en cola; wizard UI pendiente) |
-| 11 | v1.6 app Android nativa | EN CURSO |
-| 12 | v1.7 GPU passthrough VFIO | pendiente |
+| 11 | v1.6 app Android nativa | HECHO (código+CI; APK y móvil real en cola UAT) |
+| 12 | v1.7 GPU passthrough VFIO | EN CURSO |
 | 13 | v2.0 investigación | pendiente |
 
 ## M1 — v1.1 identidad de app (HECHO)
@@ -129,6 +129,23 @@
 - **U10** PC→portátil shared storage: `hypergery-cli v1 migrate-live --vm hgtest-u10 --target qemu+ssh://gery@portatil/system --shared-storage --confirm`. Esperado: VM nunca apagada, downtime medido <1s (métrica downtime_ms en el resultado/progreso), origen undefined tras confirmar.
 - **U11** block migration (sin NAS): mismo comando con `--block-migration`. Esperado: discos copiados por el canal de migración, resto igual.
 - **U12** cancelar a mitad: lanzar U10/U11 y durante el pre-copy llamar `migrator.cancel()`/Ctrl-C (o `virsh domjobabort <vm>`): origen running e intacto, destino limpio, estado `cancelled` en /progress.
+
+## M11 — v1.6 app Android nativa (HECHO: código + CI)
+
+- Rama `feat/v1.6-android-app` (encadenada sobre M10, pusheada).
+- Proyecto `android/` (Kotlin + Jetpack Compose, minSdk 26, Material3, sin wrapper binario por la política de no-binarios):
+  - **Pairing seguro**: URL + token (de `hub pairing-info` / `v1 guests token`), validado con llamada autenticada real (/dashboard) antes de guardar; token en SharedPreferences privadas; mensajes claros para 401/403; soporta el `pair_uri` hypergery://pair.
+  - **Dashboard**: hosts+telemetría, VMs por estado, alertas, batería y operaciones en curso con **long-poll real del canal TD-9** (/progress/<id>?since=&timeout=) — una live migration se ve avanzar.
+  - **Inventario + acciones seguras**: arrancar / apagado ACPI / snapshot, todas con AlertDialog de confirmación; snapshot además exige nombre y confirm:true. Nada destructivo (verificado por test estático: la app no contiene force-off/undefine/delete).
+  - ApiClient OkHttp con Bearer en todas las llamadas; permisos del manifest = solo INTERNET.
+- CI: `.github/workflows/android.yml` (JDK17 + Gradle 8.9): `gradle test` (unit tests JVM de parsers) + `assembleDebug` + APK como artefacto.
+- Suite python: `tests/test_android_static.py` (estructura, permisos mínimos, solo acciones seguras, confirmaciones, contrato de long-poll) → 5 PASS.
+- **Honestidad:** sin Android SDK en este host el APK no se ha compilado localmente; lo compila el CI en el primer push. U13 (móvil real por VPN) → cola UAT.
+
+## Cola de UAT humano — Android (NUEVO)
+
+- **U13**: ver android/README.md — `v1 api serve` + `v1 guests token gerard` + parear el móvil por WireGuard/Tailscale; comprobar dashboard, inventario, start/ACPI/snapshot con confirmación, y el progreso en vivo de una operación.
+- Bajar el APK del artefacto del workflow `android` en GitHub Actions (primer push de la rama ya lo construye).
 
 ## M1 (notas de auditoría originales)
 

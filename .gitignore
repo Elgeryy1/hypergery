@@ -58,3 +58,9 @@ state/
 secrets.*
 *secret*
 firebase*.json
+
+# Android (v1.6 companion app)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
