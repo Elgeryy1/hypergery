@@ -11,7 +11,7 @@ from .hglog import get_logger, now_iso
 from .hosts import HostRegistry
 from .labsx import filter_labs, validate_lab
 from .nas import NasService
-from .networks import network_from_lab, validate_networks
+from .networks import networks_from_labs, validate_networks
 from .orchestrator import OrchestratorService
 from .providers import VmInfo
 from .rbac import UserStore
@@ -253,7 +253,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 self._ok({"events": events})
                 return
             if path == ["network"]:
-                networks = [network_from_lab(lab) for lab in context.labs()]
+                networks = networks_from_labs(context.labs())
                 validation = validate_networks(networks, vms=context.vms())
                 self._ok({"networks": [network.to_dict() for network in networks], "validation": validation})
                 return

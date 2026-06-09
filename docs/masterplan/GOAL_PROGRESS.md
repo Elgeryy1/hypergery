@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M4 — v1.1 redes coherentes.
+- **Milestone actual:** M5 — v1.1 needsRealLibvirt + higiene.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -16,8 +16,8 @@
 | 1 | v1.1 identidad app + .deb + --version/About | HECHO |
 | 2 | v1.1 JobManager + closeEvent + throttle preview (TD-3, 0008/0015) | HECHO |
 | 3 | v1.1 Hub robusto (busy_timeout/WAL, TTL, upload) (0005/0006/0010) | HECHO |
-| 4 | v1.1 redes coherentes + colisión octetos (0009/0012/0016) | EN CURSO |
-| 5 | v1.1 needsRealLibvirt + higiene (0011/0017/0018, retirar Tk) | pendiente |
+| 4 | v1.1 redes coherentes + colisión octetos (0009/0012/0016) | HECHO |
+| 5 | v1.1 needsRealLibvirt + higiene (0011/0017/0018, retirar Tk) | EN CURSO |
 | 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | pendiente |
 | 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | pendiente |
 | 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | pendiente |
@@ -54,6 +54,15 @@
 - HG-BUG-0010: límite de upload por fichero (`max_upload_bytes`, env `HYPERGERY_HUB_MAX_UPLOAD_MIB`, default 64 GiB) → 413; chequeo de espacio libre con margen 1 GiB → 507; Content-Length ausente/0/no numérico → 400.
 - Gates: compileall OK; pytest = 705 passed, 1 skipped (15 tests nuevos en test_registry_robustness.py).
 - UAT automatizable: U3 (concurrencia Hub, 8 escritores × 10 iteraciones sin "database is locked") PASS; U4 (TTL) PASS; U5 (límite upload 413/507/400) PASS.
+
+## M4 — v1.1 redes coherentes (HECHO)
+
+- Rama `feat/v1.1-networks` (encadenada sobre M3, pusheada).
+- HG-BUG-0009: `network_from_lab` deriva la subred REAL (`192.168.<octeto-hash>.0/24`) cuando el manifiesto no trae `subnet`; nuevo `networks_from_labs` para construir el tab de Redes (UI, /network del API v1 y `v1 network validate` del CLI actualizados) → fin de los falsos "missing CIDR"/conflictos duplicados.
+- HG-BUG-0012: `allocate_network_octet` (sondeo determinista sobre espacio de 219 octetos, registro de usados); `ensure_network` consulta los octetos de las redes hg-net-* existentes y define la nueva red en el primer octeto libre; `reconcile_existing_network` conserva IPs reasignadas válidas y solo recicla colisiones/IPs inválidas.
+- HG-BUG-0016: `net-define`/`net-start` toleran la carrera benigna (otro proceso define/arranca la misma red); fallos reales siguen lanzando error con el stderr de virsh.
+- Gates: compileall OK; pytest = 721 passed, 1 skipped (16 tests nuevos en test_networks_coherence.py).
+- UAT automatizable: U6 (redes sin conflictos espurios + colisión resuelta) PASS por tests.
 
 ## M1 (notas de auditoría originales)
 

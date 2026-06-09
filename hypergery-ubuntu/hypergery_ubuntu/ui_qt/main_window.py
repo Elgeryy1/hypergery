@@ -1337,10 +1337,10 @@ class MainWindow(QMainWindow):
             service = NasService(settings=settings, lab_store=self.lab_store())
             return {"health": service.health(), "commits": service.list_commits()[-10:]}
         if key == "Network":
-            from ..v1.networks import network_from_lab, validate_networks
+            from ..v1.networks import networks_from_labs, validate_networks
 
             labs = self.lab_store().list_labs()
-            networks = [network_from_lab(lab) for lab in labs]
+            networks = networks_from_labs(labs)
             result = validate_networks(networks)
             return {"networks": [network.to_dict() for network in networks], "validation": result}
         if key == "Guests":
