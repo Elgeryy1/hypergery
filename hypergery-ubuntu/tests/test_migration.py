@@ -437,5 +437,67 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(done["migration"]["status"], "done")
 
 
+SNAPSHOT_XML = """<domainsnapshot>
+  <name>snap1</name>
+  <disks>
+    <disk name='vda' snapshot='external'>
+      <source file='{snap}'/>
+    </disk>
+  </disks>
+</domainsnapshot>"""
+
+
+class SnapshotBackend(FakeBackend):
+    """A source backend that reports one snapshot with a real backing file."""
+
+    def __init__(self, root: Path, **kwargs) -> None:
+        super().__init__(root, **kwargs)
+        self.snap = root / "snap1.qcow2"
+        self.snap.write_bytes(b"snapshot-data")
+
+    def list_snapshots(self, name: str):
+        return ["snap1"]
+
+    def virsh(self, args, *, timeout=120, check=True):
+        if args[:1] == ["snapshot-dumpxml"]:
+            return CommandResult(["virsh", *args], 0, SNAPSHOT_XML.format(snap=self.snap), "")
+        return super().virsh(args, timeout=timeout, check=check)
+
+
+class SnapshotMigrationTests(unittest.TestCase):
+    def test_snapshots_are_not_migrated_but_warned_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = SnapshotBackend(root)
+
+            pre = migration_preflight(backend, "hg-source")
+            self.assertTrue(
+                any("NOT migrated" in w and "v1.0.1" in w for w in pre["warnings"]),
+                pre["warnings"],
+            )
+
+            export = export_vm_package(backend, "hg-source", root / "nas", target_vm_name="hg-target")
+            package_dir = Path(export["package_dir"])
+            manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+            # Metadata kept (so the package documents the snapshots existed)...
+            self.assertTrue(manifest["snapshots"])
+            # ...but the behavior is explicit and the files are not shipped.
+            self.assertFalse(manifest["snapshots_migrated"])
+            self.assertFalse((package_dir / "snapshots").exists())
+            # Omitting snapshot files must not break package validation.
+            validation = validate_vm_package(package_dir)
+            self.assertTrue(validation["ok"], validation)
+
+            target = FakeBackend(root / "target")
+            imported = import_vm_package(
+                target, str(package_dir), target_vm_name="hg-target", target_lab_id="target-lab"
+            )
+            self.assertFalse(imported["snapshots_imported"])
+            self.assertTrue(
+                any("not migrated" in w.lower() for w in imported["validation_warnings"]),
+                imported["validation_warnings"],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

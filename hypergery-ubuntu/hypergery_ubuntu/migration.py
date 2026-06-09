@@ -203,8 +203,13 @@ def collect_vm_assets(
     assets = _domain_media_assets(vm.xml, include_iso=include_iso)
     snapshots: list[dict] = []
     if include_snapshots:
-        snapshots, snapshot_assets = _snapshot_assets(backend, vm_name)
-        assets.extend(snapshot_assets)
+        # We collect snapshot *metadata* (names/XML) so the package documents
+        # that the source had snapshots, but we deliberately do NOT add snapshot
+        # disk files to the copyable asset list: v1.0.1 does not migrate
+        # snapshots (the importer cannot recreate them), and silently shipping
+        # files that are then dropped would waste time/space and mislead the
+        # user (HG-BUG-0003). The metadata drives an explicit warning instead.
+        snapshots, _snapshot_disk_assets = _snapshot_assets(backend, vm_name)
     return {
         "vm": {
             "name": vm.name,
@@ -317,7 +322,11 @@ def migration_preflight(
         except Exception as exc:
             warnings.append(f"Cannot inspect snapshots: {exc}")
     if snapshots:
-        warnings.append(f"VM has {len(snapshots)} snapshot(s); validate import behavior before deleting any source resources.")
+        warnings.append(
+            f"VM has {len(snapshots)} snapshot(s). Snapshots are NOT migrated in v1.0.1: "
+            "the imported VM will have no snapshots. Keep the source until you have "
+            "confirmed you do not need them."
+        )
 
     estimated_size = sum(int(asset.get("size_bytes", 0)) for asset in assets if asset.get("exists"))
     if nas_path:
@@ -390,6 +399,9 @@ def create_migration_manifest(
         "vm": collected["vm"],
         "assets": collected["assets"],
         "snapshots": collected["snapshots"],
+        # v1.0.1 records snapshot metadata for visibility but does not transfer
+        # snapshots; the importer does not recreate them (HG-BUG-0003).
+        "snapshots_migrated": False,
         "lab": lab_manifest,
         "templates": _template_metadata(backend.data_dir, lab_manifest),
     }
@@ -699,7 +711,8 @@ def import_vm_package(
         raise
 
     logging.info("imported migration package vm=%s package=%s", target_vm_name, package)
-    return {
+    source_snapshots = manifest.get("snapshots") or []
+    result = {
         "imported": True,
         "migration_id": manifest["migration_id"],
         "target_vm_name": target_vm_name,
@@ -707,8 +720,16 @@ def import_vm_package(
         "disks": copied_disks,
         "isos": copied_isos,
         "source_will_be_deleted": False,
-        "validation_warnings": validation["warnings"],
+        "snapshots_imported": False,
+        "validation_warnings": list(validation["warnings"]),
     }
+    if source_snapshots:
+        # Be explicit so callers/UI can warn instead of silently losing them.
+        result["validation_warnings"].append(
+            f"Source had {len(source_snapshots)} snapshot(s) that were NOT migrated (v1.0.1). "
+            "The imported VM has no snapshots."
+        )
+    return result
 
 
 def list_migration_packages(path: str | Path) -> list[dict]:
