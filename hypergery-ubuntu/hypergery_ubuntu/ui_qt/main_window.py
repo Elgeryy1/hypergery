@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -106,10 +107,17 @@ from .styles import (
     format_mib,
     state_kind,
 )
+from .jobs import JobManager
 from .workers import BackendJob
 
 
 class MainWindow(QMainWindow):
+    # Mínimo intervalo entre dos capturas reales de preview de una misma VM
+    # (HG-BUG-0015): virsh screenshot es caro (subprocess, hasta 8 s).
+    PREVIEW_MIN_INTERVAL_S = 2.0
+    # Espera acotada a los jobs en curso al cerrar la ventana (HG-BUG-0008).
+    CLOSE_WAIT_MS = 5000
+
     def __init__(self) -> None:
         super().__init__()
         self.backend = HyperGeryBackend()
@@ -126,10 +134,12 @@ class MainWindow(QMainWindow):
         self.remote_hosts: list[dict[str, Any]] = []
         self.remote_vms_inventory: list[dict[str, Any]] = []
         self.console_windows: dict[str, VmConsoleWindow] = {}
-        self.jobs: list[BackendJob] = []
-        self.completed_jobs: list[BackendJob] = []
-        self._preview_jobs: list[BackendJob] = []
+        self.job_manager = JobManager(self)
         self._preview_target: str | None = None
+        self._preview_inflight: set[str] = set()
+        self._preview_last_capture: dict[str, float] = {}
+        self._preview_retry_pending: set[str] = set()
+        self._preview_clock = time.monotonic
         self.setWindowTitle(f"HyperGery v{APP_DISPLAY_VERSION}")
         self.resize(1360, 860)
         self.setMinimumSize(1120, 720)
@@ -3989,28 +3999,49 @@ class MainWindow(QMainWindow):
 
         from PySide6.QtGui import QGuiApplication
 
-        from .screenshot import capture_vm_screenshot
-
         # Solo tiene sentido capturar con un display real; en modo «offscreen»
         # (tests/headless) o sin virsh no se lanza ningún proceso ni hilo.
         if QGuiApplication.platformName() == "offscreen" or shutil.which("virsh") is None:
             self._on_preview_captured(name, None)
             return
-        job = BackendJob(f"preview:{name}", lambda n=name: capture_vm_screenshot(n))
-        self._preview_jobs.append(job)
+        self._throttled_capture(name)
 
-        def done(j: BackendJob = job, n: str = name) -> None:
-            if j in self._preview_jobs:
-                self._preview_jobs.remove(j)
-            self._on_preview_captured(n, j.result)
+    def _throttled_capture(self, name: str) -> None:
+        # HG-BUG-0015: una captura en vuelo por VM y un mínimo entre capturas.
+        # Si llega una petición durante el periodo de enfriamiento se programa
+        # un único reintento al expirar (la vista no se queda obsoleta).
+        if name in self._preview_inflight:
+            return
+        elapsed = self._preview_clock() - self._preview_last_capture.get(name, float("-inf"))
+        if elapsed < self.PREVIEW_MIN_INTERVAL_S:
+            if name not in self._preview_retry_pending:
+                self._preview_retry_pending.add(name)
+                delay_ms = max(0, int((self.PREVIEW_MIN_INTERVAL_S - elapsed) * 1000)) + 50
+                self._schedule_preview_retry(name, delay_ms)
+            return
+        self._preview_last_capture[name] = self._preview_clock()
+        self._preview_inflight.add(name)
+        self._start_preview_capture(name)
 
-        def failed(j: BackendJob = job) -> None:
-            if j in self._preview_jobs:
-                self._preview_jobs.remove(j)
+    def _schedule_preview_retry(self, name: str, delay_ms: int) -> None:
+        QTimer.singleShot(delay_ms, lambda n=name: self._run_preview_retry(n))
 
-        job.succeeded.connect(done)
-        job.failed.connect(failed)
-        job.start()
+    def _run_preview_retry(self, name: str) -> None:
+        self._preview_retry_pending.discard(name)
+        # Solo si la VM sigue siendo la seleccionada.
+        if name == self._preview_target:
+            self._capture_preview(name)
+
+    def _start_preview_capture(self, name: str) -> None:
+        from .screenshot import capture_vm_screenshot
+
+        self.job_manager.submit(
+            f"preview:{name}",
+            lambda n=name: capture_vm_screenshot(n),
+            on_success=lambda job, n=name: self._on_preview_captured(n, job.result),
+            on_finished=lambda job, n=name: self._preview_inflight.discard(n),
+            track_history=False,
+        )
 
     def _on_preview_captured(self, name: str, data: bytes | None) -> None:
         # Ignora resultados de una VM que ya no está seleccionada.
@@ -4063,36 +4094,49 @@ class MainWindow(QMainWindow):
             self.set_busy(True, label)
         else:
             self.status.showMessage(label)
-        job = BackendJob(label, fn)
-        self.jobs.append(job)
 
-        def succeeded() -> None:
-            result = job.result
+        def succeeded(job: BackendJob) -> None:
             if on_success:
-                on_success(result)
+                on_success(job.result)
             if refresh_after:
                 self.refresh_all()
             if busy or refresh_after:
                 self.status.showMessage("Listo")
 
-        def failed() -> None:
+        def failed(job: BackendJob) -> None:
             self.show_error(job.error_message)
             self.status.showMessage("Listo")
 
-        def finished() -> None:
-            if job in self.jobs:
-                self.jobs.remove(job)
-            self.completed_jobs.append(job)
-            self.completed_jobs = self.completed_jobs[-20:]
+        def finished(job: BackendJob) -> None:
             if busy:
                 self.set_busy(False)
             else:
                 self.update_actions()
 
-        job.succeeded.connect(succeeded)
-        job.failed.connect(failed)
-        job.finished.connect(finished)
-        job.start()
+        self.job_manager.submit(
+            label,
+            fn,
+            on_success=succeeded,
+            on_failure=failed,
+            on_finished=finished,
+        )
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (API de Qt)
+        # HG-BUG-0008: sin esto, los BackendJob seguían vivos al cerrar la
+        # ventana y podían emitir señales contra widgets destruidos.
+        for window in list(self.console_windows.values()):
+            try:
+                window.close()
+            except RuntimeError:
+                pass
+        survivors = self.job_manager.shutdown(timeout_ms=self.CLOSE_WAIT_MS)
+        if survivors:
+            logging.warning(
+                "Cerrando con %d job(s) aún en ejecución: %s",
+                len(survivors),
+                ", ".join(survivors),
+            )
+        super().closeEvent(event)
 
     def new_vm_from_empty(self) -> None:
         if self.vm_filter.currentText() == "Laboratorio seleccionado" and self.selected_lab is not None:
