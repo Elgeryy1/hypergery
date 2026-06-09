@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M3 — v1.1 Hub robusto.
+- **Milestone actual:** M4 — v1.1 redes coherentes.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -15,8 +15,8 @@
 |---|-----------|--------|
 | 1 | v1.1 identidad app + .deb + --version/About | HECHO |
 | 2 | v1.1 JobManager + closeEvent + throttle preview (TD-3, 0008/0015) | HECHO |
-| 3 | v1.1 Hub robusto (busy_timeout/WAL, TTL, upload) (0005/0006/0010) | EN CURSO |
-| 4 | v1.1 redes coherentes + colisión octetos (0009/0012/0016) | pendiente |
+| 3 | v1.1 Hub robusto (busy_timeout/WAL, TTL, upload) (0005/0006/0010) | HECHO |
+| 4 | v1.1 redes coherentes + colisión octetos (0009/0012/0016) | EN CURSO |
 | 5 | v1.1 needsRealLibvirt + higiene (0011/0017/0018, retirar Tk) | pendiente |
 | 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | pendiente |
 | 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | pendiente |
@@ -45,6 +45,15 @@
 - `run_operation` y `_capture_preview` enrutan por JobManager (las listas self.jobs/completed_jobs/_preview_jobs desaparecen).
 - Gates: compileall OK; pytest = 690 passed, 1 skipped (13 tests nuevos en test_qt_jobs.py).
 - U2 (closeEvent no cuelga con jobs en curso): cubierto por test automatizado PASS.
+
+## M3 — v1.1 Hub robusto (HECHO)
+
+- Rama `feat/v1.1-hub-robustness` (encadenada sobre M2, pusheada).
+- HG-BUG-0005: `RegistryStore.connect()` con busy_timeout 5s + synchronous NORMAL; `journal_mode=WAL` persistente en `_init_db`.
+- HG-BUG-0006: columna `expires_at` + TTL en `create_command` (default 600s, clamp 10s–24h, `ttl_seconds` en payload); `_expire_pending_commands` corre en get/list/pending/set_result; comando caducado → `failed` con `result.expired=true`, jamás se entrega y su resultado no puede sobrescribirse; comandos ya `running` no caducan.
+- HG-BUG-0010: límite de upload por fichero (`max_upload_bytes`, env `HYPERGERY_HUB_MAX_UPLOAD_MIB`, default 64 GiB) → 413; chequeo de espacio libre con margen 1 GiB → 507; Content-Length ausente/0/no numérico → 400.
+- Gates: compileall OK; pytest = 705 passed, 1 skipped (15 tests nuevos en test_registry_robustness.py).
+- UAT automatizable: U3 (concurrencia Hub, 8 escritores × 10 iteraciones sin "database is locked") PASS; U4 (TTL) PASS; U5 (límite upload 413/507/400) PASS.
 
 ## M1 (notas de auditoría originales)
 

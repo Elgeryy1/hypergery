@@ -15,6 +15,24 @@ from .store import MIGRATION_STATUSES, RegistryStore
 
 TRANSFER_CHUNK_BYTES = 1024 * 1024
 
+# HG-BUG-0010: límite por fichero subido al staging. Configurable con
+# HYPERGERY_HUB_MAX_UPLOAD_MIB (0 = sin límite explícito; la comprobación de
+# espacio libre sigue aplicando).
+DEFAULT_MAX_UPLOAD_MIB = 64 * 1024  # 64 GiB: discos de VM grandes caben
+
+# Nunca aceptar una subida que dejaría el disco del staging por debajo de
+# este margen.
+FREE_DISK_MARGIN_BYTES = 1024 * 1024 * 1024  # 1 GiB
+
+
+def default_max_upload_bytes() -> int:
+    raw = os.environ.get("HYPERGERY_HUB_MAX_UPLOAD_MIB", "")
+    try:
+        mib = int(raw) if raw else DEFAULT_MAX_UPLOAD_MIB
+    except ValueError:
+        mib = DEFAULT_MAX_UPLOAD_MIB
+    return max(0, mib) * 1024 * 1024
+
 # Migrations in these states may still need their staged package; cleanup
 # always skips them, regardless of age or flags.
 ACTIVE_MIGRATION_STATUSES = MIGRATION_STATUSES - {"done", "failed", "rolled_back"}
@@ -220,10 +238,12 @@ class RegistryServer(ThreadingHTTPServer):
         store: RegistryStore,
         *,
         staging_dir: str | Path | None = None,
+        max_upload_bytes: int | None = None,
     ) -> None:
         super().__init__(server_address, RegistryRequestHandler)
         self.store = store
         self.staging_dir = Path(staging_dir).expanduser() if staging_dir else default_staging_dir(store.db_path)
+        self.max_upload_bytes = default_max_upload_bytes() if max_upload_bytes is None else max(0, int(max_upload_bytes))
 
 
 class RegistryRequestHandler(BaseHTTPRequestHandler):
@@ -285,9 +305,25 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
         if not rel_path:
             raise HyperGeryError("Package upload requires a file path.")
         file_path = _safe_package_path(self.server.staging_dir, migration_id, rel_path)
-        length = int(self.headers.get("Content-Length") or 0)
-        if length < 0:
-            raise HyperGeryError("Package upload requires Content-Length.")
+        try:
+            length = int(self.headers.get("Content-Length") or "")
+        except ValueError as exc:
+            raise HyperGeryError("Package upload requires a numeric Content-Length.") from exc
+        if length <= 0:
+            raise HyperGeryError("Package upload requires a positive Content-Length.")
+        # HG-BUG-0010: sin límite, un cliente podía llenar el disco del Hub.
+        limit = self.server.max_upload_bytes
+        if limit and length > limit:
+            self._send_error(413, f"Package file exceeds the upload limit ({length} > {limit} bytes).")
+            return
+        self.server.staging_dir.mkdir(parents=True, exist_ok=True)
+        free_bytes = shutil.disk_usage(self.server.staging_dir).free
+        if length + FREE_DISK_MARGIN_BYTES > free_bytes:
+            self._send_error(
+                507,
+                f"Not enough free space in staging for this upload ({length} bytes, {free_bytes} free).",
+            )
+            return
         file_path.parent.mkdir(parents=True, exist_ok=True)
         remaining = length
         with file_path.open("wb") as handle:
@@ -464,9 +500,10 @@ def serve_registry(
     db_path: str | Path | None = None,
     offline_timeout_seconds: int = 90,
     staging_dir: str | Path | None = None,
+    max_upload_bytes: int | None = None,
 ) -> None:
     store = RegistryStore(db_path, offline_timeout_seconds=offline_timeout_seconds)
-    server = RegistryServer((host, port), store, staging_dir=staging_dir)
+    server = RegistryServer((host, port), store, staging_dir=staging_dir, max_upload_bytes=max_upload_bytes)
     try:
         server.serve_forever()
     finally:
