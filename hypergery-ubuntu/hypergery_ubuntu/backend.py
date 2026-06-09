@@ -1140,6 +1140,21 @@ class HyperGeryBackend:
         self.virsh(["snapshot-revert", "--domain", validate_vm_name(name), "--snapshotname", validate_vm_name(snapshot_name)], timeout=600)
         logging.info("reverted snapshot vm=%s snapshot=%s", name, snapshot_name)
 
+    def branch_snapshot(self, name: str, from_snapshot: str, new_snapshot: str, description: str = "") -> None:
+        """v1.3 snapshot branching seguro: vuelve a un snapshot conocido y
+        crea ahí una rama nueva. Falla limpio si el origen no existe o el
+        destino ya existe (nunca pisa un snapshot)."""
+        snapshots = self.list_snapshots(name)
+        source = validate_vm_name(from_snapshot)
+        branch = validate_vm_name(new_snapshot)
+        if source not in snapshots:
+            raise HyperGeryError(f"Snapshot does not exist: {source}")
+        if branch in snapshots:
+            raise HyperGeryError(f"Snapshot already exists: {branch}")
+        self.revert_snapshot(name, source)
+        self.create_snapshot(name, branch, description or f"branch of {source}")
+        logging.info("branched snapshot vm=%s from=%s new=%s", name, source, branch)
+
     def delete_snapshot(self, name: str, snapshot_name: str) -> None:
         self.virsh(["snapshot-delete", "--domain", validate_vm_name(name), "--snapshotname", validate_vm_name(snapshot_name)], timeout=600)
         logging.info("deleted snapshot vm=%s snapshot=%s", name, snapshot_name)

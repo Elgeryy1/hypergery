@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M7 — v1.3 Template Store + Backup Verifier + snapshots + tags.
+- **Milestone actual:** M8 — v1.4 orchestrator aplicable + /telemetry + health + API companion.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -19,8 +19,8 @@
 | 4 | v1.1 redes coherentes + colisión octetos (0009/0012/0016) | HECHO |
 | 5 | v1.1 needsRealLibvirt + higiene (0011/0017/0018, retirar Tk) | HECHO |
 | 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | HECHO |
-| 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | EN CURSO |
-| 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | pendiente |
+| 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | HECHO |
+| 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | EN CURSO |
 | 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | pendiente |
 | 10 | v1.5 live migration en caliente + preflight + wizard | pendiente |
 | 11 | v1.6 app Android nativa | pendiente |
@@ -81,6 +81,17 @@
 - Pairing: `hypergery-cli hub pairing-info` (URL+token+pair_uri, aviso de secreto). TLS: `docs/HUB_SECURITY.md` (Caddy/nginx, VPN/SSH, nunca exponer a Internet).
 - Gates: compileall OK; pytest = **742 passed, 7 skipped** (21 tests nuevos en test_security_v12.py + harnesses actualizados).
 - UAT automatizable: U7 (token/RBAC/escalada) PASS por tests.
+
+## M7 — v1.3 backups + verifier + snapshots + tags (HECHO)
+
+- Rama `feat/v1.3-backups-templates` (encadenada sobre M6, pusheada).
+- **Backup policies NAS** (`v1/backups.py`): BackupPolicy (intervalo, retención, include_iso) + store JSON; `run_policy` exporta el paquete completo (formato migración, checksums) al NAS y poda copias antiguas (solo paquetes de esa VM bajo su root); `run_due` apto para cron. CLI: `v1 backup policy-add/policy-list/policy-remove/run/run-due`.
+- **Backup Verifier** (`v1/backup_verifier.py`): valida checksums → restaura en VM temporal `hgtest-verify-*` (lab hgtest-lab-verify) → arranca → comprueba `running` → destruye dominio+discos (cleanup garantizado en finally; se niega a limpiar VMs ajenas). CLI: `v1 backup verify <package> [--keep-vm]`. **U8 ejecutado contra libvirt REAL: export → verify → boot bajo KVM → cleanup, PASS.**
+- **Snapshot branching seguro**: `backend.branch_snapshot(vm, origen, rama)` — revert a snapshot conocido + snapshot nuevo; falla limpio si el origen no existe o la rama ya existe.
+- **Tags por VM** (`LabStore.set_vm_tags`, manifest `vm_tags`) y **Resource Budget por lab** (`set_budget` + `check_lab_budget`, manifest `budget`). CLI: `lab set-vm-tags`, `lab set-budget`.
+- Template Store ya existía (templates.py); no se reinventa.
+- Gates: compileall OK; pytest = **762 passed, 8 skipped** (20 tests nuevos en test_v13_backups.py + test real nº7); suite real libvirt 7/7 PASS, host limpio.
+- Pendiente v1.3 (no bloqueante, anotado): tareas programadas con UI propia (por ahora `run-due` vía cron), backup policies por lab completo.
 
 ## M1 (notas de auditoría originales)
 

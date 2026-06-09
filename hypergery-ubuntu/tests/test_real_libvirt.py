@@ -201,6 +201,22 @@ class RealVmLifecycleTests(RealLibvirtTestCase):
         self.assertFalse((self.backend.vms_dir / target).exists())
         self._destroy_and_delete(source)
 
+    def test_7_backup_verifier_restores_boots_and_cleans_up(self):
+        from hypergery_ubuntu.migration import export_vm_package
+        from hypergery_ubuntu.v1.backup_verifier import verify_backup
+
+        name = self._create_vm()
+        export = export_vm_package(self.backend, name, self.backend.data_dir / "nas", include_iso=False)
+        result = verify_backup(self.backend, export["package_dir"], boot_timeout_seconds=60)
+        self.assertTrue(result["checksums_ok"], result)
+        self.assertTrue(result["booted"], result)
+        self.assertTrue(result["ok"], result)
+        # La VM temporal de verificación ya no existe.
+        self.assertNotEqual(
+            self.backend.virsh(["dominfo", result["verified_vm"]], check=False).returncode, 0
+        )
+        self._destroy_and_delete(name)
+
     def test_6_delete_disks_removes_only_the_test_vm(self):
         name = self._create_vm()
         disk_path = Path(self.backend.get_vm(name).disk_path)

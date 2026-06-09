@@ -106,6 +106,24 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     network_sub = network.add_subparsers(dest="network_command", required=True)
     network_sub.add_parser("validate", help="Validate all lab networks for conflicts.")
 
+    backup = v1_sub.add_parser("backup", help="NAS backup policies and backup verification.")
+    backup_sub = backup.add_subparsers(dest="backup_command", required=True)
+    backup_add = backup_sub.add_parser("policy-add", help="Create a backup policy for a VM.")
+    backup_add.add_argument("vm_name")
+    backup_add.add_argument("--target-dir", required=True, help="NAS directory that will hold the packages.")
+    backup_add.add_argument("--interval-hours", type=float, default=24.0)
+    backup_add.add_argument("--retention", type=int, default=3)
+    backup_add.add_argument("--include-iso", action="store_true")
+    backup_sub.add_parser("policy-list", help="List backup policies.")
+    backup_remove = backup_sub.add_parser("policy-remove")
+    backup_remove.add_argument("policy_id")
+    backup_run = backup_sub.add_parser("run", help="Run one policy now.")
+    backup_run.add_argument("policy_id")
+    backup_sub.add_parser("run-due", help="Run every policy whose interval has elapsed (cron-friendly).")
+    backup_verify = backup_sub.add_parser("verify", help="Restore a backup package into a temporary hgtest- VM and check it boots.")
+    backup_verify.add_argument("package_dir")
+    backup_verify.add_argument("--boot-timeout", type=int, default=60)
+    backup_verify.add_argument("--keep-vm", action="store_true")
     guests = v1_sub.add_parser("guests", help="Local RBAC users.")
     guests_sub = guests.add_subparsers(dest="guests_command", required=True)
     guests_sub.add_parser("list", help="List users with effective permissions.")
@@ -238,6 +256,49 @@ def v1_action(args: argparse.Namespace) -> int:
         result = validate_networks(networks)
         _print_json({"networks": [network.to_dict() for network in networks], **result})
         return 0 if result["ok"] else 1
+    if args.v1_command == "backup":
+        from ..backend import HyperGeryBackend
+        from .backups import BackupPolicyStore, new_policy, run_due, run_policy
+
+        store = BackupPolicyStore()
+        if args.backup_command == "policy-add":
+            policy = store.add(
+                new_policy(
+                    args.vm_name,
+                    args.target_dir,
+                    interval_hours=args.interval_hours,
+                    retention=args.retention,
+                    include_iso=args.include_iso,
+                )
+            )
+            _print_json(policy.to_dict())
+            return 0
+        if args.backup_command == "policy-list":
+            _print_json({"policies": [policy.to_dict() for policy in store.list()]})
+            return 0
+        if args.backup_command == "policy-remove":
+            _print_json({"policy_id": args.policy_id, "removed": store.remove(args.policy_id)})
+            return 0
+        if args.backup_command == "run":
+            result = run_policy(HyperGeryBackend(), store.get(args.policy_id), store)
+            _print_json(result)
+            return 0 if result["ok"] else 1
+        if args.backup_command == "run-due":
+            results = run_due(HyperGeryBackend(), store)
+            _print_json({"results": results})
+            return 0 if all(r["ok"] for r in results) else 1
+        if args.backup_command == "verify":
+            from .backup_verifier import verify_backup
+
+            result = verify_backup(
+                HyperGeryBackend(),
+                args.package_dir,
+                boot_timeout_seconds=args.boot_timeout,
+                keep_vm=args.keep_vm,
+            )
+            _print_json(result)
+            return 0 if result["ok"] else 1
+        return 2
     if args.v1_command == "guests" and args.guests_command == "token":
         from .auth import ApiTokenStore
 
