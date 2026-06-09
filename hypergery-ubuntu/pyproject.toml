@@ -21,3 +21,8 @@ include = ["hypergery_ubuntu*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "hypergery_ubuntu.__version__"}
+
+[tool.pytest.ini_options]
+markers = [
+  "needsRealLibvirt: smoke tests against the real libvirt/QEMU host (only hgtest-* VMs; run with HYPERGERY_REAL_LIBVIRT=1)",
+]

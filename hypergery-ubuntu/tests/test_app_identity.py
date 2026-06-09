@@ -37,8 +37,6 @@ class SingleVersionSourceTests(unittest.TestCase):
         for path in (SRC / "hypergery_ubuntu").rglob("*.py"):
             if path.name == "__init__.py" and path.parent.name == "hypergery_ubuntu":
                 continue
-            if path.name == "app_tk.py":  # legacy Tk UI, retired separately (0018)
-                continue
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("APP_DISPLAY_VERSION =", text, path)
 

@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M5 — v1.1 needsRealLibvirt + higiene.
+- **Milestone actual:** M6 — v1.2 seguridad Hub (token/TLS/RBAC/audit).
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -17,8 +17,8 @@
 | 2 | v1.1 JobManager + closeEvent + throttle preview (TD-3, 0008/0015) | HECHO |
 | 3 | v1.1 Hub robusto (busy_timeout/WAL, TTL, upload) (0005/0006/0010) | HECHO |
 | 4 | v1.1 redes coherentes + colisión octetos (0009/0012/0016) | HECHO |
-| 5 | v1.1 needsRealLibvirt + higiene (0011/0017/0018, retirar Tk) | EN CURSO |
-| 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | pendiente |
+| 5 | v1.1 needsRealLibvirt + higiene (0011/0017/0018, retirar Tk) | HECHO |
+| 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | EN CURSO |
 | 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | pendiente |
 | 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | pendiente |
 | 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | pendiente |
@@ -63,6 +63,14 @@
 - HG-BUG-0016: `net-define`/`net-start` toleran la carrera benigna (otro proceso define/arranca la misma red); fallos reales siguen lanzando error con el stderr de virsh.
 - Gates: compileall OK; pytest = 721 passed, 1 skipped (16 tests nuevos en test_networks_coherence.py).
 - UAT automatizable: U6 (redes sin conflictos espurios + colisión resuelta) PASS por tests.
+
+## M5 — v1.1 needsRealLibvirt + higiene (HECHO)
+
+- Rama `feat/v1.1-real-libvirt-hygiene` (encadenada sobre M4, pusheada).
+- HG-BUG-0011: marcador `needsRealLibvirt` (conftest.py + pyproject markers; skip sin virsh o sin `HYPERGERY_REAL_LIBVIRT=1`). Suite `tests/test_real_libvirt.py` §5 items 1–6: crear VM trivial hgtest- → dominfo; export → checksums sha256 verificados; import con nombre nuevo → UUID y MAC regenerados; start/ACPI/force-off por estados (VM REAL arrancada bajo KVM); import con paquete corrupto → rollback (destino limpio, origen intacto); delete_disks solo borra la VM de prueba. **Ejecutada en el host real: 6/6 PASS (11.9s); host limpio después (solo quedan las VMs/redes preexistentes).** Datos en HYPERGERY_DATA_HOME temporal; solo VMs hgtest-* y lab hgtest-lab-real.
+- HG-BUG-0017 (resto): app_tk.py eliminado → ya no existe ninguna versión duplicada; test de versión única sin exclusiones.
+- HG-BUG-0018: eliminados HTML/zip de diseño (~5MB) de docs/design/v0.7 (recuperables del historial git); V09/V10_REPORT, V09_V10_START_STATE, RESUMEN_EJECUTIVO_SESION, FINAL_V09_V10_HANDOVER movidos a docs/archive/. TD-7: app_tk retirado; dev-run.sh sin --legacy-tk; ARCHITECTURE.md actualizado.
+- Gates: compileall OK; pytest = 721 passed, 7 skipped (6 = suite real gated + 1 preexistente); con HYPERGERY_REAL_LIBVIRT=1 → 6/6 PASS reales.
 
 ## M1 (notas de auditoría originales)
 
