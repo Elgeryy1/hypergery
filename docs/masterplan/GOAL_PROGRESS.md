@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M12 — v1.7 GPU passthrough VFIO.
+- **Milestone actual:** M13 — v2.0 investigación + resumen final.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -24,8 +24,8 @@
 | 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | HECHO |
 | 10 | v1.5 live migration en caliente + preflight + wizard | HECHO (código+tests; UAT físico en cola; wizard UI pendiente) |
 | 11 | v1.6 app Android nativa | HECHO (código+CI; APK y móvil real en cola UAT) |
-| 12 | v1.7 GPU passthrough VFIO | EN CURSO |
-| 13 | v2.0 investigación | pendiente |
+| 12 | v1.7 GPU passthrough VFIO | HECHO (código+tests+detección real; bind/UAT físico en cola) |
+| 13 | v2.0 investigación | EN CURSO |
 
 ## M1 — v1.1 identidad de app (HECHO)
 
@@ -146,6 +146,20 @@
 
 - **U13**: ver android/README.md — `v1 api serve` + `v1 guests token gerard` + parear el móvil por WireGuard/Tailscale; comprobar dashboard, inventario, start/ACPI/snapshot con confirmación, y el progreso en vivo de una operación.
 - Bajar el APK del artefacto del workflow `android` en GitHub Actions (primer push de la rama ya lo construye).
+
+## M12 — v1.7 GPU passthrough VFIO (HECHO: código + tests)
+
+- Rama `feat/v1.7-gpu-passthrough` (encadenada sobre M11, pusheada).
+- `v1/gpu_passthrough.py`:
+  - **Detección (solo lectura):** `list_pci_gpus` (clase 0x03, vendor/driver/boot_vga/grupo IOMMU y sus dispositivos) e `iommu_status` (grupos + flags del cmdline).
+  - **Preflight:** IOMMU activo; grupo IOMMU limpio (solo funciones del mismo slot, p. ej. GPU+audio HDMI); vfio-pci disponible; **PARADA DURA implementada y verificada: la GPU del escritorio (boot_vga/driver de display) se RECHAZA si no hay segunda GPU** (en este host con una sola iGPU i915 el preflight la bloquea — comprobado contra el /sys real); avisos NVIDIA (ocultar hipervisor), OVMF/UEFI y "no live-migrable".
+  - **Cambios de host solo PROPUESTOS** (`propose-host-changes`: GRUB intel/amd_iommu=on + iommu=pt, módulos initramfs, applied=false, requires_reboot=true) — el agente jamás los aplica.
+  - **VfioBinder:** bind a vfio-pci vía sysfs (driver_override→unbind→drivers_probe) con **rollback al driver original si el probe falla**; unbind de vuelta al host; confirm obligatorio.
+  - **Domain XML:** `<hostdev>` PCI managed; si la GPU es NVIDIA (10de) añade `<kvm><hidden state=on>` + `hyperv vendor_id` (anti Code 43); detección de UEFI/OVMF con aviso si la VM usa BIOS legacy. `attach_gpu_to_vm` exige VM apagada + confirm + preflight ok.
+  - La incompatibilidad con live migration ya la bloquea el preflight de v1.5 (M10) al ver `<hostdev>`.
+- CLI: `v1 gpu list | iommu | propose-host-changes | preflight <addr> | bind <addr> --confirm | unbind <addr> [--driver] | attach --vm X --gpu <addr> --confirm`.
+- Gates: compileall OK; pytest = **837 passed, 9 skipped** (17 tests con sysfs falso + test real §5.8). Suite real libvirt **8/8 PASS** (incluye detección IOMMU/GPU real y la garantía hard-stop sobre la iGPU del escritorio).
+- **Cola UAT — U14:** requiere la 2ª GPU física: `v1 gpu preflight <addr>` → `v1 gpu bind <addr> --confirm` (root) → `v1 gpu attach --vm hgtest-... --gpu <addr> --confirm` → arrancar y `lspci` dentro del guest → apagar → `v1 gpu unbind <addr> --driver <orig>` y comprobar que el host recupera la GPU. La migración de esa VM debe bloquearse (preflight v1.5).
 
 ## M1 (notas de auditoría originales)
 
