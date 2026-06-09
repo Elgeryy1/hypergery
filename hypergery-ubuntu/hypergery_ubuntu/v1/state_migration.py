@@ -8,7 +8,7 @@ from typing import Any
 
 from ..backend import HyperGeryError, now_iso, validate_vm_name
 from ..labs import validate_lab_id
-from ..migration import safe_package_member
+from ..migration import _sha256, safe_package_member
 from .hglog import get_logger
 
 STATE_PACKAGE_VERSION = 1
@@ -82,9 +82,21 @@ def export_vm_state_package(
             if not Path(original).is_file():
                 raise HyperGeryError(f"VM disk not found, cannot package state: {original}")
             rel = f"disks/{Path(original).name}"
-            shutil.copy2(original, package / rel)
-            disk_assets.append({"original": original, "relative_path": rel})
+            copied = package / rel
+            shutil.copy2(original, copied)
+            disk_assets.append(
+                {
+                    "original": original,
+                    "relative_path": rel,
+                    "sha256": _sha256(copied),
+                    "size_bytes": copied.stat().st_size,
+                }
+            )
 
+        # Integrity metadata so a truncated/corrupt copy over a flaky NAS is
+        # caught at validation time instead of failing (or restoring garbage)
+        # at libvirt restore time (HG-BUG-0007).
+        domain_path = package / DOMAIN_FILENAME
         manifest = {
             "schema_version": STATE_PACKAGE_VERSION,
             "kind": "state_migration",
@@ -93,10 +105,21 @@ def export_vm_state_package(
             "lab_id": summary.lab_id or "default-lab",
             "memory_state": MEMSTATE_FILENAME,
             "domain_xml": DOMAIN_FILENAME,
+            "domain_xml_sha256": _sha256(domain_path),
+            "domain_xml_size_bytes": domain_path.stat().st_size,
             "disks": disk_assets,
             "created_at": now_iso(),
             "source_will_be_deleted": False,
         }
+        # On qemu:///system the libvirt saved-state file is root-owned and is
+        # often unreadable by the invoking user. The teleport layer handles
+        # that case separately (it can't ship an unreadable file), so here we
+        # include the memory-state checksum only when we can read it, rather
+        # than failing the export outright.
+        memstate_integrity = _file_integrity(memstate_path)
+        if memstate_integrity:
+            manifest["memory_state_sha256"] = memstate_integrity["sha256"]
+            manifest["memory_state_size_bytes"] = memstate_integrity["size_bytes"]
         (package / MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     except BaseException as exc:  # noqa: BLE001 - we recover then re-raise
         recovery = _recover_failed_state_export(backend, vm_name, package, memstate_path, state_saved=state_saved)
@@ -111,6 +134,19 @@ def export_vm_state_package(
         details={"package": str(package)},
     )
     return {"package_dir": str(package), "manifest": manifest}
+
+
+def _file_integrity(path: Path) -> dict[str, Any]:
+    """sha256 + size for a package file we can read; empty dict if unreadable.
+
+    Used for the libvirt saved-state file, which on qemu:///system is root-owned
+    and frequently unreadable by the invoking user. In that case we omit its
+    integrity metadata (legacy-style) instead of failing the whole export.
+    """
+    try:
+        return {"sha256": _sha256(path), "size_bytes": path.stat().st_size}
+    except OSError:
+        return {}
 
 
 def _recover_failed_state_export(
@@ -183,7 +219,13 @@ def validate_state_package(package_dir: str | Path) -> dict[str, Any]:
     if manifest.get("source_will_be_deleted") is not False:
         errors.append("Manifest must declare source_will_be_deleted=false.")
 
-    def _check_member(rel: str, missing_message: str) -> None:
+    def _check_member(
+        rel: str,
+        missing_message: str,
+        *,
+        expected_sha: str = "",
+        expected_size: int | None = None,
+    ) -> None:
         try:
             member = safe_package_member(package, rel)
         except HyperGeryError as exc:
@@ -191,12 +233,37 @@ def validate_state_package(package_dir: str | Path) -> dict[str, Any]:
             return
         if not member.is_file():
             errors.append(missing_message)
+            return
+        # Integrity is checked only when the manifest carries it. Packages
+        # written before v1.0.1 have no checksums; they still validate on
+        # existence (legacy compatibility), but anything exported by v1.0.1+
+        # always ships sha256+size and is verified here.
+        if expected_size is not None and member.stat().st_size != expected_size:
+            errors.append(f"Size mismatch (corrupt/truncated): {rel}")
+            return
+        if expected_sha and _sha256(member) != expected_sha:
+            errors.append(f"Checksum mismatch (corrupt): {rel}")
 
-    _check_member(str(manifest.get("memory_state") or ""), "Memory state file missing.")
-    _check_member(str(manifest.get("domain_xml") or ""), "Domain XML missing.")
+    _check_member(
+        str(manifest.get("memory_state") or ""),
+        "Memory state file missing.",
+        expected_sha=str(manifest.get("memory_state_sha256") or ""),
+        expected_size=manifest.get("memory_state_size_bytes"),
+    )
+    _check_member(
+        str(manifest.get("domain_xml") or ""),
+        "Domain XML missing.",
+        expected_sha=str(manifest.get("domain_xml_sha256") or ""),
+        expected_size=manifest.get("domain_xml_size_bytes"),
+    )
     for asset in manifest.get("disks", []):
         rel = str(asset.get("relative_path") or "")
-        _check_member(rel, f"Disk asset missing: {asset.get('relative_path')}")
+        _check_member(
+            rel,
+            f"Disk asset missing: {asset.get('relative_path')}",
+            expected_sha=str(asset.get("sha256") or ""),
+            expected_size=asset.get("size_bytes"),
+        )
     return {"ok": not errors, "errors": errors, "manifest": manifest}
 
 

@@ -160,6 +160,42 @@ class StateMigrationTests(unittest.TestCase):
         self.assertFalse(validation["ok"])
         self.assertTrue(any("Memory state" in e for e in validation["errors"]))
 
+    def test_validate_detects_truncated_memory_state(self):
+        backend = StateFakeBackend(self.root, state="running")
+        package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
+        (package / "memory-state.save").write_bytes(b"trunc")  # shorter than original
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertTrue(any("memory-state.save" in e for e in validation["errors"]), validation["errors"])
+
+    def test_validate_detects_corrupt_disk_same_size(self):
+        backend = StateFakeBackend(self.root, state="running")
+        package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
+        disk = package / "disks" / "src-disk.qcow2"
+        corrupted = b"X" * disk.stat().st_size  # same size, different bytes
+        disk.write_bytes(corrupted)
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertTrue(any("Checksum mismatch" in e for e in validation["errors"]), validation["errors"])
+
+    def test_validate_accepts_legacy_package_without_checksums(self):
+        # A package written before v1.0.1 has no sha256/size; it still validates
+        # on existence so old staged packages keep working.
+        import json
+
+        backend = StateFakeBackend(self.root, state="running")
+        package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
+        manifest_path = package / "state-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for key in [k for k in manifest if k.endswith("_sha256") or k.endswith("_size_bytes")]:
+            manifest.pop(key)
+        for asset in manifest.get("disks", []):
+            asset.pop("sha256", None)
+            asset.pop("size_bytes", None)
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        validation = validate_state_package(package)
+        self.assertTrue(validation["ok"], validation["errors"])
+
     def _export_and_patch_manifest(self, **manifest_updates):
         import json
 
