@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import socket
@@ -175,7 +176,8 @@ class HyperGeryAgent:
             try:
                 result = self.backend.virsh(["list", "--all"], check=False, timeout=10)
                 libvirt_ok = result.returncode == 0
-            except Exception:
+            except Exception as exc:
+                logging.warning("agent: libvirt probe failed: %s", exc)
                 libvirt_ok = False
         kvm = Path("/dev/kvm")
         # v1.4: muestra de telemetría en cada heartbeat (nunca rompe el
@@ -186,7 +188,8 @@ class HyperGeryAgent:
             from .v1.telemetry import TelemetryService
 
             telemetry = TelemetryService(settings=V1Settings(), host_id=self.config.host_id).sample_local().to_dict()
-        except Exception:
+        except Exception as exc:
+            logging.warning("agent: telemetry sample failed (heartbeat continues): %s", exc)
             telemetry = {}
         return {
             "telemetry": telemetry,
@@ -208,7 +211,8 @@ class HyperGeryAgent:
         vms = []
         try:
             summaries = self.backend.list_vms()
-        except Exception:
+        except Exception as exc:
+            logging.warning("agent: VM inventory unavailable: %s", exc)
             summaries = []
         for vm in summaries:
             disk_paths = []
@@ -243,8 +247,9 @@ class HyperGeryAgent:
         host = self.client.heartbeat(self.host_payload())
         try:
             self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
-        except Exception:
-            pass
+        except Exception as exc:
+            # HG-BUG-0021: el heartbeat sobrevive, pero el fallo queda registrado.
+            logging.warning("agent: VM report after heartbeat failed: %s", exc)
         return host
 
     def execute_command(self, command: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -389,8 +394,8 @@ class HyperGeryAgent:
                 shutil.rmtree(downloaded_dir, ignore_errors=True)
             try:
                 self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.warning("agent: VM report after import failed: %s", exc)
             return "done", result
         if command_type == "migration_status":
             from .migration import list_migration_packages, validate_vm_package
@@ -448,14 +453,15 @@ class HyperGeryAgent:
             return failure(f"Backend failed to {action.replace('_', ' ')} {vm_name}: {exc}", previous_state)
         try:
             new_state = self.backend.vm_state(vm_name)
-        except Exception:
+        except Exception as exc:
+            logging.warning("agent: cannot read state of %s after action: %s", vm_name, exc)
             new_state = "unknown"
         # Same pattern as heartbeat: refresh the Hub inventory after acting so
         # the UI sees the new state without waiting for the next heartbeat.
         try:
             self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("agent: VM report after power action failed: %s", exc)
         return "done", {
             "vm_name": vm_name,
             "action": action,
@@ -493,8 +499,8 @@ class HyperGeryAgent:
                                 "errors": [str(exc)],
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logging.warning("agent: migration status update failed: %s", exc)
             processed.append(self.client.set_command_result(command_id, status, result))
         return {"host": host, "processed": processed}
 
