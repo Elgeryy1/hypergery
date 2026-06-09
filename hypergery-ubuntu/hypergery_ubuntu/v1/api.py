@@ -380,6 +380,37 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             if path == ["dashboard"]:
                 self._ok({"dashboard": context.dashboard()})
                 return
+            if path == ["progress"]:
+                from .progress import get_progress_channel
+
+                self._ok(
+                    {
+                        "operations": get_progress_channel().list(
+                            kind=first("kind"),
+                            active_only=first("active") in {"1", "true"},
+                        )
+                    }
+                )
+                return
+            if len(path) == 2 and path[0] == "progress":
+                # TD-9 long-poll: ?since=<version>&timeout=<s> bloquea hasta
+                # que haya progreso nuevo (la app Android y la UI lo comparten).
+                from .progress import get_progress_channel
+
+                try:
+                    since = int(first("since") or -1)
+                except ValueError:
+                    since = -1
+                try:
+                    timeout = min(60.0, max(0.0, float(first("timeout") or 25.0)))
+                except ValueError:
+                    timeout = 25.0
+                try:
+                    operation = get_progress_channel().wait_for_change(path[1], since_version=since, timeout=timeout)
+                except KeyError as exc:
+                    raise HyperGeryError(str(exc)) from exc
+                self._ok({"operation": operation})
+                return
             if path == ["external-nodes"]:
                 nodes = context.node_store.list_nodes()
                 self._ok({"nodes": [{**node.to_dict(), "health": node_health_check(node)} for node in nodes]})

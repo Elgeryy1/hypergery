@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M9 — v1.5 prep: migration_engine (TD-4) + canal de progreso (TD-9).
+- **Milestone actual:** M10 — v1.5 live migration real en caliente.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -21,8 +21,8 @@
 | 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | HECHO |
 | 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | HECHO |
 | 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | HECHO |
-| 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | EN CURSO |
-| 10 | v1.5 live migration en caliente + preflight + wizard | pendiente |
+| 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | HECHO |
+| 10 | v1.5 live migration en caliente + preflight + wizard | EN CURSO |
 | 11 | v1.6 app Android nativa | pendiente |
 | 12 | v1.7 GPU passthrough VFIO | pendiente |
 | 13 | v2.0 investigación | pendiente |
@@ -102,6 +102,13 @@
 - **API companion (superficie v1.6):** `POST /vms/<id>/start|shutdown|snapshot` — solo acciones seguras (ACPI, no force-off/delete); RBAC por acción (can_start_vm/can_stop_vm) con lab scoping para Guests; snapshot exige `{"confirm": true}` + nombre; VMs remotas → cola de comandos del Hub (queued=true). ApiContext acepta `backend`.
 - Gates: compileall OK; pytest = **777 passed, 8 skipped** (15 tests nuevos en test_v14_orchestration.py).
 - UAT automatizable: U9 (orchestrator apply local, plan stay/move con confirm) PASS por tests.
+
+## M9 — v1.5 prep: migration_engine + progreso (HECHO)
+
+- Rama `feat/v1.5-prep-migration-engine` (encadenada sobre M8, pusheada).
+- **TD-9** `v1/progress.py`: contrato único de progreso (operation_id, kind, fase, percent, mensaje, métricas acumulativas, status, version); thread-safe; long-poll real (`wait_for_change(since_version, timeout)` con Condition); historial acotado de operaciones terminadas; singleton `get_progress_channel()`. Expuesto en el API v1: `GET /progress` (lista, filtros kind/active) y `GET /progress/<id>?since=&timeout=` (long-poll ≤60s) — lo consumirán la UI y la app Android.
+- **TD-4** `v1/migration_engine.py`: fases preflight→transfer→switchover→activate, cada una `run`/`rollback`/report; rollback en orden inverso de lo completado sin enmascarar el error original; **invariante de oro verificado en construcción: ninguna fase puede declarar `touches_source` antes de switchover** (origen intacto hasta confirmar destino); cancelación cooperativa entre fases (→ rollback + estado cancelled); progreso ponderado por fase + callback de progreso fino con métricas (páginas, MB/s…). v1.5 enchufa aquí las fases reales.
+- Gates: compileall OK; pytest = **794 passed, 8 skipped** (17 tests nuevos en test_v15_engine.py).
 
 ## M1 (notas de auditoría originales)
 
