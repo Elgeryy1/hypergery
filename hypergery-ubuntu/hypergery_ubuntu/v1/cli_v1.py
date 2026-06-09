@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any
 
 from .battery import BatteryService
@@ -108,6 +109,9 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     guests = v1_sub.add_parser("guests", help="Local RBAC users.")
     guests_sub = guests.add_subparsers(dest="guests_command", required=True)
     guests_sub.add_parser("list", help="List users with effective permissions.")
+    guests_token = guests_sub.add_parser("token", help="Issue (or revoke) an API bearer token for a user. Prints the SECRET token once.")
+    guests_token.add_argument("user_id")
+    guests_token.add_argument("--revoke", action="store_true", help="Revoke the user's tokens instead of issuing one.")
 
     api = v1_sub.add_parser("api", help="Android-ready local API.")
     api_sub = api.add_subparsers(dest="api_command", required=True)
@@ -234,6 +238,19 @@ def v1_action(args: argparse.Namespace) -> int:
         result = validate_networks(networks)
         _print_json({"networks": [network.to_dict() for network in networks], **result})
         return 0 if result["ok"] else 1
+    if args.v1_command == "guests" and args.guests_command == "token":
+        from .auth import ApiTokenStore
+
+        store = ApiTokenStore()
+        if args.revoke:
+            removed = store.revoke(args.user_id)
+            _print_json({"user_id": args.user_id, "revoked_tokens": removed})
+            return 0
+        UserStore().get_user(args.user_id)  # valida que el usuario existe
+        token = store.issue(args.user_id)
+        print("ADVERTENCIA: el token es un secreto; se muestra una sola vez.", file=sys.stderr)
+        _print_json({"user_id": args.user_id, "token": token})
+        return 0
     if args.v1_command == "guests" and args.guests_command == "list":
         users = UserStore().list_users()
         return _print_json(

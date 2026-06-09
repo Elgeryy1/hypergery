@@ -15,6 +15,9 @@ services:
       - HYPERGERY_NAS_ROOT=/hypergery
       - HYPERGERY_HUB_HOST=0.0.0.0
       - HYPERGERY_HUB_PORT=8765
+      # v1.2: auth obligatoria. Si no se define, el Hub genera y persiste un
+      # token en /data/hub_token (léelo con: docker exec hypergery-hub cat /data/hub_token).
+      - HYPERGERY_HUB_TOKEN=${HYPERGERY_HUB_TOKEN:-}
     restart: unless-stopped
 
 volumes:

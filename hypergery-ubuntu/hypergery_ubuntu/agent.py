@@ -32,6 +32,7 @@ VM_POWER_COMMANDS = {
 @dataclass
 class AgentConfig:
     registry_url: str = ""
+    registry_token: str = ""
     host_id: str = ""
     name: str = ""
     nas_staging_path: str = ""
@@ -42,6 +43,8 @@ class AgentConfig:
 
         if not self.registry_url:
             self.registry_url = effective_value("hub_url")
+        if not self.registry_token:
+            self.registry_token = effective_value("hub_token")
         if not self.host_id:
             self.host_id = effective_value("host_id")
         if not self.name:
@@ -65,7 +68,11 @@ class AgentConfig:
         return cls(**merged)
 
     def to_public_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        # Nunca volcar el secreto en `agent config show`/logs.
+        if data.get("registry_token"):
+            data["registry_token"] = "***redacted***"
+        return data
 
 
 def read_meminfo_mib() -> tuple[int, int]:
@@ -136,7 +143,7 @@ class HyperGeryAgent:
     ) -> None:
         self.config = config or AgentConfig.load()
         self.backend = backend or HyperGeryBackend()
-        self.client = client or RegistryClient(self.config.registry_url)
+        self.client = client or RegistryClient(self.config.registry_url, token=self.config.registry_token)
 
     def staging_roots(self) -> list[Path]:
         configured = Path(self.config.nas_staging_path).expanduser().resolve()

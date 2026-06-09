@@ -178,7 +178,7 @@ class RegistryHttpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         store = RegistryStore(Path(self.tmp.name) / "registry.sqlite3")
-        self.server = RegistryServer(("127.0.0.1", 0), store)
+        self.server = RegistryServer(("127.0.0.1", 0), store, auth_token="hgtest-token")
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         host, port = self.server.server_address
@@ -193,6 +193,7 @@ class RegistryHttpTests(unittest.TestCase):
     def request_json(self, method: str, path: str, payload: dict | None = None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         req = Request(self.base_url + path, data=data, method=method)
+        req.add_header("Authorization", "Bearer hgtest-token")
         if data is not None:
             req.add_header("Content-Type", "application/json")
         with urlopen(req, timeout=5) as response:
@@ -271,7 +272,7 @@ class RegistryHttpTests(unittest.TestCase):
         from hypergery_ubuntu.registry import RegistryClient
 
         self.request_json("POST", "/hosts/register", {"host_id": "local", "hostname": "localhost"})
-        client = RegistryClient(self.base_url)
+        client = RegistryClient(self.base_url, token="hgtest-token")
         ping = client.create_command("local", "ping", {})
         start = client.create_command("local", "vm_start", {"vm_name": "vm1"})
         client.set_command_result(start["command_id"], "failed", {"error": "boom"})
@@ -296,7 +297,7 @@ class RegistryHttpTests(unittest.TestCase):
         from hypergery_ubuntu.registry import RegistryClient
 
         self.request_json("POST", "/hosts/register", {"host_id": "remote", "hostname": "remote"})
-        client = RegistryClient(self.base_url)
+        client = RegistryClient(self.base_url, token="hgtest-token")
         queued = client.start_remote_vm("remote", "vm1")
         self.assertEqual(queued["command_type"], "vm_start")
         self.assertEqual(queued["payload"], {"vm_name": "vm1"})
@@ -321,14 +322,14 @@ class PackageStagingTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.staging = Path(self.tmp.name) / "staging"
         store = RegistryStore(Path(self.tmp.name) / "registry.sqlite3")
-        self.server = RegistryServer(("127.0.0.1", 0), store, staging_dir=self.staging)
+        self.server = RegistryServer(("127.0.0.1", 0), store, staging_dir=self.staging, auth_token="hgtest-token")
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         host, port = self.server.server_address
         self.base_url = f"http://{host}:{port}"
         from hypergery_ubuntu.registry import RegistryClient
 
-        self.client = RegistryClient(self.base_url)
+        self.client = RegistryClient(self.base_url, token="hgtest-token")
 
     def tearDown(self):
         self.server.shutdown()
@@ -403,7 +404,7 @@ class PackageStagingTests(unittest.TestCase):
         from hypergery_ubuntu.registry import RegistryClient
 
         with self.assertRaises(HyperGeryError):
-            RegistryClient(self.base_url).cleanup_staging(older_than_hours="not-a-number")
+            RegistryClient(self.base_url, token="hgtest-token").cleanup_staging(older_than_hours="not-a-number")
 
     def test_path_traversal_is_rejected(self):
         secret = Path(self.tmp.name) / "secret.txt"
@@ -411,6 +412,7 @@ class PackageStagingTests(unittest.TestCase):
         with self.assertRaises(HyperGeryError):
             self.client.upload_package_file("mig-test", "../escape.txt", secret)
         req = Request(self.base_url + "/packages/..%2F..%2Fetc/passwd", method="GET")
+        req.add_header("Authorization", "Bearer hgtest-token")
         try:
             with urlopen(req, timeout=5) as response:
                 status = response.status

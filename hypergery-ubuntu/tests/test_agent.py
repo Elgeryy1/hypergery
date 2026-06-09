@@ -465,13 +465,13 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = RegistryStore(Path(tmp) / "registry.sqlite3")
             store.register_host({"host_id": "local", "hostname": "localhost"})
-            server = RegistryServer(("127.0.0.1", 0), store)
+            server = RegistryServer(("127.0.0.1", 0), store, auth_token="hgtest-token")
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             host, port = server.server_address
             try:
                 buf = StringIO()
-                with redirect_stdout(buf):
+                with patch.dict("os.environ", {"HYPERGERY_HUB_TOKEN": "hgtest-token"}), redirect_stdout(buf):
                     code = cli.main(["host", "test", "local", "--registry-url", f"http://{host}:{port}"])
                 self.assertEqual(code, 0)
                 data = json.loads(buf.getvalue())
