@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M11 — v1.6 app Android nativa.
+- **Milestone actual:** M13 — v2.0 investigación + resumen final.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -23,9 +23,9 @@
 | 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | HECHO |
 | 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | HECHO |
 | 10 | v1.5 live migration en caliente + preflight + wizard | HECHO (código+tests; UAT físico en cola; wizard UI pendiente) |
-| 11 | v1.6 app Android nativa | EN CURSO |
-| 12 | v1.7 GPU passthrough VFIO | pendiente |
-| 13 | v2.0 investigación | pendiente |
+| 11 | v1.6 app Android nativa | HECHO (código+CI; APK y móvil real en cola UAT) |
+| 12 | v1.7 GPU passthrough VFIO | HECHO (código+tests+detección real; bind/UAT físico en cola) |
+| 13 | v2.0 investigación | EN CURSO |
 
 ## M1 — v1.1 identidad de app (HECHO)
 

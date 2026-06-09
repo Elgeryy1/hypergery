@@ -217,6 +217,32 @@ class RealVmLifecycleTests(RealLibvirtTestCase):
         )
         self._destroy_and_delete(name)
 
+    def test_8_gpu_detection_and_desktop_gpu_hard_stop(self):
+        """§5.8 (solo lectura): detección IOMMU/GPU real y garantía de que el
+        preflight NUNCA permite pasar la GPU del escritorio sin segunda GPU.
+        No se hace bind/unbind real (este host solo tiene la iGPU)."""
+        from hypergery_ubuntu.v1.gpu_passthrough import (
+            iommu_status,
+            list_pci_gpus,
+            preflight_gpu_passthrough,
+        )
+
+        status = iommu_status()
+        gpus = list_pci_gpus()
+        self.assertTrue(gpus, "el host debe tener al menos una GPU detectable")
+        boot_gpu = next((gpu for gpu in gpus if gpu["boot_vga"]), None)
+        if boot_gpu is None:
+            self.skipTest("no boot_vga GPU on this host")
+        result = preflight_gpu_passthrough(boot_gpu["address"])
+        if len(gpus) == 1:
+            self.assertFalse(result["ok"], result)
+            self.assertTrue(
+                any("kill the host display" in error for error in result["errors"])
+                or any("IOMMU" in error for error in result["errors"]),
+                result["errors"],
+            )
+        self.assertIn("enabled", status)
+
     def test_6_delete_disks_removes_only_the_test_vm(self):
         name = self._create_vm()
         disk_path = Path(self.backend.get_vm(name).disk_path)

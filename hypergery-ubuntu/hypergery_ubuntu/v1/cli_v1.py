@@ -137,6 +137,23 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     network_sub = network.add_subparsers(dest="network_command", required=True)
     network_sub.add_parser("validate", help="Validate all lab networks for conflicts.")
 
+    gpu = v1_sub.add_parser("gpu", help="GPU passthrough (VFIO/PCI): detect, preflight, bind, attach.")
+    gpu_sub = gpu.add_subparsers(dest="gpu_command", required=True)
+    gpu_sub.add_parser("list", help="List GPUs with driver, boot_vga and IOMMU group (read-only).")
+    gpu_sub.add_parser("iommu", help="IOMMU status (read-only).")
+    gpu_sub.add_parser("propose-host-changes", help="Print the GRUB/initramfs changes needed for VFIO. Never applies them.")
+    gpu_pre = gpu_sub.add_parser("preflight", help="Check whether a GPU can be passed through (read-only).")
+    gpu_pre.add_argument("address", help="PCI address, e.g. 0000:01:00.0")
+    gpu_bind = gpu_sub.add_parser("bind", help="Bind a GPU to vfio-pci (detaches it from the host; needs root).")
+    gpu_bind.add_argument("address")
+    gpu_bind.add_argument("--confirm", action="store_true")
+    gpu_unbind = gpu_sub.add_parser("unbind", help="Return a vfio-pci device to the host.")
+    gpu_unbind.add_argument("address")
+    gpu_unbind.add_argument("--driver", default="", help="Original driver to rebind (default: drivers_probe).")
+    gpu_attach = gpu_sub.add_parser("attach", help="Add the GPU <hostdev> to a SHUT OFF VM (requires --confirm).")
+    gpu_attach.add_argument("--vm", required=True)
+    gpu_attach.add_argument("--gpu", required=True, help="PCI address")
+    gpu_attach.add_argument("--confirm", action="store_true")
     backup = v1_sub.add_parser("backup", help="NAS backup policies and backup verification.")
     backup_sub = backup.add_subparsers(dest="backup_command", required=True)
     backup_add = backup_sub.add_parser("policy-add", help="Create a backup policy for a VM.")
@@ -349,6 +366,29 @@ def v1_action(args: argparse.Namespace) -> int:
         result = validate_networks(networks)
         _print_json({"networks": [network.to_dict() for network in networks], **result})
         return 0 if result["ok"] else 1
+    if args.v1_command == "gpu":
+        from . import gpu_passthrough as gpu_mod
+
+        if args.gpu_command == "list":
+            return _print_json({"gpus": gpu_mod.list_pci_gpus()})
+        if args.gpu_command == "iommu":
+            return _print_json(gpu_mod.iommu_status())
+        if args.gpu_command == "propose-host-changes":
+            return _print_json(gpu_mod.propose_host_changes())
+        if args.gpu_command == "preflight":
+            result = gpu_mod.preflight_gpu_passthrough(args.address)
+            _print_json(result)
+            return 0 if result["ok"] else 1
+        if args.gpu_command == "bind":
+            return _print_json(gpu_mod.VfioBinder().bind_to_vfio(args.address, confirm=args.confirm))
+        if args.gpu_command == "unbind":
+            return _print_json(gpu_mod.VfioBinder().unbind_from_vfio(args.address, args.driver))
+        if args.gpu_command == "attach":
+            backend = _local_backend()
+            if backend is None:
+                raise HyperGeryError("GPU attach needs a local libvirt backend.")
+            return _print_json(gpu_mod.attach_gpu_to_vm(backend, args.vm, args.gpu, confirm=args.confirm))
+        return 2
     if args.v1_command == "backup":
         from ..backend import HyperGeryBackend
         from .backups import BackupPolicyStore, new_policy, run_due, run_policy
