@@ -119,6 +119,20 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - `python -m hypergery_ubuntu.cli doctor` checks Python, KVM, libvirt, Hub, NAS staging, Docker Compose, and Hub VM inventory without changing the system.
 - See [docs/HYPERGERY_HUB.md](docs/HYPERGERY_HUB.md), [docs/NAS_DEPLOYMENT.md](docs/NAS_DEPLOYMENT.md), and [docs/QUICK_START_V06.md](docs/QUICK_START_V06.md).
 
+> ⚠️ **Security: the Hub/API has no authentication. Use it only on a trusted LAN.**
+> The Hub control plane and the v1 HTTP API have **no authentication or TLS** in
+> v1.0.x. Anyone who can reach the Hub port can queue commands (including remote
+> **Force Off**), upload/delete migration packages, and read the inventory.
+> - The Hub binds to **`127.0.0.1` by default** (`hypergery hub serve --host 127.0.0.1`).
+>   It is only reachable from other machines if you deliberately bind a routable
+>   address (e.g. `--host 0.0.0.0` or `HYPERGERY_HUB_HOST`) — which exposes an
+>   **unauthenticated** control plane. The v1 API likewise requires an explicit
+>   `--allow-remote` to leave loopback.
+> - **Do not expose the Hub or API to the Internet** or to an untrusted network.
+>   Keep it on a trusted home/lab LAN behind your router; do not port-forward it.
+> - Token authentication and TLS are planned for **v1.2** (see
+>   [NEXT_STEPS_V12_SECURITY.md](NEXT_STEPS_V12_SECURITY.md)), not v1.0.x.
+
 ### NAS Live Migration (v0.6.0)
 
 - HyperGery Hub / NAS Control Plane for host discovery, VM inventory, command queueing, events, and migration status.
