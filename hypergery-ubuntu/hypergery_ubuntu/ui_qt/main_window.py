@@ -326,12 +326,16 @@ class MainWindow(QMainWindow):
             self.vm_filter_edit.selectAll()
 
     def show_about(self) -> None:
+        from .. import APP_HOMEPAGE
+
         QMessageBox.about(
             self,
             "Acerca de HyperGery",
             f"<b>HyperGery</b> v{APP_DISPLAY_VERSION}<br>"
             "Gestor de máquinas virtuales KVM / QEMU / libvirt.<br><br>"
-            "Interfaz estilo VirtualBox.",
+            "Interfaz estilo VirtualBox.<br>"
+            f'<a href="{APP_HOMEPAGE}">{APP_HOMEPAGE}</a><br>'
+            "Licencia: ver fichero LICENSE.",
         )
 
     def _update_battery_chip(self) -> None:
