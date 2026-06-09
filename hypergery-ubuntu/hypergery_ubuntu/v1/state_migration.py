@@ -8,6 +8,7 @@ from typing import Any
 
 from ..backend import HyperGeryError, now_iso, validate_vm_name
 from ..labs import validate_lab_id
+from ..migration import safe_package_member
 from .hglog import get_logger
 
 STATE_PACKAGE_VERSION = 1
@@ -111,13 +112,21 @@ def validate_state_package(package_dir: str | Path) -> dict[str, Any]:
         errors.append("Not a state migration package.")
     if manifest.get("source_will_be_deleted") is not False:
         errors.append("Manifest must declare source_will_be_deleted=false.")
-    if not (package / str(manifest.get("memory_state") or "")).is_file():
-        errors.append("Memory state file missing.")
-    if not (package / str(manifest.get("domain_xml") or "")).is_file():
-        errors.append("Domain XML missing.")
+
+    def _check_member(rel: str, missing_message: str) -> None:
+        try:
+            member = safe_package_member(package, rel)
+        except HyperGeryError as exc:
+            errors.append(str(exc))
+            return
+        if not member.is_file():
+            errors.append(missing_message)
+
+    _check_member(str(manifest.get("memory_state") or ""), "Memory state file missing.")
+    _check_member(str(manifest.get("domain_xml") or ""), "Domain XML missing.")
     for asset in manifest.get("disks", []):
-        if not (package / str(asset.get("relative_path") or "")).is_file():
-            errors.append(f"Disk asset missing: {asset.get('relative_path')}")
+        rel = str(asset.get("relative_path") or "")
+        _check_member(rel, f"Disk asset missing: {asset.get('relative_path')}")
     return {"ok": not errors, "errors": errors, "manifest": manifest}
 
 
@@ -155,7 +164,8 @@ def import_vm_state_package(
     disk_dir.mkdir(parents=True)
     created: list[Path] = [disk_dir]
 
-    root = ET.fromstring((package / manifest["domain_xml"]).read_text(encoding="utf-8"))
+    domain_xml_path = safe_package_member(package, str(manifest["domain_xml"]))
+    root = ET.fromstring(domain_xml_path.read_text(encoding="utf-8"))
     name_el = root.find("name")
     if name_el is None:
         name_el = ET.SubElement(root, "name")
@@ -176,8 +186,9 @@ def import_vm_state_package(
         rel = original_to_rel.get(original)
         if not rel:
             continue
-        destination = disk_dir / Path(rel).name
-        shutil.copy2(package / rel, destination)
+        member = safe_package_member(package, str(rel))
+        destination = disk_dir / member.name
+        shutil.copy2(member, destination)
         created.append(destination)
         source.attrib["file"] = str(destination)
         copied_disks.append(str(destination))
@@ -196,7 +207,8 @@ def import_vm_state_package(
         if media and hasattr(backend, "grant_libvirt_qemu_access"):
             backend.grant_libvirt_qemu_access(*media)
         # The VM comes up RUNNING, continuing from the saved state.
-        backend.restore_vm(package / manifest["memory_state"], xml_path=target_xml_path)
+        memstate_path = safe_package_member(package, str(manifest["memory_state"]))
+        backend.restore_vm(memstate_path, xml_path=target_xml_path)
         if hasattr(backend, "update_lab_for_vm"):
             backend.update_lab_for_vm(lab_id, target_vm_name, copied_disks[0] if copied_disks else "", "", network_id)
     except Exception:

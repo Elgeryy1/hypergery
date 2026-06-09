@@ -31,6 +31,38 @@ REMOTE_MIGRATION_STEPS = [
 ]
 
 
+def safe_package_member(package: str | Path, rel: str) -> Path:
+    """Resolve a package-relative member path safely.
+
+    Migration/state packages are untrusted input: a corrupt or malicious
+    manifest could name an absolute path, use ``..`` traversal, or hide a
+    symlink that points outside the package root. ``Path(package) / rel``
+    silently honours all of those (an absolute ``rel`` discards ``package``
+    entirely), so every read of a manifest-provided member path MUST go
+    through this helper instead of joining by hand.
+
+    Returns the resolved path, guaranteed to live inside ``package``. Raises
+    ``HyperGeryError`` with a clear message otherwise.
+    """
+    if not rel:
+        raise HyperGeryError("Empty package member path is not allowed.")
+    candidate = Path(rel)
+    if candidate.is_absolute():
+        raise HyperGeryError(f"Absolute package member path is not allowed: {rel}")
+    if ".." in candidate.parts:
+        raise HyperGeryError(f"Path traversal is not allowed in package member: {rel}")
+    package_root = Path(package).expanduser().resolve()
+    joined = package_root / candidate
+    # Reject a symlink member outright (even one pointing inside the package);
+    # ``resolve`` below would otherwise follow it and hide its presence.
+    if joined.is_symlink():
+        raise HyperGeryError(f"Symlinks are not allowed in packages: {rel}")
+    resolved = joined.resolve()
+    if resolved != package_root and package_root not in resolved.parents:
+        raise HyperGeryError(f"Package member path escapes the package root: {rel}")
+    return resolved
+
+
 def hub_transfer_staging_dir(backend: object) -> Path:
     """Local scratch directory used to build/receive packages for hub transfer."""
     data_dir = getattr(backend, "data_dir", None)
@@ -478,7 +510,11 @@ def validate_vm_package(package_dir: str | Path) -> dict:
                 continue
             errors.append(f"Asset has no package path: {asset.get('path', '')}")
             continue
-        path = package / rel
+        try:
+            path = safe_package_member(package, rel)
+        except HyperGeryError as exc:
+            errors.append(str(exc))
+            continue
         if not path.is_file():
             errors.append(f"Packaged asset is missing: {rel}")
             continue
@@ -609,7 +645,7 @@ def import_vm_package(
         asset = asset_by_path.get(original)
         if not asset or not asset.get("relative_path"):
             continue
-        package_asset = package / asset["relative_path"]
+        package_asset = safe_package_member(package, asset["relative_path"])
         if asset["type"] == "disk":
             destination = disk_dir / package_asset.name
             shutil.copy2(package_asset, destination)
