@@ -47,7 +47,9 @@ class ApiContext:
         teleport_engine: TeleportEngine | None = None,
         local_vms: Callable[[], list[VmInfo]] | None = None,
         hub_client: Any | None = None,
+        backend: Any | None = None,
     ) -> None:
+        self.backend = backend
         self.settings = settings or V1Settings()
         self.telemetry = telemetry or TelemetryService(settings=self.settings)
         self.host_registry = host_registry or HostRegistry(
@@ -96,6 +98,66 @@ class ApiContext:
             except Exception as exc:
                 get_logger().warning("api", f"Hub VM inventory unavailable: {exc}")
         return vms
+
+    def find_vm(self, vm_id: str) -> VmInfo:
+        for vm in self.vms():
+            if vm.id == vm_id:
+                return vm
+        raise HyperGeryError(f"VM not found: {vm_id}")
+
+    def vm_action(self, vm_id: str, action: str, *, snapshot_name: str = "") -> dict[str, Any]:
+        """v1.4 API companion: acciones SEGURAS sobre una VM (start / ACPI
+        shutdown / snapshot). Nada destructivo: force-off, delete y undefine
+        no están expuestos. VMs remotas → cola de comandos del Hub."""
+        vm = self.find_vm(vm_id)
+        local = False
+        if self.backend is not None:
+            try:
+                self.backend.get_vm(vm_id)
+                local = True
+            except Exception:
+                local = False
+        if local:
+            if action == "start":
+                self.backend.start_vm(vm_id)
+            elif action == "shutdown":
+                self.backend.shutdown_vm(vm_id)
+            elif action == "snapshot":
+                self.backend.create_snapshot(vm_id, snapshot_name, "API companion snapshot")
+            else:
+                raise HyperGeryError(f"Unsupported VM action: {action}")
+            return {"vm_id": vm_id, "action": action, "where": "local", "queued": False}
+        if action == "snapshot":
+            raise HyperGeryError("Snapshots of remote VMs are not supported from the companion API yet.")
+        if self.hub_client is None or not vm.host_id:
+            raise HyperGeryError(f"VM {vm_id} is not local and no Hub client is configured.")
+        command = self.hub_client.queue_vm_power_command(vm.host_id, vm_id, action)
+        return {"vm_id": vm_id, "action": action, "where": vm.host_id, "queued": True, "command": command}
+
+    def dashboard(self) -> dict[str, Any]:
+        """v1.4 health dashboard: hosts (con telemetría), VMs por estado,
+        alertas y batería en una sola respuesta."""
+        hosts = [host.to_dict() for host in self.host_registry.list_hosts()]
+        sample = self.telemetry.sample_local()
+        alerts = evaluate_alerts(
+            local_sample=sample,
+            hub_hosts=[host for host in hosts if "hub" in host.get("tags", [])],
+            nas_path=self.nas.nas_root if self.nas is not None else None,
+            settings=self.settings,
+        )
+        vms = self.vms()
+        by_state: dict[str, int] = {}
+        for vm in vms:
+            by_state[vm.status] = by_state.get(vm.status, 0) + 1
+        battery = self.battery.read()
+        return {
+            "hosts": hosts,
+            "local_telemetry": sample.to_dict(),
+            "alerts": alerts,
+            "vms_total": len(vms),
+            "vms_by_state": by_state,
+            "battery": battery.to_dict(),
+        }
 
     def orchestrator_plan(self, *, lab_id: str | None = None, allow_remote: bool = True) -> list[dict[str, Any]]:
         hosts = self.host_registry.list_hosts()
@@ -315,6 +377,9 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 ]
                 self._ok({"users": users})
                 return
+            if path == ["dashboard"]:
+                self._ok({"dashboard": context.dashboard()})
+                return
             if path == ["external-nodes"]:
                 nodes = context.node_store.list_nodes()
                 self._ok({"nodes": [{**node.to_dict(), "health": node_health_check(node)} for node in nodes]})
@@ -329,6 +394,13 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         ("teleport", "start"): "can_teleport",
     }
 
+    # v1.4 API companion: acciones seguras por VM y su permiso RBAC.
+    VM_ACTION_PERMISSIONS = {
+        "start": "can_start_vm",
+        "shutdown": "can_stop_vm",
+        "snapshot": "can_stop_vm",
+    }
+
     def do_POST(self) -> None:  # noqa: N802
         context = self.server.context
         path = [part for part in urlparse(self.path).path.split("/") if part]
@@ -336,6 +408,37 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         if user is None:
             return
         try:
+            if len(path) == 3 and path[0] == "vms" and path[2] in self.VM_ACTION_PERMISSIONS:
+                vm_id, action = path[1], path[2]
+                vm = context.find_vm(vm_id)
+                # Lab scoping: un Guest solo actúa sobre VMs de sus labs.
+                require_permission(user, self.VM_ACTION_PERMISSIONS[action], lab_id=vm.lab_id or None)
+                body = self._read_body()
+                snapshot_name = str(body.get("snapshot_name") or "")
+                if action == "snapshot":
+                    if not body.get("confirm"):
+                        raise HyperGeryError('vms/<id>/snapshot requires {"confirm": true}.')
+                    if not snapshot_name:
+                        raise HyperGeryError("vms/<id>/snapshot requires snapshot_name.")
+                self._ok(context.vm_action(vm_id, action, snapshot_name=snapshot_name))
+                return
+            if path == ["orchestrator", "apply"]:
+                require_permission(user, "can_use_remote_compute")
+                require_permission(user, "can_teleport")
+                body = self._read_body()
+                plan = body.get("plan")
+                if not isinstance(plan, dict):
+                    raise HyperGeryError('orchestrator/apply requires {"plan": {...}, "confirm": true}.')
+                from .orchestrator import apply_plan
+
+                self._ok(
+                    apply_plan(
+                        plan,
+                        teleport_engine=context.teleport_engine,
+                        confirm=bool(body.get("confirm")),
+                    )
+                )
+                return
             require_permission(user, self.POST_PERMISSIONS.get(tuple(path), "can_change_settings"))
             body = self._read_body()
             if path == ["orchestrator", "dry-run"]:

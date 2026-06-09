@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M8 — v1.4 orchestrator aplicable + /telemetry + health + API companion.
+- **Milestone actual:** M9 — v1.5 prep: migration_engine (TD-4) + canal de progreso (TD-9).
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -20,8 +20,8 @@
 | 5 | v1.1 needsRealLibvirt + higiene (0011/0017/0018, retirar Tk) | HECHO |
 | 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | HECHO |
 | 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | HECHO |
-| 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | EN CURSO |
-| 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | pendiente |
+| 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | HECHO |
+| 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | EN CURSO |
 | 10 | v1.5 live migration en caliente + preflight + wizard | pendiente |
 | 11 | v1.6 app Android nativa | pendiente |
 | 12 | v1.7 GPU passthrough VFIO | pendiente |
@@ -92,6 +92,16 @@
 - Template Store ya existía (templates.py); no se reinventa.
 - Gates: compileall OK; pytest = **762 passed, 8 skipped** (20 tests nuevos en test_v13_backups.py + test real nº7); suite real libvirt 7/7 PASS, host limpio.
 - Pendiente v1.3 (no bloqueante, anotado): tareas programadas con UI propia (por ahora `run-due` vía cron), backup policies por lab completo.
+
+## M8 — v1.4 orquestación + telemetría + companion (HECHO)
+
+- Rama `feat/v1.4-orchestration-telemetry` (encadenada sobre M7, pusheada).
+- **Telemetría de agente:** cada heartbeat incluye una muestra `telemetry` (cpu/ram/disco/batería/uptime, vía v1/telemetry, sin romper el heartbeat si falla); el Hub la persiste (columna `telemetry_json` en hosts) y la expone en /hosts.
+- **Orchestrator aplicable:** `orchestrator.apply_plan(plan, teleport_engine, confirm=True)` — `stay`=no-op, `teleport`=delegado al TeleportEngine, NUNCA sin confirm. CLI `v1 orchestrator apply <vm> --confirm` (recalcula el plan de esa VM y lo aplica). API `POST /orchestrator/apply` (requiere can_use_remote_compute + can_teleport + confirm).
+- **Health dashboard:** `GET /dashboard` — hosts (con telemetría), telemetría local, alertas, VMs por estado, batería.
+- **API companion (superficie v1.6):** `POST /vms/<id>/start|shutdown|snapshot` — solo acciones seguras (ACPI, no force-off/delete); RBAC por acción (can_start_vm/can_stop_vm) con lab scoping para Guests; snapshot exige `{"confirm": true}` + nombre; VMs remotas → cola de comandos del Hub (queued=true). ApiContext acepta `backend`.
+- Gates: compileall OK; pytest = **777 passed, 8 skipped** (15 tests nuevos en test_v14_orchestration.py).
+- UAT automatizable: U9 (orchestrator apply local, plan stay/move con confirm) PASS por tests.
 
 ## M1 (notas de auditoría originales)
 

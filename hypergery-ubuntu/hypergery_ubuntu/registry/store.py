@@ -138,6 +138,7 @@ class RegistryStore:
             )
             self._ensure_column(conn, "hosts", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "hosts", "updated_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "hosts", "telemetry_json", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS host_vms (
@@ -225,6 +226,7 @@ class RegistryStore:
         host["kvm_ok"] = bool(host["kvm_ok"])
         host["libvirt_ok"] = bool(host["libvirt_ok"])
         host["active_vms"] = _json_load(host.get("active_vms"), [])
+        host["telemetry"] = _json_load(host.pop("telemetry_json", ""), {})
         host["status"] = self.effective_host_status(host["last_seen"], host.get("status", "offline"))
         return host
 
@@ -248,6 +250,7 @@ class RegistryStore:
             "notes": str(payload.get("notes") or ""),
             "created_at": timestamp,
             "updated_at": timestamp,
+            "telemetry_json": _json_dump(payload.get("telemetry") or {}),
         }
         with closing(self.connect()) as conn:
             existing = conn.execute("SELECT created_at FROM hosts WHERE host_id = ?", (host_id,)).fetchone()
@@ -259,12 +262,12 @@ class RegistryStore:
                     host_id, name, hostname, status, last_seen, cpu_model,
                     ram_total_mib, ram_free_mib, disk_free_mib, kvm_ok,
                     libvirt_ok, hypergery_version, active_vms, notes,
-                    created_at, updated_at
+                    created_at, updated_at, telemetry_json
                 ) VALUES (
                     :host_id, :name, :hostname, :status, :last_seen, :cpu_model,
                     :ram_total_mib, :ram_free_mib, :disk_free_mib, :kvm_ok,
                     :libvirt_ok, :hypergery_version, :active_vms, :notes,
-                    :created_at, :updated_at
+                    :created_at, :updated_at, :telemetry_json
                 )
                 ON CONFLICT(host_id) DO UPDATE SET
                     name=excluded.name,
@@ -280,7 +283,8 @@ class RegistryStore:
                     hypergery_version=excluded.hypergery_version,
                     active_vms=excluded.active_vms,
                     notes=excluded.notes,
-                    updated_at=excluded.updated_at
+                    updated_at=excluded.updated_at,
+                    telemetry_json=excluded.telemetry_json
                 """,
                 host,
             )
