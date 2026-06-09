@@ -151,8 +151,7 @@ def preflight_gpu_passthrough(
 
     # PARADA DURA: nunca la GPU del escritorio sin una segunda GPU.
     others = [entry for entry in gpus if entry["address"] != gpu_address]
-    display_drivers = {"i915", "amdgpu", "nouveau", "nvidia", "radeon"}
-    if gpu["boot_vga"] or gpu["driver"] in display_drivers:
+    if gpu["boot_vga"] or gpu["driver"] in DISPLAY_DRIVERS:
         if not others:
             errors.append(
                 f"{gpu_address} is the host display GPU (driver {gpu['driver'] or '?'}, "
@@ -197,6 +196,30 @@ def preflight_gpu_passthrough(
     return {"ok": not errors, "errors": errors, "warnings": warnings, "iommu": iommu, "gpu": gpu}
 
 
+DISPLAY_DRIVERS = {"i915", "amdgpu", "nouveau", "nvidia", "radeon"}
+
+
+def ensure_safe_to_detach(address: str, sysfs_root: str | Path = "/sys") -> None:
+    """PARADA DURA también en el camino de bind directo (HG-BUG-0025).
+
+    Antes solo ``attach_gpu_to_vm`` pasaba por el preflight; ``v1 gpu bind``
+    podía desvincular la GPU del escritorio directamente. Esta comprobación
+    corre SIEMPRE antes de tocar el driver: si el dispositivo es la única
+    GPU de display del host, se rechaza sin opción de bypass.
+    """
+    address = _validate_address(address)
+    gpus = list_pci_gpus(sysfs_root)
+    gpu = next((entry for entry in gpus if entry["address"] == address), None)
+    if gpu is None:
+        return  # no es una GPU (p. ej. una NIC para pruebas): sin restricción extra
+    others = [entry for entry in gpus if entry["address"] != address]
+    if (gpu["boot_vga"] or gpu["driver"] in DISPLAY_DRIVERS) and not others:
+        raise HyperGeryError(
+            f"{address} is the host display GPU (driver {gpu['driver'] or '?'}, boot_vga={gpu['boot_vga']}) "
+            "and there is no second GPU: detaching it would kill the host display. Refusing."
+        )
+
+
 class VfioBinder:
     """Bind/unbind de un dispositivo PCI a vfio-pci vía sysfs, con rollback.
 
@@ -231,6 +254,7 @@ class VfioBinder:
         address = _validate_address(address)
         if not confirm:
             raise HyperGeryError("Binding a GPU to vfio-pci requires confirm=True (it detaches it from the host).")
+        ensure_safe_to_detach(address, self.root)
         device = self._device_dir(address)
         original = self.current_driver(address)
         if original in {"vfio-pci", "vfio_pci"}:
