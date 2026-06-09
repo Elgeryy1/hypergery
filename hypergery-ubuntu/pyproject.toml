@@ -1,6 +1,6 @@
 [project]
 name = "hypergery-ubuntu"
-version = "1.0.0"
+version = "1.0.1"
 description = "HyperGery desktop VM manager for Ubuntu KVM/QEMU/libvirt"
 requires-python = ">=3.10"
 dependencies = [

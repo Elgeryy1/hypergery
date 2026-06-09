@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.0.1 — Migration safety bugfix (2026-06-09)
+
+Bugfix release over v1.0.0 focused on migration safety and repo hygiene. No new
+features; no live-migration changes (still planned for v1.5).
+
+- **HG-BUG-0002 — Safe rollback on state export** (`615a9ca`): if
+  `export_vm_state_package` fails after `save_vm()` froze the source VM, it now
+  resumes the VM from its saved RAM state and drops the partial package; if the
+  resume also fails it preserves `memory-state.save` and raises a clear error with
+  the `virsh restore` command for manual recovery.
+- **HG-BUG-0007 — State package integrity** (`c0d7f77`): manifests now carry
+  sha256+size for `domain.xml`, disks, and (when readable) `memory-state.save`;
+  `validate_state_package` detects truncation/corruption. Legacy packages without
+  checksums still validate on existence. The root-owned saved-state file on
+  `qemu:///system` is hashed only when readable (best-effort).
+- **HG-BUG-0003 — Explicit snapshot behavior** (`03a6f4f`): snapshots are no
+  longer packaged and silently dropped; metadata is kept, the manifest marks
+  `snapshots_migrated=false`, and preflight/import warn explicitly that snapshots
+  are not migrated in v1.0.1.
+- **HG-BUG-0004 — Repo hygiene** (`73f29c5`): `.gitignore` now covers `.claude/`,
+  `*.exe`, and `capturas virtualbox/`; the stray 126 MB `Claude-Setup-x64.exe` was
+  removed from the working tree.
+- **HG-BUG-0001 — LAN security docs** (`4645e3c`): README/SECURITY make explicit
+  that the Hub/API have no authentication or TLS in v1.0.x — trusted-LAN only,
+  loopback by default, do not expose to the Internet; token auth + TLS remain
+  planned for v1.2.
+
+QA: `compileall` OK, focused suites **95 passed**, full suite **668 passed**
+(661 base + 7 new), 0 skipped. Real KVM-host UAT on `gerard-MS-7E26`
+**5/5 PASS** — see [RELEASE_NOTES_v1.0.1.md](RELEASE_NOTES_v1.0.1.md) and
+[docs/qa/V1_0_1_UAT_RESULT.md](docs/qa/V1_0_1_UAT_RESULT.md). Version metadata
+bumped `1.0.0` → `1.0.1` (`pyproject.toml`, `hypergery_ubuntu/__init__.py`,
+`ui_qt/styles.py`).
+
 ## v1.0.0 - Stable Release (2026-06-09)
 
 First stable release of HyperGery. Promotes the `v1.0-rc1` candidate to final
