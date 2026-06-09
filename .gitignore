@@ -20,6 +20,11 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Local tooling artifacts (not part of the project)
+.claude/
+*.exe
+capturas virtualbox/
+
 # Local task notes
 goal.md
 
