@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M10 — v1.5 live migration real en caliente.
+- **Milestone actual:** M11 — v1.6 app Android nativa.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -22,8 +22,8 @@
 | 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | HECHO |
 | 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | HECHO |
 | 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | HECHO |
-| 10 | v1.5 live migration en caliente + preflight + wizard | EN CURSO |
-| 11 | v1.6 app Android nativa | pendiente |
+| 10 | v1.5 live migration en caliente + preflight + wizard | HECHO (código+tests; UAT físico en cola; wizard UI pendiente) |
+| 11 | v1.6 app Android nativa | EN CURSO |
 | 12 | v1.7 GPU passthrough VFIO | pendiente |
 | 13 | v2.0 investigación | pendiente |
 
@@ -109,6 +109,26 @@
 - **TD-9** `v1/progress.py`: contrato único de progreso (operation_id, kind, fase, percent, mensaje, métricas acumulativas, status, version); thread-safe; long-poll real (`wait_for_change(since_version, timeout)` con Condition); historial acotado de operaciones terminadas; singleton `get_progress_channel()`. Expuesto en el API v1: `GET /progress` (lista, filtros kind/active) y `GET /progress/<id>?since=&timeout=` (long-poll ≤60s) — lo consumirán la UI y la app Android.
 - **TD-4** `v1/migration_engine.py`: fases preflight→transfer→switchover→activate, cada una `run`/`rollback`/report; rollback en orden inverso de lo completado sin enmascarar el error original; **invariante de oro verificado en construcción: ninguna fase puede declarar `touches_source` antes de switchover** (origen intacto hasta confirmar destino); cancelación cooperativa entre fases (→ rollback + estado cancelled); progreso ponderado por fase + callback de progreso fino con métricas (páginas, MB/s…). v1.5 enchufa aquí las fases reales.
 - Gates: compileall OK; pytest = **794 passed, 8 skipped** (17 tests nuevos en test_v15_engine.py).
+
+## M10 — v1.5 LIVE MIGRATION en caliente (HECHO: código + tests)
+
+- Rama `feat/v1.5-live-migration` (encadenada sobre M9, pusheada).
+- `v1/live_migration.py` sobre `virsh migrate` (= `virDomainMigrateToURI3` con VIR_MIGRATE_LIVE; no hay libvirt-python en el venv y todo el backend es virsh — coherente y honesto):
+  - **Flags:** `--live --persistent --abort-on-error` (+ `--auto-converge` por defecto, `--postcopy --postcopy-after-precopy` opcional, `--copy-storage-all`/`--copy-storage-inc` para block migration, `--bandwidth`). **Sin `--undefinesource`**: el origen se limpia SOLO en la fase activate tras confirmar el destino (semántica UNDEFINE_SOURCE controlada).
+  - **Preflight (solo lectura):** VM running; bloqueo de `<hostdev>` PCI passthrough (aviso v1.7); aviso CD-ROM local y host-passthrough CPU; conectividad/versiones destino; mismo host rechazado; nombre duplicado en destino rechazado; RAM libre del destino vs RAM de la VM; estrategia shared/block auto (override manual); estimación de downtime.
+  - **Conexión segura:** solo `qemu+ssh://`/`qemu+tls://` (qemu+tcp rechazado).
+  - **Progreso (TD-9):** poll de `virsh domjobinfo` → páginas/datos procesados/restantes, velocidad MiB/s, iteraciones pre-copy, dirty rate, ETA; **downtime real medido** con `domjobinfo --completed` (métrica `downtime_ms`).
+  - **Rollback (`virDomainAbortJob`):** `domjobabort` + limpieza del destino SOLO si el origen sigue vivo; un destino ya promovido (running con origen parado) jamás se destruye; **invariante "nunca activa en dos hosts" verificado en activate (aborta si ambos running)**. La fase fallida se deshace primero y luego las completadas en orden inverso (motor TD-4 endurecido).
+  - CLI: `hypergery-cli v1 migrate-live --vm X --target qemu+ssh://user@host/system [--shared-storage|--block-migration] [--incremental] [--postcopy] [--bandwidth-mibps N] --confirm`.
+  - Migración offline existente queda como fallback (intacta).
+- Gates: compileall OK; pytest = **815 passed, 8 skipped** (21 tests nuevos en test_v15_live_migration.py con host virsh simulado: preflight×7, flags×5, fallo/rollback/invariantes×4, parsing domjobinfo, URIs).
+- **NO hecho (anotado):** wizard Qt de migración con fases (la lógica + canal de progreso están listos; UI pendiente de una sesión con Gerard); test live single-host real no es posible (virsh rechaza migrar a sí mismo) → cola UAT.
+
+## Cola de UAT humano — live migration (NUEVO)
+
+- **U10** PC→portátil shared storage: `hypergery-cli v1 migrate-live --vm hgtest-u10 --target qemu+ssh://gery@portatil/system --shared-storage --confirm`. Esperado: VM nunca apagada, downtime medido <1s (métrica downtime_ms en el resultado/progreso), origen undefined tras confirmar.
+- **U11** block migration (sin NAS): mismo comando con `--block-migration`. Esperado: discos copiados por el canal de migración, resto igual.
+- **U12** cancelar a mitad: lanzar U10/U11 y durante el pre-copy llamar `migrator.cancel()`/Ctrl-C (o `virsh domjobabort <vm>`): origen running e intacto, destino limpio, estado `cancelled` en /progress.
 
 ## M1 (notas de auditoría originales)
 

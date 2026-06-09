@@ -87,6 +87,22 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     orch_apply.add_argument("--local-only", action="store_true")
     orch_apply.add_argument("--confirm", action="store_true")
 
+    migrate_live = v1_sub.add_parser(
+        "migrate-live",
+        help="LIVE migration (RAM+CPU, VM running) to another host via qemu+ssh:// or qemu+tls://.",
+    )
+    migrate_live.add_argument("--vm", required=True)
+    migrate_live.add_argument("--target", required=True, help="Target libvirt URI (qemu+ssh://user@host/system).")
+    storage = migrate_live.add_mutually_exclusive_group()
+    storage.add_argument("--shared-storage", action="store_true", help="Disks are on shared storage (no copy).")
+    storage.add_argument("--block-migration", action="store_true", help="Copy disks over the migration channel.")
+    migrate_live.add_argument("--incremental", action="store_true", help="--copy-storage-inc (shared base image).")
+    migrate_live.add_argument("--postcopy", action="store_true")
+    migrate_live.add_argument("--no-auto-converge", action="store_true")
+    migrate_live.add_argument("--bandwidth-mibps", type=int, default=0)
+    migrate_live.add_argument("--timeout", type=int, default=1800)
+    migrate_live.add_argument("--keep-source-definition", action="store_true", help="Do not undefine the source after confirming the target.")
+    migrate_live.add_argument("--confirm", action="store_true", help="Required: this MOVES a running VM.")
     teleport = v1_sub.add_parser("teleport", help="Teleport engine (dry-run / loopback).")
     teleport_sub = teleport.add_subparsers(dest="teleport_command", required=True)
     teleport_dry = teleport_sub.add_parser("dry-run", help="Validate a teleport without copying anything.")
@@ -251,6 +267,31 @@ def v1_action(args: argparse.Namespace) -> int:
             raise HyperGeryError(f"No plan found for VM: {args.vm_id}")
         engine = TeleportEngine(backend, settings=settings, hub_client=_hub_client()) if backend is not None else None
         return _print_json(apply_plan(plan, teleport_engine=engine, confirm=args.confirm))
+    if args.v1_command == "migrate-live":
+        if not args.confirm:
+            raise HyperGeryError("migrate-live requires --confirm (it moves a RUNNING VM between hosts).")
+        backend = _local_backend()
+        if backend is None:
+            raise HyperGeryError("Live migration needs a local libvirt backend (virsh).")
+        from .live_migration import LiveMigrationPlan, LiveMigrator
+        from .progress import get_progress_channel
+
+        shared = True if args.shared_storage else (False if args.block_migration else None)
+        plan = LiveMigrationPlan(
+            vm_name=args.vm,
+            target_uri=args.target,
+            shared_storage=shared,
+            incremental_storage=args.incremental,
+            auto_converge=not args.no_auto_converge,
+            postcopy=args.postcopy,
+            bandwidth_mibps=args.bandwidth_mibps,
+            timeout_seconds=args.timeout,
+            undefine_source_on_success=not args.keep_source_definition,
+        )
+        migrator = LiveMigrator(backend, plan, channel=get_progress_channel())
+        result = migrator.run()
+        _print_json(result)
+        return 0 if result["ok"] else 1
     if args.v1_command == "teleport":
         backend = _local_backend()
         if backend is None:
