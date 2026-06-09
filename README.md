@@ -2,15 +2,15 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v1.0--rc1-blue)
-![Status](https://img.shields.io/badge/status-release--candidate-orange)
+![Version](https://img.shields.io/badge/version-v1.0.0-blue)
+![Status](https://img.shields.io/badge/status-stable-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 HyperGery is a real desktop virtual machine manager for Ubuntu, functionally inspired by VirtualBox workflows but using KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
 
-**Branch status**: **v1.0-rc1** is the current release candidate (tag `v1.0-rc1` on `main`): v0.8 (closed) plus the v0.9/v1.0 service layer, gated on a successful **real two-physical-host smoke** (23 PASS · 0 FAIL · 1 BLOCKED known-env · 1 SKIP — see [V1_MANUAL_SMOKE_RESULT.md](V1_MANUAL_SMOKE_RESULT.md) and [RELEASE_NOTES_v1.0-rc1.md](RELEASE_NOTES_v1.0-rc1.md)). It is a release candidate, **not v1.0 final** — v1.1 (bugfix/UX) and v1.2 (security) come first. The last previous stable release is **v0.7.0**. See [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) for the v1 quick start.
+**Branch status**: **v1.0.0** is the current stable release (tag `v1.0.0` on `main`): v0.8 (closed) plus the v0.9/v1.0 service layer and the VirtualBox-style Spanish UX, with a real two-physical-host migration UAT passed and the full offscreen Qt suite green (**661 passed**). See [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md) and the final UAT evidence in [docs/qa/V1_FINAL_UAT_RESULT.md](docs/qa/V1_FINAL_UAT_RESULT.md). It was promoted from the **v1.0-rc1** candidate (see [RELEASE_NOTES_v1.0-rc1.md](RELEASE_NOTES_v1.0-rc1.md)). Live migration is **not** part of v1.0 and is planned for v1.5 ([docs/roadmap/V1_5_LIVE_MIGRATION.md](docs/roadmap/V1_5_LIVE_MIGRATION.md)). The last previous stable release was **v0.7.0**. See [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) for the v1 quick start.
 
 HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
 

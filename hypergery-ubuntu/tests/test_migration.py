@@ -14,6 +14,7 @@ from hypergery_ubuntu.migration import (
     list_migration_packages,
     migration_preflight,
     poll_remote_migration_status,
+    safe_package_member,
     start_remote_migration,
     validate_vm_package,
 )
@@ -260,6 +261,74 @@ class MigrationTests(unittest.TestCase):
             validation = validate_vm_package(package_dir)
             self.assertFalse(validation["ok"])
             self.assertIn("checksum mismatch", "; ".join(validation["errors"]))
+
+    def _build_package(self, root: Path) -> Path:
+        backend = FakeBackend(root)
+        result = export_vm_package(backend, "hg-source", root / "nas")
+        return Path(result["package_dir"])
+
+    def _rewrite_first_asset_path(self, package_dir: Path, malicious_rel: str) -> None:
+        manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+        first_asset = next(asset for asset in manifest["assets"] if asset.get("relative_path"))
+        first_asset["relative_path"] = malicious_rel
+        (package_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def test_validate_vm_package_rejects_absolute_relative_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = self._build_package(Path(tmp))
+            self._rewrite_first_asset_path(package_dir, "/etc/hosts")
+            validation = validate_vm_package(package_dir)
+            self.assertFalse(validation["ok"])
+            self.assertIn("Absolute package member path", "; ".join(validation["errors"]))
+
+    def test_validate_vm_package_rejects_parent_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = self._build_package(Path(tmp))
+            self._rewrite_first_asset_path(package_dir, "../escape.qcow2")
+            validation = validate_vm_package(package_dir)
+            self.assertFalse(validation["ok"])
+            self.assertIn("Path traversal", "; ".join(validation["errors"]))
+
+    def test_validate_vm_package_rejects_embedded_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = self._build_package(Path(tmp))
+            self._rewrite_first_asset_path(package_dir, "disks/../../escape.qcow2")
+            validation = validate_vm_package(package_dir)
+            self.assertFalse(validation["ok"])
+            self.assertIn("Path traversal", "; ".join(validation["errors"]))
+
+    def test_validate_vm_package_rejects_symlink_member_pointing_outside(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package_dir = self._build_package(root)
+            outside = root / "secret.txt"
+            outside.write_text("top secret", encoding="utf-8")
+            link = package_dir / "disks" / "linked.qcow2"
+            link.symlink_to(outside)
+            self._rewrite_first_asset_path(package_dir, "disks/linked.qcow2")
+            validation = validate_vm_package(package_dir)
+            self.assertFalse(validation["ok"])
+            self.assertIn("Symlinks are not allowed", "; ".join(validation["errors"]))
+
+    def test_import_vm_package_does_not_copy_files_outside_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package_dir = self._build_package(root / "source")
+            self._rewrite_first_asset_path(package_dir, "/etc/hosts")
+            target_backend = FakeBackend(root / "target")
+            with self.assertRaises(HyperGeryError):
+                import_vm_package(target_backend, package_dir, target_vm_name="hg-target")
+            # No domain was defined and no disk dir was populated from the escape path.
+            self.assertEqual(target_backend.defined_xml, "")
+
+    def test_safe_package_member_accepts_valid_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = self._build_package(Path(tmp))
+            manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+            rel = next(asset["relative_path"] for asset in manifest["assets"] if asset.get("relative_path"))
+            resolved = safe_package_member(package_dir, rel)
+            self.assertTrue(resolved.is_file())
+            self.assertEqual(resolved, (package_dir / rel).resolve())
 
     def test_create_remote_import_command_queues_import_and_waiting_status(self):
         client = FakeRegistryClient()

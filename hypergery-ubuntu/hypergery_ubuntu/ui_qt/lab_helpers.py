@@ -25,9 +25,9 @@ def build_lab_preview(
     try:
         lab_id = normalize_lab_id(name)
         if lab_id in set(existing_lab_ids):
-            raise HyperGeryError(f"Lab already exists: {lab_id}")
+            raise HyperGeryError(f"Ya existe un laboratorio con el ID: {lab_id}")
         if network_mode not in {"nat", "isolated"}:
-            raise HyperGeryError("Network mode must be NAT or isolated.")
+            raise HyperGeryError("El modo de red debe ser nat o isolated.")
         preview.update(
             {
                 "valid": True,

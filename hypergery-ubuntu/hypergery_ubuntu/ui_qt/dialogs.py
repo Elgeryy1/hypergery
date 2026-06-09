@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -23,10 +24,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QSpinBox,
     QStackedWidget,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -40,6 +43,7 @@ from ..backend import HyperGeryBackend, HyperGeryError, VmSummary
 from ..config import CONFIG_FIELDS, HyperGeryConfig, config_path, default_config_values, effective_config
 from ..registry import RegistryClient
 from ..templates import normalize_template_id
+from .humanize import humanize_vm_status
 from .lab_helpers import build_lab_preview
 from .styles import details_block
 
@@ -49,14 +53,107 @@ if TYPE_CHECKING:
 
 FILE_DIALOG_OPTIONS = QFileDialog.Option.DontUseNativeDialog
 
+# Qt no carga traducciones: los botones estándar saldrían en inglés
+# (Save/Cancel/OK). Aquí se ponen en español sin tocar su comportamiento.
+_STANDARD_BUTTON_TEXTS_ES = (
+    (QDialogButtonBox.StandardButton.Save, "Guardar"),
+    (QDialogButtonBox.StandardButton.Cancel, "Cancelar"),
+    (QDialogButtonBox.StandardButton.Ok, "Aceptar"),
+)
+
+
+def spanish_buttons(buttons: QDialogButtonBox) -> QDialogButtonBox:
+    """Traduce los botones estándar de un QDialogButtonBox al español."""
+    for standard, text in _STANDARD_BUTTON_TEXTS_ES:
+        button = buttons.button(standard)
+        if button is not None:
+            button.setText(text)
+    return buttons
+
+
+def spanish_wizard_buttons(wizard: QWizard) -> None:
+    """Traduce los botones de navegación de un QWizard al español."""
+    wizard.setButtonText(QWizard.WizardButton.BackButton, "< Atrás")
+    wizard.setButtonText(QWizard.WizardButton.NextButton, "Siguiente >")
+    wizard.setButtonText(QWizard.WizardButton.CancelButton, "Cancelar")
+
+
+def confirm(parent, title: str, text: str, *, yes_text: str = "Sí", no_text: str = "No", danger: bool = False) -> bool:
+    """Cuadro de confirmación con botones en español (Sí/No por defecto)."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Warning if danger else QMessageBox.Icon.Question)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    box.button(QMessageBox.StandardButton.Yes).setText(yes_text)
+    box.button(QMessageBox.StandardButton.No).setText(no_text)
+    box.setDefaultButton(QMessageBox.StandardButton.No)
+    return box.exec() == QMessageBox.StandardButton.Yes
+
+
+# Por encima de este tamaño una ISO se considera sospechosamente grande: la
+# creación de la máquina (copia/registro) puede tardar mucho. Es solo un aviso,
+# no un bloqueo.
+ISO_LARGE_BYTES = 16 * 1024**3  # 16 GiB
+
+
+def humanize_bytes(size: int | float) -> str:
+    """Tamaño en bytes → cadena legible en español (1.5 GiB, 700 MiB…)."""
+    try:
+        value = float(size)
+    except (TypeError, ValueError):
+        return "tamaño desconocido"
+    if value < 0:
+        return "tamaño desconocido"
+    units = ("bytes", "KiB", "MiB", "GiB", "TiB", "PiB")
+    index = 0
+    while value >= 1024 and index < len(units) - 1:
+        value /= 1024
+        index += 1
+    if index == 0:
+        return f"{int(value)} {units[0]}"
+    return f"{value:.1f}".rstrip("0").rstrip(".") + f" {units[index]}"
+
+
+def validate_iso_path(path: str | None, *, required: bool = False) -> tuple[bool, str]:
+    """Valida la ruta de una ISO de instalación. Función pura y testeable.
+
+    Devuelve `(ok, mensaje)`. `ok=False` debe bloquear el avance; `ok=True` con
+    un mensaje no vacío es un aviso que permite continuar. La ISO es opcional:
+    arrancar sin medio de instalación está permitido salvo que `required=True`.
+    """
+    text = (path or "").strip()
+    if not text:
+        if required:
+            return (False, "Selecciona una imagen ISO")
+        return (True, "")
+    iso = Path(text).expanduser()
+    if not iso.exists():
+        return (False, f"El archivo ISO no existe: {text}")
+    if not iso.is_file():
+        return (False, "La ruta no es un archivo válido")
+    try:
+        size = iso.stat().st_size
+    except OSError:
+        return (False, "La ruta no es un archivo válido")
+    if not os.access(iso, os.R_OK):
+        return (False, "La ruta no es un archivo válido")
+    if size == 0:
+        return (False, "El archivo ISO está vacío (0 bytes)")
+    if iso.suffix.lower() != ".iso":
+        return (True, "Aviso: el archivo no tiene extensión .iso")
+    if size > ISO_LARGE_BYTES:
+        return (True, f"Aviso: ISO muy grande ({humanize_bytes(size)}), la creación puede tardar")
+    return (True, "")
+
 
 class AppSettingsDialog(QDialog):
-    SECTIONS = ("General", "Hub", "Host Agent", "NAS", "VM Defaults", "Console", "Appearance", "Advanced")
+    SECTIONS = ("General", "Hub", "Agente", "NAS", "Valores por defecto", "Consola", "Apariencia", "Avanzado")
 
     def __init__(self, backend: HyperGeryBackend, parent=None) -> None:
         super().__init__(parent)
         self.backend = backend
-        self.setWindowTitle("HyperGery Settings")
+        self.setWindowTitle("Ajustes de HyperGery")
         effective = effective_config()
         saved = HyperGeryConfig.load()
         self._effective = effective
@@ -77,10 +174,10 @@ class AppSettingsDialog(QDialog):
         self.status.setObjectName("mutedLabel")
         self.status.setWordWrap(True)
 
-        title = QLabel("Settings")
+        title = QLabel("Ajustes")
         title.setObjectName("pageTitle")
         subtitle = QLabel(
-            "Hub, agent, NAS, and VM defaults. Each field shows whether its value comes from environment, config, or default."
+            "Hub, agente, NAS y valores por defecto. Cada campo indica si su valor viene del entorno, de la configuración o del valor por defecto."
         )
         subtitle.setObjectName("mutedLabel")
         subtitle.setWordWrap(True)
@@ -93,46 +190,46 @@ class AppSettingsDialog(QDialog):
         self.section_nav.currentRowChanged.connect(self.pages.setCurrentIndex)
 
         self.pages.addWidget(self._section_page((
-            self._field("Host ID", self.host_id, "host_id", "Stable, unique identifier for this host in the Hub."),
-            self._field("Host name", self.host_name, "host_name", "Readable name shown in Remote Hosts."),
+            self._field("ID del equipo", self.host_id, "host_id", "Identificador único y estable de este equipo en el Hub."),
+            self._field("Nombre del equipo", self.host_name, "host_name", "Nombre legible que se muestra en «Otros equipos»."),
         )))
-        test_hub = QPushButton("Test Hub")
+        test_hub = QPushButton("Probar Hub")
         test_hub.clicked.connect(self.test_hub)
         self.pages.addWidget(self._section_page((
-            self._field("Hub URL", self.hub_url, "hub_url", "HYPERGERY_HUB_URL overrides this saved value."),
+            self._field("URL del Hub", self.hub_url, "hub_url", "La variable HYPERGERY_HUB_URL tiene prioridad sobre este valor."),
             self._button_row(test_hub),
         )))
         self.pages.addWidget(self._section_page((
-            self._callout("The agent only runs allowlisted commands and rejects package paths outside the NAS staging root.", "calloutInfo"),
-            self._callout("The agent reuses the Hub, Host identity, and NAS settings from the other sections. Extra agent options are planned for a future version.", "calloutInfo"),
+            self._callout("El agente solo ejecuta órdenes de una lista permitida y rechaza rutas fuera de la carpeta del NAS.", "calloutInfo"),
+            self._callout("El agente reutiliza los ajustes de Hub, identidad y NAS de las otras secciones. Habrá más opciones en una versión futura.", "calloutInfo"),
         )))
-        test_nas = QPushButton("Test NAS Write")
+        test_nas = QPushButton("Probar escritura en NAS")
         test_nas.clicked.connect(self.test_nas)
         self.pages.addWidget(self._section_page((
-            self._field("NAS staging path", self.nas_staging_path, "nas_staging_path", "Shared Linux mount for migration packages, e.g. /mnt/hypergery-nas/hypergery."),
+            self._field("Carpeta del NAS", self.nas_staging_path, "nas_staging_path", "Carpeta compartida para los paquetes de traslado, p. ej. /mnt/hypergery-nas/hypergery."),
             self._button_row(test_nas),
-            self._callout("The Hub SQLite DB must never live on NAS/SMB — keep it in the Docker volume.", "calloutDanger"),
+            self._callout("La base de datos del Hub nunca debe vivir en NAS/SMB — déjala en el volumen Docker.", "calloutDanger"),
         )))
         self.pages.addWidget(self._section_page((
-            self._field("Default display", self.default_display, "default_display", "vnc enables the integrated console; spice uses the external viewer."),
-            self._field("Default ISO folder", self.default_iso_folder, "default_iso_folder", "Starting folder for ISO selection in the New VM wizard."),
-            self._field("Default VM storage path", self.default_vm_storage_path, "default_vm_storage_path", "Optional default disk directory for new VMs."),
+            self._field("Pantalla por defecto", self.default_display, "default_display", "vnc activa la consola integrada; spice usa el visor externo."),
+            self._field("Carpeta de ISOs", self.default_iso_folder, "default_iso_folder", "Carpeta inicial al elegir una ISO en el asistente de nueva máquina."),
+            self._field("Carpeta de discos", self.default_vm_storage_path, "default_vm_storage_path", "Carpeta opcional por defecto para los discos de las máquinas nuevas."),
         )))
         self.pages.addWidget(self._section_page((
-            self._callout("Host Key to release console input: Right Ctrl. SPICE VMs always use the external viewer.", "calloutInfo"),
-            self._callout("Console preferences (Scale to Fit default, viewer command) are planned for a future version.", "calloutInfo"),
+            self._callout("Tecla para soltar el ratón de la consola: Ctrl derecho. Las máquinas SPICE siempre usan el visor externo.", "calloutInfo"),
+            self._callout("Más preferencias de consola (escalado, comando del visor) llegarán en una versión futura.", "calloutInfo"),
         )))
         self.pages.addWidget(self._section_page((
-            self._callout("Dark is the current theme. Accent and density options are planned for a future version.", "calloutInfo"),
+            self._callout("El tema actual es el oscuro. Habrá opciones de color y densidad en una versión futura.", "calloutInfo"),
         )))
         config_file = QLineEdit(str(config_path()))
         config_file.setReadOnly(True)
-        test_libvirt = QPushButton("Test libvirt")
+        test_libvirt = QPushButton("Probar libvirt")
         test_libvirt.clicked.connect(self.test_libvirt)
         self.pages.addWidget(self._section_page((
-            self._field("Config file", config_file, None, "Settings are stored as JSON. Environment variables always take priority."),
+            self._field("Archivo de configuración", config_file, None, "Los ajustes se guardan en JSON. Las variables de entorno siempre tienen prioridad."),
             self._button_row(test_libvirt),
-            self._callout("Reset Defaults only fills the form; nothing changes until you Save. Environment variables keep priority.", "calloutWarn"),
+            self._callout("«Restaurar valores» solo rellena el formulario; no se guarda nada hasta que pulses Guardar.", "calloutWarn"),
         )))
         self.section_nav.setCurrentRow(0)
 
@@ -146,9 +243,9 @@ class AppSettingsDialog(QDialog):
         pages_frame_layout.addWidget(self.pages)
         body.addWidget(pages_frame, 1)
 
-        reset = QPushButton("Reset Defaults")
+        reset = QPushButton("Restaurar valores")
         reset.clicked.connect(self.reset_defaults)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel))
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
         bottom = QHBoxLayout()
@@ -172,7 +269,7 @@ class AppSettingsDialog(QDialog):
         elif source == "config":
             text, name = "CONFIG", "srcChipConfig"
         else:
-            text, name = "DEFAULT", "srcChipDefault"
+            text, name = "POR DEFECTO", "srcChipDefault"
         chip = QLabel(text)
         chip.setObjectName(name)
         chip.setToolTip(source)
@@ -250,7 +347,7 @@ class AppSettingsDialog(QDialog):
     def validate_and_accept(self) -> None:
         hub_url = self.hub_url.text().strip()
         if hub_url and not (hub_url.startswith("http://") or hub_url.startswith("https://")):
-            self._set_status("Hub URL must start with http:// or https://", "fail")
+            self._set_status("La URL del Hub debe empezar por http:// o https://", "fail")
             self.section_nav.setCurrentRow(self.SECTIONS.index("Hub"))
             return
         self.accept()
@@ -260,32 +357,32 @@ class AppSettingsDialog(QDialog):
             result = RegistryClient(self.hub_url.text().strip(), timeout=3).health()
             self._set_status(f"Hub OK: {result}", "ok")
         except HyperGeryError as exc:
-            self._set_status(f"Hub FAIL: {exc}", "fail")
+            self._set_status(f"Hub FALLO: {exc}", "fail")
 
     def test_nas(self) -> None:
         path = Path(self.nas_staging_path.text().strip()).expanduser()
         if not path.is_dir():
-            self._set_status(f"NAS FAIL: path does not exist: {path}", "fail")
+            self._set_status(f"NAS FALLO: la carpeta no existe: {path}", "fail")
             return
         try:
             with tempfile.NamedTemporaryFile(prefix=".hypergery-write-", dir=path, delete=True) as fh:
                 fh.write(b"ok")
                 fh.flush()
-            self._set_status(f"NAS OK: writable {path}", "ok")
+            self._set_status(f"NAS OK: se puede escribir en {path}", "ok")
         except OSError as exc:
-            self._set_status(f"NAS FAIL: {exc}", "fail")
+            self._set_status(f"NAS FALLO: {exc}", "fail")
 
     def test_libvirt(self) -> None:
         try:
             items = self.backend.preflight()
         except Exception as exc:
-            self._set_status(f"libvirt FAIL: {exc}", "fail")
+            self._set_status(f"libvirt FALLO: {exc}", "fail")
             return
         failures = [item for item in items if item.status == "Error" and item.name in {"libvirt connection", "virsh"}]
         if not failures:
             self._set_status("libvirt OK", "ok")
         else:
-            self._set_status("libvirt FAIL: " + "; ".join(item.detail for item in failures), "fail")
+            self._set_status("libvirt FALLO: " + "; ".join(item.detail for item in failures), "fail")
 
     def reset_defaults(self) -> None:
         defaults = default_config_values()
@@ -296,34 +393,38 @@ class AppSettingsDialog(QDialog):
         self.default_display.setCurrentIndex(self.default_display.findText(defaults["default_display"]))
         self.default_iso_folder.setText(defaults["default_iso_folder"])
         self.default_vm_storage_path.setText(defaults["default_vm_storage_path"])
-        self._set_status("Defaults loaded into the form (non-destructive). Select Save to persist them.", "neutral")
+        self._set_status("Valores por defecto cargados en el formulario (sin guardar). Pulsa Guardar para aplicarlos.", "neutral")
 
 
 class IdentityPage(QWizardPage):
     def __init__(self, default_iso_folder: str = "") -> None:
         super().__init__()
         self.default_iso_folder = default_iso_folder
-        self.setTitle("Identity")
-        self.setSubTitle("Choose the VM name and boot ISO.")
+        self.setTitle("Identidad")
+        self.setSubTitle("Elige el nombre de la máquina y la ISO de arranque.")
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("ubuntu-lab-01")
         self.iso_edit = QLineEdit()
         self.iso_edit.setPlaceholderText("/path/to/ubuntu.iso")
-        browse = QPushButton("Browse")
+        browse = QPushButton("Examinar")
         browse.clicked.connect(self.pick_iso)
+        self.iso_info_label = QLabel("")
+        self.iso_info_label.setObjectName("mutedLabel")
+        self.iso_info_label.setWordWrap(True)
         self.os_type = QComboBox()
-        self.os_type.addItems(["Linux", "Windows", "Other"])
+        self.os_type.addItems(["Linux", "Windows", "Otro"])
 
         iso_row = QHBoxLayout()
         iso_row.addWidget(self.iso_edit, 1)
         iso_row.addWidget(browse)
 
         form = QFormLayout()
-        form.addRow("Name", self.name_edit)
-        form.addRow("Boot ISO", iso_row)
-        form.addRow("OS type", self.os_type)
+        form.addRow("Nombre", self.name_edit)
+        form.addRow("ISO de arranque", iso_row)
+        form.addRow("", self.iso_info_label)
+        form.addRow("Sistema operativo", self.os_type)
         form.addRow("", self.error_label)
         wrapper = QVBoxLayout(self)
         wrapper.addLayout(form)
@@ -334,18 +435,40 @@ class IdentityPage(QWizardPage):
         self.registerField("os_type", self.os_type, "currentText", self.os_type.currentTextChanged)
         self.name_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
         self.iso_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
+        self.iso_edit.textChanged.connect(lambda _text: self._refresh_iso_info())
 
     def pick_iso(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Select boot ISO",
+            "Elegir ISO de arranque",
             self.default_iso_folder,
-            "ISO images (*.iso);;All files (*)",
+            "Imágenes ISO (*.iso);;Todos los archivos (*)",
             "",
             FILE_DIALOG_OPTIONS,
         )
         if path:
             self.iso_edit.setText(path)
+            self._refresh_iso_info()
+
+    def _refresh_iso_info(self) -> None:
+        """Muestra el tamaño de la ISO elegida (o el motivo por el que no vale)."""
+        text = self.iso_edit.text().strip()
+        if not text:
+            self.iso_info_label.setText("")
+            return
+        ok, message = validate_iso_path(text, required=True)
+        iso = Path(text).expanduser()
+        if ok:
+            try:
+                size_text = humanize_bytes(iso.stat().st_size)
+            except OSError:
+                size_text = "tamaño desconocido"
+            info = f"Tamaño: {size_text}"
+            if message:
+                info += f" · {message}"
+            self.iso_info_label.setText(info)
+        else:
+            self.iso_info_label.setText(message)
 
     def isComplete(self) -> bool:
         return bool(self.name_edit.text().strip() and self.iso_edit.text().strip())
@@ -353,20 +476,29 @@ class IdentityPage(QWizardPage):
     def validatePage(self) -> bool:
         self.error_label.clear()
         if not self.name_edit.text().strip():
-            self.error_label.setText("VM name is required.")
+            self.error_label.setText("El nombre de la máquina es obligatorio.")
             return False
-        iso = Path(self.iso_edit.text()).expanduser()
-        if not iso.is_file():
-            self.error_label.setText(f"Boot ISO does not exist: {iso}")
+        ok, message = validate_iso_path(self.iso_edit.text(), required=True)
+        if not ok:
+            self.error_label.setText(message)
             return False
+        if message:
+            # Aviso (extensión no .iso, ISO muy grande): se permite continuar.
+            return confirm(
+                self,
+                "Confirmar ISO",
+                f"{message}.\n\n¿Quieres continuar de todas formas?",
+                yes_text="Continuar",
+                no_text="Cancelar",
+            )
         return True
 
 
 class ResourcesPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("Resources")
-        self.setSubTitle("Set CPU, memory and disk size.")
+        self.setTitle("Recursos")
+        self.setSubTitle("Elige CPU, memoria y tamaño de disco.")
         self.ram = QSpinBox()
         self.ram.setRange(512, 262144)
         self.ram.setSingleStep(512)
@@ -383,7 +515,7 @@ class ResourcesPage(QWizardPage):
         form = QFormLayout(self)
         form.addRow("RAM", self.ram)
         form.addRow("vCPUs", self.vcpus)
-        form.addRow("Disk", self.disk)
+        form.addRow("Disco", self.disk)
         self.registerField("ram", self.ram)
         self.registerField("vcpus", self.vcpus)
         self.registerField("disk", self.disk)
@@ -392,12 +524,12 @@ class ResourcesPage(QWizardPage):
 class IntegrationPage(QWizardPage):
     def __init__(self, default_lab_id: str = "default-lab", default_disk_dir: str = "", default_display: str = "") -> None:
         super().__init__()
-        self.setTitle("Storage & Network")
-        self.setSubTitle("Choose disk location, lab network and console type.")
+        self.setTitle("Almacenamiento y red")
+        self.setSubTitle("Elige dónde guardar el disco, la red del laboratorio y el tipo de consola.")
         self.disk_dir = QLineEdit()
         self.disk_dir.setText(default_disk_dir)
-        self.disk_dir.setPlaceholderText("Default HyperGery VM directory")
-        browse = QPushButton("Browse")
+        self.disk_dir.setPlaceholderText("Carpeta de máquinas por defecto de HyperGery")
+        browse = QPushButton("Examinar")
         browse.clicked.connect(self.pick_dir)
         self.network = QComboBox()
         self.network.addItems(["nat", "isolated"])
@@ -414,14 +546,14 @@ class IntegrationPage(QWizardPage):
         disk_row.addWidget(browse)
 
         form = QFormLayout(self)
-        form.addRow("Disk directory", disk_row)
-        form.addRow("Network", self.network)
-        form.addRow("Display", self.display)
-        form.addRow("Lab ID", self.lab_id)
-        hint = QLabel("Empty disk directory uses ~/.local/share/hypergery/vms/<vm-name>/")
+        form.addRow("Carpeta del disco", disk_row)
+        form.addRow("Red", self.network)
+        form.addRow("Pantalla", self.display)
+        form.addRow("Laboratorio", self.lab_id)
+        hint = QLabel("Si dejas la carpeta vacía se usa ~/.local/share/hypergery/vms/<nombre>/")
         hint.setObjectName("mutedLabel")
         form.addRow("", hint)
-        display_hint = QLabel("Integrated console requires VNC. SPICE uses external viewer.")
+        display_hint = QLabel("La consola integrada requiere VNC. SPICE usa el visor externo.")
         display_hint.setObjectName("mutedLabel")
         form.addRow("", display_hint)
         self.registerField("disk_dir", self.disk_dir)
@@ -430,7 +562,7 @@ class IntegrationPage(QWizardPage):
         self.registerField("lab_id", self.lab_id)
 
     def pick_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select disk directory", "", FILE_DIALOG_OPTIONS)
+        path = QFileDialog.getExistingDirectory(self, "Elegir carpeta del disco", "", FILE_DIALOG_OPTIONS)
         if path:
             self.disk_dir.setText(path)
 
@@ -439,8 +571,8 @@ class ReviewPage(QWizardPage):
     def __init__(self, wizard: "VMWizard") -> None:
         super().__init__()
         self.vm_wizard = wizard
-        self.setTitle("Review")
-        self.setSubTitle("Confirm what HyperGery will create.")
+        self.setTitle("Resumen")
+        self.setSubTitle("Confirma lo que se va a crear.")
         self.summary = QLabel()
         self.summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.summary.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -456,16 +588,16 @@ class ReviewPage(QWizardPage):
             "<pre>"
             + html.escape(
                 details_block(
-                    ("Name", values["name"]),
-                    ("Boot ISO", values["iso_path"]),
-                    ("OS type", values["os_type"]),
+                    ("Nombre", values["name"]),
+                    ("ISO de arranque", values["iso_path"]),
+                    ("Sistema operativo", values["os_type"]),
                     ("RAM", f"{values['ram_mib']} MiB"),
                     ("vCPUs", str(values["vcpus"])),
-                    ("Disk", f"{values['disk_gb']} GiB qcow2"),
-                    ("Disk directory", values["disk_dir"] or "~/.local/share/hypergery/vms/<vm-name>/"),
-                    ("Network", values["network_mode"]),
-                    ("Display", values["display_mode"]),
-                    ("Lab", values["lab_id"]),
+                    ("Disco", f"{values['disk_gb']} GiB qcow2"),
+                    ("Carpeta del disco", values["disk_dir"] or "~/.local/share/hypergery/vms/<nombre>/"),
+                    ("Red", values["network_mode"]),
+                    ("Pantalla", values["display_mode"]),
+                    ("Laboratorio", values["lab_id"]),
                 )
             )
             + "</pre>"
@@ -475,7 +607,7 @@ class ReviewPage(QWizardPage):
 class VMWizard(QWizard):
     def __init__(self, parent=None, *, default_lab_id: str = "default-lab", defaults: dict | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Create Virtual Machine")
+        self.setWindowTitle("Crear máquina virtual")
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
         app_defaults = effective_config()
         self.identity_page = IdentityPage(app_defaults["default_iso_folder"].value)
@@ -490,7 +622,8 @@ class VMWizard(QWizard):
         self.addPage(self.resources_page)
         self.addPage(self.integration_page)
         self.addPage(self.review_page)
-        self.setButtonText(QWizard.WizardButton.FinishButton, "Create")
+        self.setButtonText(QWizard.WizardButton.FinishButton, "Crear")
+        spanish_wizard_buttons(self)
         self.resize(760, 520)
         if defaults:
             self._apply_defaults(defaults)
@@ -535,11 +668,11 @@ class NewLabDialog(QDialog):
         super().__init__(parent)
         self.existing_lab_ids = existing_lab_ids
         self.existing_subnets = existing_subnets
-        self.setWindowTitle("New Lab")
+        self.setWindowTitle("Nuevo laboratorio")
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Security Lab")
+        self.name_edit.setPlaceholderText("Laboratorio de pruebas")
         self.description_edit = QLineEdit()
-        self.description_edit.setPlaceholderText("Optional description")
+        self.description_edit.setPlaceholderText("Descripción opcional")
         self.network_mode = QComboBox()
         self.network_mode.addItems(["nat", "isolated"])
         self.preview_label = QLabel("")
@@ -548,17 +681,17 @@ class NewLabDialog(QDialog):
         self.preview_label.setWordWrap(True)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.create_button = buttons.addButton("Create", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
+        self.create_button = buttons.addButton("Crear", QDialogButtonBox.ButtonRole.AcceptRole)
         self.create_button.setObjectName("primaryButton")
         self.create_button.clicked.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
         form = QFormLayout()
-        form.addRow("Name", self.name_edit)
-        form.addRow("Description", self.description_edit)
-        form.addRow("Network mode", self.network_mode)
-        form.addRow("Preview", self.preview_label)
+        form.addRow("Nombre", self.name_edit)
+        form.addRow("Descripción", self.description_edit)
+        form.addRow("Modo de red", self.network_mode)
+        form.addRow("Vista previa", self.preview_label)
         form.addRow("", self.error_label)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -583,14 +716,14 @@ class NewLabDialog(QDialog):
         if preview["valid"]:
             self.preview_label.setText(
                 details_block(
-                    ("Lab ID", preview["lab_id"]),
-                    ("Network", preview["network_id"]),
-                    ("Bridge", preview["bridge_name"]),
-                    ("Subnet", preview["subnet"]),
+                    ("ID", preview["lab_id"]),
+                    ("Red", preview["network_id"]),
+                    ("Puente", preview["bridge_name"]),
+                    ("Subred", preview["subnet"]),
                 )
             )
         else:
-            self.preview_label.setText("Complete a valid lab name to preview network resources.")
+            self.preview_label.setText("Escribe un nombre válido para ver la vista previa de la red.")
 
     def values(self) -> dict:
         preview = self.current_preview()
@@ -606,21 +739,21 @@ class RenameLabDialog(QDialog):
     def __init__(self, lab: dict, parent=None) -> None:
         super().__init__(parent)
         self.lab = lab
-        self.setWindowTitle(f"Rename Lab: {lab.get('lab_id', 'unknown')}")
+        self.setWindowTitle(f"Renombrar laboratorio: {lab.get('lab_id', '?')}")
         self.name_edit = QLineEdit(str(lab.get("name") or lab.get("lab_id") or ""))
         self.description_edit = QLineEdit(str(lab.get("description") or ""))
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        notice = QLabel("This changes only the visible name and description. The lab ID and network resources stay unchanged.")
+        notice = QLabel("Solo cambia el nombre visible y la descripción. El ID del laboratorio y su red no se tocan.")
         notice.setObjectName("mutedLabel")
         notice.setWordWrap(True)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form = QFormLayout()
-        form.addRow("Lab ID", QLabel(str(lab.get("lab_id", ""))))
-        form.addRow("Name", self.name_edit)
-        form.addRow("Description", self.description_edit)
+        form.addRow("ID", QLabel(str(lab.get("lab_id", ""))))
+        form.addRow("Nombre", self.name_edit)
+        form.addRow("Descripción", self.description_edit)
         form.addRow("", self.error_label)
         layout = QVBoxLayout(self)
         layout.addWidget(notice)
@@ -630,7 +763,7 @@ class RenameLabDialog(QDialog):
 
     def accept(self) -> None:
         if not self.name_edit.text().strip():
-            self.error_label.setText("Lab name is required.")
+            self.error_label.setText("El nombre del laboratorio es obligatorio.")
             return
         super().accept()
 
@@ -643,26 +776,26 @@ class DeleteLabDialog(QDialog):
         super().__init__(parent)
         self.lab = lab
         lab_id = str(lab.get("lab_id", ""))
-        self.setWindowTitle(f"Delete Lab: {lab_id}")
-        title = QLabel(f"Delete lab {lab_id}?")
+        self.setWindowTitle(f"Eliminar laboratorio: {lab_id}")
+        title = QLabel(f"¿Eliminar el laboratorio {lab_id}?")
         title.setObjectName("sectionTitle")
-        warning = QLabel("This removes the lab manifest. VMs are not deleted by default.")
+        warning = QLabel("Se borra el manifiesto del laboratorio. Las máquinas no se borran por defecto.")
         warning.setWordWrap(True)
-        self.delete_vms = QCheckBox("Delete VMs too (disk cloning not yet implemented)")
+        self.delete_vms = QCheckBox("Borrar también las máquinas (aún no disponible)")
         self.delete_vms.setEnabled(False)
         self.confirm_lab = QLineEdit()
         self.confirm_lab.setPlaceholderText(lab_id)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.delete_button = buttons.addButton("Delete Lab", QDialogButtonBox.ButtonRole.DestructiveRole)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
+        self.delete_button = buttons.addButton("Eliminar laboratorio", QDialogButtonBox.ButtonRole.DestructiveRole)
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setEnabled(False)
         buttons.rejected.connect(self.reject)
         self.delete_button.clicked.connect(self.accept)
         self.confirm_lab.textChanged.connect(self.update_state)
         form = QFormLayout()
-        form.addRow("Type lab ID", self.confirm_lab)
+        form.addRow("Escribe el ID", self.confirm_lab)
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addWidget(warning)
@@ -677,7 +810,7 @@ class DeleteLabDialog(QDialog):
 
     def accept(self) -> None:
         if self.confirm_lab.text().strip() != str(self.lab.get("lab_id", "")):
-            self.error_label.setText("Type the exact lab ID to confirm deletion.")
+            self.error_label.setText("Escribe el ID exacto para confirmar el borrado.")
             return
         super().accept()
 
@@ -691,28 +824,28 @@ class DuplicateLabDialog(QDialog):
         self.source_lab = source_lab
         self.existing_lab_ids = existing_lab_ids
         self.existing_subnets = existing_subnets
-        self.setWindowTitle(f"Duplicate Lab: {source_lab.get('lab_id', 'unknown')}")
+        self.setWindowTitle(f"Duplicar laboratorio: {source_lab.get('lab_id', '?')}")
         self.name_edit = QLineEdit(f"{source_lab.get('name') or source_lab.get('lab_id')} Copy")
         self.preview_label = QLabel("")
         self.preview_label.setObjectName("mutedLabel")
         self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.preview_label.setWordWrap(True)
         has_vms = bool(source_lab.get("vms"))
-        self.clone_vms = QCheckBox("Clone VMs too (requires all VMs shut off; clones qcow2 disks)")
+        self.clone_vms = QCheckBox("Clonar también las máquinas (todas deben estar apagadas; clona los discos)")
         self.clone_vms.setEnabled(has_vms)
         if not has_vms:
-            self.clone_vms.setToolTip("No VMs in this lab to clone.")
+            self.clone_vms.setToolTip("Este laboratorio no tiene máquinas que clonar.")
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.duplicate_button = buttons.addButton("Duplicate", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
+        self.duplicate_button = buttons.addButton("Duplicar", QDialogButtonBox.ButtonRole.AcceptRole)
         self.duplicate_button.setObjectName("primaryButton")
         self.duplicate_button.clicked.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form = QFormLayout()
-        form.addRow("Source", QLabel(str(source_lab.get("lab_id", ""))))
-        form.addRow("New lab name", self.name_edit)
-        form.addRow("Preview", self.preview_label)
+        form.addRow("Origen", QLabel(str(source_lab.get("lab_id", ""))))
+        form.addRow("Nombre del nuevo laboratorio", self.name_edit)
+        form.addRow("Vista previa", self.preview_label)
         form.addRow("", self.error_label)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -737,14 +870,14 @@ class DuplicateLabDialog(QDialog):
         if preview["valid"]:
             self.preview_label.setText(
                 details_block(
-                    ("Lab ID", preview["lab_id"]),
-                    ("Network", preview["network_id"]),
-                    ("Bridge", preview["bridge_name"]),
-                    ("Subnet", preview["subnet"]),
+                    ("ID", preview["lab_id"]),
+                    ("Red", preview["network_id"]),
+                    ("Puente", preview["bridge_name"]),
+                    ("Subred", preview["subnet"]),
                 )
             )
         else:
-            self.preview_label.setText("Choose a valid new lab name.")
+            self.preview_label.setText("Elige un nombre válido para el nuevo laboratorio.")
 
     def values(self) -> dict:
         preview = self.current_preview()
@@ -759,7 +892,11 @@ class SettingsDialog(QDialog):
     def __init__(self, vm: VmSummary, parent=None) -> None:
         super().__init__(parent)
         self.vm = vm
-        self.setWindowTitle(f"Settings: {vm.name}")
+        self.setWindowTitle(f"Configuración: {vm.name}")
+
+        # Campos (idénticos a antes; values() no cambia).
+        self.name_value = QLineEdit(vm.name)
+        self.name_value.setReadOnly(True)
         self.ram = QSpinBox()
         self.ram.setRange(256, 262144)
         self.ram.setSingleStep(512)
@@ -769,7 +906,7 @@ class SettingsDialog(QDialog):
         self.vcpus.setRange(1, 128)
         self.vcpus.setValue(vm.vcpus or 2)
         self.iso = QLineEdit(vm.iso_path)
-        browse = QPushButton("Browse")
+        browse = QPushButton("Examinar")
         browse.clicked.connect(self.pick_iso)
         iso_row = QHBoxLayout()
         iso_row.addWidget(self.iso, 1)
@@ -783,35 +920,99 @@ class SettingsDialog(QDialog):
         self.lab_id = QLineEdit(vm.lab_id or "default-lab")
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
+        self.error_label.setWordWrap(True)
 
-        form = QFormLayout()
-        form.addRow("RAM", self.ram)
-        form.addRow("vCPUs", self.vcpus)
-        form.addRow("Boot ISO", iso_row)
-        form.addRow("Network", self.network)
-        form.addRow("Display", self.display)
-        form.addRow("Lab ID", self.lab_id)
-        display_hint = QLabel("Integrated console requires VNC. SPICE uses external viewer.")
+        display_hint = QLabel("La consola integrada requiere VNC. SPICE usa el visor externo.")
         display_hint.setObjectName("mutedLabel")
-        form.addRow("", display_hint)
-        form.addRow("", self.error_label)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        display_hint.setWordWrap(True)
+
+        # Navegación lateral con páginas, al estilo del diálogo de Ajustes de
+        # VirtualBox (General / Sistema / Pantalla / Almacenamiento / Red).
+        self.section_nav = QListWidget()
+        self.section_nav.setObjectName("sidebarNav")
+        self.section_nav.setFixedWidth(184)
+        self.pages = QStackedWidget()
+        self.section_nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+
+        sections = (
+            ("General", "SP_ComputerIcon", (
+                ("Nombre", self.name_value),
+                ("Laboratorio", self.lab_id),
+            )),
+            ("Sistema", "SP_DriveHDIcon", (
+                ("Memoria base", self.ram),
+                ("Procesadores", self.vcpus),
+            )),
+            ("Pantalla", "SP_DesktopIcon", (
+                ("Controlador gráfico", self.display),
+                ("", display_hint),
+            )),
+            ("Almacenamiento", "SP_DriveFDIcon", (
+                ("ISO de arranque", iso_row),
+            )),
+            ("Red", "SP_DriveNetIcon", (
+                ("Adaptador 1", self.network),
+            )),
+        )
+        for title_text, icon_name, rows in sections:
+            self.section_nav.addItem(QListWidgetItem(self._std_icon(icon_name), title_text))
+            self.pages.addWidget(self._form_page(rows))
+        self.section_nav.setCurrentRow(0)
+
+        header = QLabel("Configuración")
+        header.setObjectName("pageTitle")
+        subtitle = QLabel(f"{vm.name} · {humanize_vm_status(vm.state)}")
+        subtitle.setObjectName("mutedLabel")
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        body.addWidget(self.section_nav)
+        pages_frame = QFrame()
+        pages_frame.setObjectName("panel")
+        pages_frame_layout = QVBoxLayout(pages_frame)
+        pages_frame_layout.setContentsMargins(18, 16, 18, 16)
+        pages_frame_layout.addWidget(self.pages)
+        body.addWidget(pages_frame, 1)
+
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        hint = QLabel("Settings are applied through libvirt and require the VM to be shut off.")
+        hint = QLabel("Los ajustes se aplican a través de libvirt y la máquina debe estar apagada.")
         hint.setObjectName("mutedLabel")
+        hint.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.addWidget(header)
+        layout.addWidget(subtitle)
+        layout.addLayout(body, 1)
+        layout.addWidget(self.error_label)
         layout.addWidget(hint)
         layout.addWidget(buttons)
-        self.resize(640, 360)
+        self.resize(760, 470)
+
+    def _std_icon(self, name: str) -> QIcon:
+        pixmap = getattr(QStyle.StandardPixmap, name, None)
+        if pixmap is None:
+            return QIcon()
+        app = QApplication.instance()
+        return app.style().standardIcon(pixmap) if app else QIcon()
+
+    def _form_page(self, rows: tuple) -> QWidget:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(4, 6, 4, 6)
+        form.setSpacing(12)
+        for label, field in rows:
+            form.addRow(label, field)
+        return page
 
     def pick_iso(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Select boot ISO",
+            "Elegir ISO de arranque",
             "",
-            "ISO images (*.iso);;All files (*)",
+            "Imágenes ISO (*.iso);;Todos los archivos (*)",
             "",
             FILE_DIALOG_OPTIONS,
         )
@@ -821,7 +1022,7 @@ class SettingsDialog(QDialog):
     def accept(self) -> None:
         iso = self.iso.text().strip()
         if iso and not Path(iso).expanduser().is_file():
-            self.error_label.setText(f"Boot ISO does not exist: {iso}")
+            self.error_label.setText(f"La ISO de arranque no existe: {iso}")
             return
         super().accept()
 
@@ -840,17 +1041,17 @@ class SettingsDialog(QDialog):
 class CloneDialog(QDialog):
     def __init__(self, source_name: str, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(f"Clone: {source_name}")
+        self.setWindowTitle(f"Clonar: {source_name}")
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText(f"{source_name}-clone")
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
         form = QFormLayout()
-        form.addRow("Source", QLabel(source_name))
-        form.addRow("New VM name", self.name_edit)
+        form.addRow("Origen", QLabel(source_name))
+        form.addRow("Nombre del clon", self.name_edit)
         form.addRow("", self.error_label)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Clone")
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Clonar")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -859,7 +1060,7 @@ class CloneDialog(QDialog):
 
     def accept(self) -> None:
         if not self.name_edit.text().strip():
-            self.error_label.setText("Clone name is required.")
+            self.error_label.setText("El nombre del clon es obligatorio.")
             return
         super().accept()
 
@@ -871,25 +1072,25 @@ class DeleteConfirmationDialog(QDialog):
     def __init__(self, vm: VmSummary, parent=None) -> None:
         super().__init__(parent)
         self.vm = vm
-        self.setWindowTitle(f"Delete VM: {vm.name}")
-        title = QLabel(f"Delete {vm.name}?")
+        self.setWindowTitle(f"Eliminar máquina: {vm.name}")
+        title = QLabel(f"¿Eliminar {vm.name}?")
         title.setObjectName("sectionTitle")
-        warning = QLabel("This undefines the VM from libvirt. Disk deletion is limited to HyperGery-managed disks.")
+        warning = QLabel("La máquina se elimina de libvirt. Solo se pueden borrar discos gestionados por HyperGery.")
         warning.setWordWrap(True)
-        self.delete_disk = QCheckBox("Also remove the HyperGery-managed disk when safe")
+        self.delete_disk = QCheckBox("Borrar también el disco gestionado por HyperGery si es seguro")
         self.confirm_name = QLineEdit()
         self.confirm_name.setPlaceholderText(vm.name)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.delete_button = buttons.addButton("Delete VM", QDialogButtonBox.ButtonRole.DestructiveRole)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
+        self.delete_button = buttons.addButton("Eliminar máquina", QDialogButtonBox.ButtonRole.DestructiveRole)
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setEnabled(False)
         buttons.rejected.connect(self.reject)
         self.delete_button.clicked.connect(self.accept)
         self.confirm_name.textChanged.connect(self.update_state)
         form = QFormLayout()
-        form.addRow("Type VM name", self.confirm_name)
+        form.addRow("Escribe el nombre", self.confirm_name)
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addWidget(warning)
@@ -904,7 +1105,7 @@ class DeleteConfirmationDialog(QDialog):
 
     def accept(self) -> None:
         if self.confirm_name.text().strip() != self.vm.name:
-            self.error_label.setText("Type the exact VM name to confirm deletion.")
+            self.error_label.setText("Escribe el nombre exacto para confirmar el borrado.")
             return
         super().accept()
 
@@ -915,7 +1116,7 @@ class DeleteConfirmationDialog(QDialog):
 class LiveMigrationDialog(QDialog):
     """NAS Clone Migration wizard: stepper + stacked pages over the existing v0.6 flow."""
 
-    STEPS = ("Select VM", "Target Host", "Options", "Preflight", "Progress", "Result")
+    STEPS = ("Elegir máquina", "Equipo destino", "Opciones", "Comprobación", "Progreso", "Resultado")
     MIGRATION_STATES = ("created", "preflight", "packaging", "uploaded", "waiting_target", "importing", "defining_vm", "done")
 
     def __init__(self, backend: HyperGeryBackend, vm: VmSummary, parent=None) -> None:
@@ -933,7 +1134,7 @@ class LiveMigrationDialog(QDialog):
         self.status_poll_timer.timeout.connect(self.refresh_migration_status)
         # Closing the dialog stops polling; it never touches the migration itself.
         self.finished.connect(self.status_poll_timer.stop)
-        self.setWindowTitle(f"NAS Clone Migration: {vm.name}")
+        self.setWindowTitle(f"Mover a otro equipo: {vm.name}")
 
         app_config = effective_config()
         self.registry_url = QLineEdit(app_config["hub_url"].value)
@@ -941,15 +1142,15 @@ class LiveMigrationDialog(QDialog):
         self.target_host = QComboBox()
         self.target_name = QLineEdit(f"{vm.name}-migrated")
         self.transfer_mode = QComboBox()
-        self.transfer_mode.addItem("Hub transfer — upload through the Hub, no shared NAS mount needed", "hub")
-        self.transfer_mode.addItem("Shared NAS path — same mount visible on both hosts", "nas")
+        self.transfer_mode.addItem("Por el Hub — se sube al Hub, no hace falta NAS compartido", "hub")
+        self.transfer_mode.addItem("Por carpeta NAS compartida — visible en ambos equipos", "nas")
         self.nas_path = QLineEdit(app_config["nas_staging_path"].value)
-        self.include_iso = QCheckBox("Include attached ISO")
+        self.include_iso = QCheckBox("Incluir la ISO conectada")
         self.include_iso.setChecked(True)
-        self.include_snapshots = QCheckBox("Include snapshot file assets when detectable")
+        self.include_snapshots = QCheckBox("Incluir archivos de instantáneas cuando se detecten")
         self.include_snapshots.setChecked(True)
-        self.allow_paused = QCheckBox("Allow paused VM packaging")
-        self.start_after_import = QCheckBox("Start after import")
+        self.allow_paused = QCheckBox("Permitir empaquetar máquinas en pausa")
+        self.start_after_import = QCheckBox("Encender al terminar")
         self.result_view = QTextEdit()
         self.result_view.setReadOnly(True)
         self.result_view.setMinimumHeight(170)
@@ -957,11 +1158,11 @@ class LiveMigrationDialog(QDialog):
         self.error_label.setObjectName("errorLabel")
         self.error_label.setWordWrap(True)
 
-        title = QLabel(f"NAS Clone Migration · {vm.name}")
+        title = QLabel(f"Mover a otro equipo · {vm.name}")
         title.setObjectName("pageTitle")
         strategy_note = QLabel(
-            "This is NAS Clone Migration, not live RAM migration. The source VM and source disks remain untouched; "
-            "the target VM is imported from a NAS package with a regenerated UUID and MAC."
+            "La máquina se copia a otro equipo (no es migración de RAM en vivo). La máquina original y sus discos "
+            "no se tocan; en el destino se importa una copia con UUID y MAC nuevos."
         )
         strategy_note.setObjectName("calloutInfo")
         strategy_note.setWordWrap(True)
@@ -995,17 +1196,17 @@ class LiveMigrationDialog(QDialog):
         body.addWidget(stepper_frame)
         body.addWidget(self.pages, 1)
 
-        self.back_button = QPushButton("Back")
+        self.back_button = QPushButton("Atrás")
         self.back_button.clicked.connect(self.go_back)
-        self.next_button = QPushButton("Next")
+        self.next_button = QPushButton("Siguiente")
         self.next_button.clicked.connect(self.go_next)
-        self.preflight_button = QPushButton("Run Preflight")
+        self.preflight_button = QPushButton("Comprobar antes de empezar")
         self.preflight_button.clicked.connect(self.run_preflight)
-        self.package_button = QPushButton("Start Migration")
+        self.package_button = QPushButton("Empezar el traslado")
         self.package_button.setObjectName("primaryButton")
         self.package_button.setEnabled(False)
         self.package_button.clicked.connect(self.start_migration)
-        close_button = QPushButton("Close")
+        close_button = QPushButton("Cerrar")
         close_button.clicked.connect(self.reject)
         bottom = QHBoxLayout()
         bottom.addWidget(self.back_button)
@@ -1064,9 +1265,9 @@ class LiveMigrationDialog(QDialog):
         name = QLabel(self.vm.name)
         name.setObjectName("sectionTitle")
         running = "running" in (self.vm.state or "").lower()
-        state_chip = QLabel(self.vm.state.upper() if self.vm.state else "UNKNOWN")
+        state_chip = QLabel(humanize_vm_status(self.vm.state, "table"))
         state_chip.setObjectName("statusChipBad" if running else "statusChipOk")
-        must_off = QLabel("Must be shut off")
+        must_off = QLabel("Debe estar apagada")
         must_off.setObjectName("statusChipWarn")
         head.addWidget(name)
         head.addWidget(state_chip)
@@ -1074,21 +1275,21 @@ class LiveMigrationDialog(QDialog):
         head.addStretch()
         card_layout.addLayout(head)
         detail = QLabel(
-            f"Display: {getattr(self.vm, 'graphics', '') or 'unknown'} · "
+            f"Pantalla: {getattr(self.vm, 'graphics', '') or '?'} · "
             f"RAM: {getattr(self.vm, 'ram_mib', 0) or '?'} MiB · vCPUs: {getattr(self.vm, 'vcpus', 0) or '?'} · "
-            f"Lab: {getattr(self.vm, 'lab_id', '') or '-'}"
+            f"Laboratorio: {getattr(self.vm, 'lab_id', '') or '-'}"
         )
         detail.setObjectName("mutedLabel")
         card_layout.addWidget(detail)
         layout.addWidget(card)
         if running:
             layout.addWidget(self._wizard_callout(
-                "Running VM migration is blocked for NAS Clone Migration. Shut the VM down with ACPI Shutdown first.",
+                "No se puede mover una máquina encendida. Apágala primero con «Apagar (suave)».",
                 "calloutDanger",
             ))
         form = QFormLayout()
-        form.addRow("Hub URL", self.registry_url)
-        form.addRow("Source host ID", self.source_host_id)
+        form.addRow("URL del Hub", self.registry_url)
+        form.addRow("Equipo de origen", self.source_host_id)
         layout.addLayout(form)
         layout.addStretch()
         return page
@@ -1097,15 +1298,15 @@ class LiveMigrationDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
-        refresh_hosts = QPushButton("Refresh Hosts")
+        refresh_hosts = QPushButton("Actualizar equipos")
         refresh_hosts.clicked.connect(self.refresh_hosts)
         host_row = QHBoxLayout()
         host_row.addWidget(self.target_host, 1)
         host_row.addWidget(refresh_hosts)
         form = QFormLayout()
-        form.addRow("Target host", host_row)
+        form.addRow("Equipo de destino", host_row)
         layout.addLayout(form)
-        self.target_summary = QLabel("Select a target host from the Hub.")
+        self.target_summary = QLabel("Elige un equipo de destino del Hub.")
         self.target_summary.setObjectName("mutedLabel")
         self.target_summary.setWordWrap(True)
         summary_card = QFrame()
@@ -1121,21 +1322,21 @@ class LiveMigrationDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
-        self.nas_browse_button = QPushButton("Browse")
+        self.nas_browse_button = QPushButton("Examinar")
         self.nas_browse_button.clicked.connect(self.pick_nas_path)
         path_row = QHBoxLayout()
         path_row.addWidget(self.nas_path, 1)
         path_row.addWidget(self.nas_browse_button)
         form = QFormLayout()
-        form.addRow("Target VM name", self.target_name)
-        form.addRow("Transfer mode", self.transfer_mode)
-        form.addRow("NAS staging path", path_row)
+        form.addRow("Nombre en el destino", self.target_name)
+        form.addRow("Forma de envío", self.transfer_mode)
+        form.addRow("Carpeta del NAS", path_row)
         form.addRow("", self.include_iso)
         form.addRow("", self.include_snapshots)
         form.addRow("", self.allow_paused)
         form.addRow("", self.start_after_import)
         layout.addLayout(form)
-        layout.addWidget(self._wizard_callout("Source VM and source disks will not be deleted.", "calloutOk"))
+        layout.addWidget(self._wizard_callout("La máquina original y sus discos no se borran.", "calloutOk"))
         layout.addStretch()
         return page
 
@@ -1143,7 +1344,7 @@ class LiveMigrationDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
-        hint = QLabel("Run Preflight to validate the source VM, target host, NAS staging, and target name before starting.")
+        hint = QLabel("Pulsa «Comprobar antes de empezar» para validar la máquina, el destino, el NAS y el nombre.")
         hint.setObjectName("mutedLabel")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -1154,7 +1355,7 @@ class LiveMigrationDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
-        self.migration_id_label = QLabel("Migration not started yet.")
+        self.migration_id_label = QLabel("El traslado no ha empezado todavía.")
         self.migration_id_label.setObjectName("sectionTitle")
         layout.addWidget(self.migration_id_label)
         self.progress_states_layout = QVBoxLayout()
@@ -1169,12 +1370,12 @@ class LiveMigrationDialog(QDialog):
         self.progress_log.setReadOnly(True)
         layout.addWidget(self.progress_log, 1)
         actions = QHBoxLayout()
-        self.refresh_status_button = QPushButton("Refresh Status")
+        self.refresh_status_button = QPushButton("Actualizar estado")
         self.refresh_status_button.clicked.connect(self.refresh_migration_status)
         self.refresh_status_button.setEnabled(False)
-        copy_id = QPushButton("Copy Migration ID")
+        copy_id = QPushButton("Copiar ID")
         copy_id.clicked.connect(self.copy_migration_id)
-        copy_logs = QPushButton("Copy Logs")
+        copy_logs = QPushButton("Copiar registro")
         copy_logs.clicked.connect(self.copy_progress_logs)
         actions.addWidget(self.refresh_status_button)
         actions.addWidget(copy_id)
@@ -1203,9 +1404,9 @@ class LiveMigrationDialog(QDialog):
         self.result_callout.setWordWrap(True)
         layout.addWidget(self.result_callout)
         actions = QHBoxLayout()
-        copy_summary = QPushButton("Copy Summary")
+        copy_summary = QPushButton("Copiar resumen")
         copy_summary.clicked.connect(self.copy_summary)
-        self.back_to_preflight_button = QPushButton("Back to Preflight")
+        self.back_to_preflight_button = QPushButton("Volver a la comprobación")
         self.back_to_preflight_button.clicked.connect(lambda: self._set_step(3))
         actions.addWidget(copy_summary)
         actions.addWidget(self.back_to_preflight_button)
@@ -1270,10 +1471,10 @@ class LiveMigrationDialog(QDialog):
     def go_next(self) -> None:
         step = self.current_step()
         if step == 0 and self._vm_running():
-            self.error_label.setText("Running VM migration is blocked for NAS Clone Migration.")
+            self.error_label.setText("No se puede mover una máquina encendida: apágala primero.")
             return
         if step == 1 and not self._target_ready():
-            self.error_label.setText("Select an online, KVM/libvirt-ready target host that differs from the source host.")
+            self.error_label.setText("Elige un equipo de destino en línea, con KVM/libvirt listos y distinto del de origen.")
             return
         if step < 3:
             self.error_label.clear()
@@ -1297,25 +1498,25 @@ class LiveMigrationDialog(QDialog):
             hosts = RegistryClient(self.registry_url.text().strip()).list_hosts()
         except HyperGeryError as exc:
             self.result_view.setPlainText(
-                "Hub not reachable. Set HYPERGERY_HUB_URL or start docker compose in docker/.\n"
+                "No se puede contactar con el Hub. Revisa HYPERGERY_HUB_URL o arranca docker compose en docker/.\n"
                 f"{exc}"
             )
             if hasattr(self, "target_summary"):
-                self.target_summary.setText("Hub not reachable — no target hosts available.")
+                self.target_summary.setText("No se puede contactar con el Hub — no hay equipos de destino.")
             self.invalidate_preflight()
             return
         self.hosts = hosts
         for host in hosts:
             host_id = str(host.get("host_id") or "")
             status = str(host.get("status") or "offline")
-            label = f"{host_id} ({status})"
+            label = f"{host_id} ({'en línea' if status == 'online' else 'sin conexión'})"
             if host.get("hostname"):
                 label += f" - {host.get('hostname')}"
             self.target_host.addItem(label, host_id)
             index = self.target_host.count() - 1
             self.target_host.model().item(index).setEnabled(status == "online")
         if not hosts:
-            self.result_view.setPlainText("Hub returned no hosts. Start agents on source and target hosts first.")
+            self.result_view.setPlainText("El Hub no tiene equipos. Arranca antes los agentes en el origen y el destino.")
         else:
             self.result_view.setPlainText(self._format_hosts(hosts))
         self._render_target_summary()
@@ -1326,23 +1527,23 @@ class LiveMigrationDialog(QDialog):
             return
         target = self._selected_target()
         if not target:
-            self.target_summary.setText("Select a target host from the Hub.")
+            self.target_summary.setText("Elige un equipo de destino del Hub.")
             return
         status = str(target.get("status") or "offline")
         lines = [
-            f"Status: {status.upper()}" ,
-            f"KVM: {'OK' if target.get('kvm_ok') else 'FAIL'} · libvirt: {'OK' if target.get('libvirt_ok') else 'FAIL'}",
-            f"RAM free: {target.get('ram_free_mib', 0)} / {target.get('ram_total_mib', 0)} MiB · Disk free: {target.get('disk_free_mib', 0)} MiB",
-            f"Active VMs: {len(target.get('active_vms') or [])} · Last heartbeat: {target.get('last_seen') or 'unknown'}",
+            f"Estado: {status.upper()}" ,
+            f"KVM: {'OK' if target.get('kvm_ok') else 'FALLO'} · libvirt: {'OK' if target.get('libvirt_ok') else 'FALLO'}",
+            f"RAM libre: {target.get('ram_free_mib', 0)} de {target.get('ram_total_mib', 0)} MiB · Disco libre: {target.get('disk_free_mib', 0)} MiB",
+            f"Máquinas activas: {len(target.get('active_vms') or [])} · Última señal: {target.get('last_seen') or 'desconocida'}",
         ]
         if status != "online":
-            lines.append("Offline target hosts block the migration.")
+            lines.append("Un destino sin conexión bloquea el traslado.")
         if str(target.get("host_id") or "") == self.source_host_id.text().strip():
-            lines.append("Target host must differ from the source host.")
+            lines.append("El destino debe ser distinto del origen.")
         self.target_summary.setText("\n".join(lines))
 
     def pick_nas_path(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select NAS staging directory", self.nas_path.text(), FILE_DIALOG_OPTIONS)
+        path = QFileDialog.getExistingDirectory(self, "Elegir carpeta del NAS", self.nas_path.text(), FILE_DIALOG_OPTIONS)
         if path:
             self.nas_path.setText(path)
 
@@ -1374,28 +1575,28 @@ class LiveMigrationDialog(QDialog):
         self.error_label.clear()
         values = self.values()
         if not values["target_vm_name"]:
-            self.error_label.setText("Target VM name is required.")
+            self.error_label.setText("El nombre en el destino es obligatorio.")
             return
         if not values["source_host_id"]:
-            self.error_label.setText("Source host ID is required.")
+            self.error_label.setText("El ID del equipo de origen es obligatorio.")
             return
         if not values["target_host_id"]:
-            self.error_label.setText("Select an online target host from the Hub.")
+            self.error_label.setText("Elige un equipo de destino en línea.")
             return
         if values["transfer"] == "nas" and not values["nas_path"]:
-            self.error_label.setText("NAS staging path is required for shared NAS transfer.")
+            self.error_label.setText("La carpeta del NAS es obligatoria para el envío por NAS compartido.")
             return
         if values["target_host_id"] == values["source_host_id"]:
-            self.error_label.setText("Target host must differ from the source host.")
+            self.error_label.setText("El destino debe ser distinto del origen.")
             self.package_button.setEnabled(False)
             return
         target = self._selected_target()
         if not target or target.get("status") != "online":
-            self.error_label.setText("Selected target host is offline.")
+            self.error_label.setText("El equipo de destino elegido está sin conexión.")
             self.package_button.setEnabled(False)
             return
         if not target.get("kvm_ok") or not target.get("libvirt_ok"):
-            self.error_label.setText("Selected target host is not ready: KVM/libvirt check failed.")
+            self.error_label.setText("El destino no está listo: falló la comprobación de KVM/libvirt.")
             self.package_button.setEnabled(False)
             return
         if values["transfer"] == "hub":
@@ -1429,27 +1630,27 @@ class LiveMigrationDialog(QDialog):
         assets = result.get("assets", [])
         transfer = str(self.transfer_mode.currentData() or "nas")
         transfer_line = (
-            "Transfer: hub (package uploaded through the Hub, removed from the Hub after import)"
+            "Envío: por el Hub (el paquete se sube al Hub y se borra de allí tras importarse)"
             if transfer == "hub"
-            else "Transfer: shared NAS path (must be visible at the same path on both hosts)"
+            else "Envío: carpeta NAS compartida (debe verse en la misma ruta en ambos equipos)"
         )
         lines = [
-            f"Status: {'OK' if result.get('ok') else 'Blocked'}",
-            f"Strategy: {result.get('strategy', 'offline-copy')} (NAS Clone Migration)",
+            f"Estado: {'OK' if result.get('ok') else 'Bloqueado'}",
+            f"Método: {result.get('strategy', 'offline-copy')} (copia, no migración en vivo)",
             transfer_line,
-            f"Source will be deleted: {result.get('source_will_be_deleted')}",
-            "Target identity: UUID and MAC will be regenerated on import.",
-            f"Estimated package size: {result.get('estimated_size_bytes', 0)} bytes",
+            f"¿Se borra el original?: {result.get('source_will_be_deleted')}",
+            "Identidad en destino: el UUID y la MAC se regeneran al importar.",
+            f"Tamaño estimado del paquete: {result.get('estimated_size_bytes', 0)} bytes",
             "",
-            "Errors:",
+            "Errores:",
             *(f"- {item}" for item in errors),
-            "" if errors else "- none",
+            "" if errors else "- ninguno",
             "",
-            "Warnings:",
+            "Avisos:",
             *(f"- {item}" for item in warnings),
-            "" if warnings else "- none",
+            "" if warnings else "- ninguno",
             "",
-            "Assets:",
+            "Archivos incluidos:",
         ]
         if assets:
             lines.extend(
@@ -1457,18 +1658,20 @@ class LiveMigrationDialog(QDialog):
                 for asset in assets
             )
         else:
-            lines.append("- none")
+            lines.append("- ninguno")
         return "\n".join(lines)
 
     def _format_hosts(self, hosts: list[dict]) -> str:
-        lines = ["Remote hosts:"]
+        lines = ["Equipos remotos:"]
         for host in hosts:
-            active = ", ".join(host.get("active_vms") or []) or "none"
+            active = ", ".join(host.get("active_vms") or []) or "ninguna"
+            status = "en línea" if str(host.get("status")) == "online" else "sin conexión"
             lines.append(
-                f"- {host.get('host_id')} status={host.get('status')} last_seen={host.get('last_seen')} "
-                f"ram={host.get('ram_free_mib')}/{host.get('ram_total_mib')} MiB "
-                f"disk_free={host.get('disk_free_mib')} MiB "
-                f"kvm={host.get('kvm_ok')} libvirt={host.get('libvirt_ok')} active_vms={active}"
+                f"- {host.get('host_id')} · {status} · última señal {host.get('last_seen')} · "
+                f"RAM libre {host.get('ram_free_mib')}/{host.get('ram_total_mib')} MiB · "
+                f"disco libre {host.get('disk_free_mib')} MiB · "
+                f"KVM {'sí' if host.get('kvm_ok') else 'NO'} · libvirt {'sí' if host.get('libvirt_ok') else 'NO'} · "
+                f"máquinas activas: {active}"
             )
         return "\n".join(lines)
 
@@ -1476,23 +1679,23 @@ class LiveMigrationDialog(QDialog):
 
     def start_migration(self) -> None:
         if not self.preflight_result or not self.preflight_result.get("ok"):
-            self.error_label.setText("Run a successful preflight before starting migration.")
+            self.error_label.setText("Pasa la comprobación antes de empezar el traslado.")
             return
         values = self.values()
         self.error_label.clear()
         self.package_button.setEnabled(False)
         self._set_step(4)
-        self.migration_id_label.setText("Starting migration…")
+        self.migration_id_label.setText("Empezando el traslado…")
         if values["transfer"] == "hub":
             progress_intro = (
-                f"Packaging {values['vm_name']} locally and uploading it through the Hub for {values['target_host_id']}.\n"
-                "The Hub copy is temporary and is removed after the target imports it.\n"
-                "The source VM and source disks remain untouched."
+                f"Empaquetando {values['vm_name']} y subiéndolo por el Hub hacia {values['target_host_id']}.\n"
+                "La copia del Hub es temporal y se borra cuando el destino la importa.\n"
+                "La máquina original y sus discos no se tocan."
             )
         else:
             progress_intro = (
-                f"Packaging {values['vm_name']} into NAS staging and queueing import on {values['target_host_id']}.\n"
-                "The source VM and source disks remain untouched."
+                f"Empaquetando {values['vm_name']} en el NAS y encolando la importación en {values['target_host_id']}.\n"
+                "La máquina original y sus discos no se tocan."
             )
         self.progress_log.setPlainText(progress_intro)
         self._render_progress_states("created")
@@ -1524,12 +1727,12 @@ class LiveMigrationDialog(QDialog):
         def succeeded() -> None:
             self.last_result = job.result or {}
             migration_id = str(self.last_result.get("migration_id") or "")
-            self.migration_id_label.setText(f"Migration ID: {migration_id}")
+            self.migration_id_label.setText(f"ID del traslado: {migration_id}")
             self.progress_log.append(
-                f"\nMigration queued.\nmigration_id: {migration_id}\n"
+                f"\nTraslado encolado.\nmigration_id: {migration_id}\n"
                 f"package: {self.last_result.get('package_dir', '')}\n"
-                f"target command: {self.last_result.get('command_id', '')}\n"
-                "Waiting for the target agent to import (status refreshes automatically)."
+                f"orden en destino: {self.last_result.get('command_id', '')}\n"
+                "Esperando a que el destino importe (el estado se actualiza solo)."
             )
             self.refresh_status_button.setEnabled(True)
             self._render_progress_states("uploaded")
@@ -1537,7 +1740,7 @@ class LiveMigrationDialog(QDialog):
 
         def failed() -> None:
             self.last_status = {"status": "failed", "error": job.error_message}
-            self.progress_log.append(f"\nMigration failed to start: {job.error_message}")
+            self.progress_log.append(f"\nEl traslado no ha podido empezar: {job.error_message}")
             self._render_progress_states("failed")
             self._show_result_failure(job.error_message)
 
@@ -1571,7 +1774,7 @@ class LiveMigrationDialog(QDialog):
     def refresh_migration_status(self) -> None:
         migration_id = str((self.last_result or {}).get("migration_id") or "")
         if not migration_id:
-            self.error_label.setText("No migration started yet.")
+            self.error_label.setText("Todavía no hay ningún traslado en marcha.")
             return
         if self._status_job_running:
             return
@@ -1595,7 +1798,7 @@ class LiveMigrationDialog(QDialog):
             self.last_status = record
             status = str(record.get("status") or "unknown")
             if status != previous:
-                self.progress_log.append(f"status: {status}")
+                self.progress_log.append(f"estado: {status}")
             self._render_progress_states(status if status in self.MIGRATION_STATES or status == "failed" else "created")
             if status == "done":
                 self.status_poll_timer.stop()
@@ -1603,11 +1806,11 @@ class LiveMigrationDialog(QDialog):
             elif status == "failed":
                 self.status_poll_timer.stop()
                 errors = record.get("errors") or []
-                self._show_result_failure("; ".join(str(item) for item in errors) or str(record.get("error") or "see migration log"))
+                self._show_result_failure("; ".join(str(item) for item in errors) or str(record.get("error") or "mira el registro del traslado"))
 
         def failed() -> None:
             self._status_job_running = False
-            self.progress_log.append(f"status check failed: {job.error_message}")
+            self.progress_log.append(f"no se ha podido consultar el estado: {job.error_message}")
 
         job.succeeded.connect(succeeded)
         job.failed.connect(failed)
@@ -1618,24 +1821,24 @@ class LiveMigrationDialog(QDialog):
     def _show_result_success(self, record: dict) -> None:
         migration_id = str((self.last_result or {}).get("migration_id") or record.get("migration_id") or "")
         package = str((self.last_result or {}).get("package_dir") or "")
-        self.result_title.setText("Migration completed")
+        self.result_title.setText("Traslado completado")
         self.result_body.setText(
-            f"Migration ID: {migration_id}\n"
-            f"Package path: {package or 'on NAS staging'} (conserved)\n"
-            f"Target VM: {self.target_name.text().strip()} imported with regenerated UUID and MAC.\n"
-            f"Target started: {'yes' if self.start_after_import.isChecked() else 'no'}"
+            f"ID del traslado: {migration_id}\n"
+            f"Paquete: {package or 'en el NAS'} (se conserva)\n"
+            f"Máquina en destino: {self.target_name.text().strip()} importada con UUID y MAC nuevos.\n"
+            f"¿Encendida en destino?: {'sí' if self.start_after_import.isChecked() else 'no'}"
         )
-        self.result_callout.setText("Source VM remains untouched · UUID & MAC regenerated on target.")
+        self.result_callout.setText("La máquina original no se ha tocado · UUID y MAC regenerados en destino.")
         self.result_callout.setObjectName("calloutOk")
         self.result_callout.style().unpolish(self.result_callout)
         self.result_callout.style().polish(self.result_callout)
         self._set_step(5)
 
     def _show_result_failure(self, error: str) -> None:
-        self.result_title.setText("Migration failed")
+        self.result_title.setText("El traslado ha fallado")
         last = str((self.last_status or {}).get("status") or "failed")
-        self.result_body.setText(f"Last status: {last}\nError: {error}")
-        self.result_callout.setText("The source VM and source disks were not modified. Review the error and retry from Preflight.")
+        self.result_body.setText(f"Último estado: {last}\nError: {error}")
+        self.result_callout.setText("La máquina original y sus discos no se han modificado. Revisa el error y reinténtalo desde la comprobación.")
         self.result_callout.setObjectName("calloutDanger")
         self.result_callout.style().unpolish(self.result_callout)
         self.result_callout.style().polish(self.result_callout)
@@ -1653,14 +1856,14 @@ class LiveMigrationDialog(QDialog):
         self.error_label.clear()
 
     def copy_migration_id(self) -> None:
-        self._copy_text(str((self.last_result or {}).get("migration_id") or ""), "No migration ID yet. Start a migration first.")
+        self._copy_text(str((self.last_result or {}).get("migration_id") or ""), "Aún no hay ID. Empieza un traslado primero.")
 
     def copy_progress_logs(self) -> None:
-        self._copy_text(self.progress_log.toPlainText(), "No migration logs yet.")
+        self._copy_text(self.progress_log.toPlainText(), "Aún no hay registro del traslado.")
 
     def copy_summary(self) -> None:
         summary = f"{self.result_title.text()}\n{self.result_body.text()}\n{self.result_callout.text()}".strip()
-        self._copy_text(summary if self.result_title.text() else "", "No result to copy yet.")
+        self._copy_text(summary if self.result_title.text() else "", "Aún no hay resultado que copiar.")
 
 
 class SnapshotDialog(QDialog):
@@ -1669,20 +1872,20 @@ class SnapshotDialog(QDialog):
         self.backend = backend
         self.vm_name = vm_name
         self.main_window = parent
-        self.setWindowTitle(f"Snapshots: {vm_name}")
+        self.setWindowTitle(f"Instantáneas: {vm_name}")
         title = QLabel(vm_name)
         title.setObjectName("sectionTitle")
         self.snapshots = QListWidget()
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("Actualizar")
         refresh.clicked.connect(self.refresh)
-        create = QPushButton("Create")
+        create = QPushButton("Crear")
         create.clicked.connect(self.create_snapshot)
-        revert = QPushButton("Revert")
+        revert = QPushButton("Restaurar")
         revert.clicked.connect(self.revert_snapshot)
-        delete = QPushButton("Delete")
+        delete = QPushButton("Eliminar")
         delete.setObjectName("dangerButton")
         delete.clicked.connect(self.delete_snapshot)
-        close = QPushButton("Close")
+        close = QPushButton("Cerrar")
         close.clicked.connect(self.accept)
 
         header = QHBoxLayout()
@@ -1705,7 +1908,7 @@ class SnapshotDialog(QDialog):
     def selected_snapshot(self) -> str:
         item = self.snapshots.currentItem()
         if item is None:
-            raise HyperGeryError("Select a snapshot first.")
+            raise HyperGeryError("Selecciona una instantánea primero.")
         return item.text()
 
     def refresh(self) -> None:
@@ -1717,14 +1920,14 @@ class SnapshotDialog(QDialog):
             self.main_window.show_error(str(exc))
 
     def create_snapshot(self) -> None:
-        name, ok = QInputDialog.getText(self, "Create snapshot", "Snapshot name:")
+        name, ok = QInputDialog.getText(self, "Crear instantánea", "Nombre:")
         if not ok or not name.strip():
             return
-        description, _ok = QInputDialog.getText(self, "Create snapshot", "Description:")
-        if QMessageBox.question(self, "Create snapshot", f"Create snapshot {name.strip()} for {self.vm_name}?") != QMessageBox.StandardButton.Yes:
+        description, _ok = QInputDialog.getText(self, "Crear instantánea", "Descripción:")
+        if QMessageBox.question(self, "Crear instantánea", f"¿Crear la instantánea {name.strip()} de {self.vm_name}?") != QMessageBox.StandardButton.Yes:
             return
         self.main_window.run_operation(
-            f"Creating snapshot {name.strip()}",
+            f"Creando instantánea {name.strip()}",
             lambda: self.backend.create_snapshot(self.vm_name, name.strip(), description),
             on_success=lambda _result: self.refresh(),
         )
@@ -1735,17 +1938,14 @@ class SnapshotDialog(QDialog):
         except HyperGeryError as exc:
             self.main_window.show_error(str(exc))
             return
-        if (
-            QMessageBox.question(
-                self,
-                "Revert snapshot",
-                f"Revert {self.vm_name} to {snapshot}?\n\nCurrent guest disk state will move back to that snapshot.",
-            )
-            != QMessageBox.StandardButton.Yes
+        if not confirm(
+            self,
+            "Restaurar instantánea",
+            f"¿Devolver {self.vm_name} al estado de {snapshot}?\n\nEl disco volverá al estado de esa instantánea.",
         ):
             return
         self.main_window.run_operation(
-            f"Reverting {self.vm_name} to {snapshot}",
+            f"Restaurando {self.vm_name} a {snapshot}",
             lambda: self.backend.revert_snapshot(self.vm_name, snapshot),
             on_success=lambda _result: self.refresh(),
         )
@@ -1756,10 +1956,10 @@ class SnapshotDialog(QDialog):
         except HyperGeryError as exc:
             self.main_window.show_error(str(exc))
             return
-        if QMessageBox.question(self, "Delete snapshot", f"Delete snapshot {snapshot} from {self.vm_name}?") != QMessageBox.StandardButton.Yes:
+        if not confirm(self, "Eliminar instantánea", f"¿Eliminar la instantánea {snapshot} de {self.vm_name}?"):
             return
         self.main_window.run_operation(
-            f"Deleting snapshot {snapshot}",
+            f"Eliminando instantánea {snapshot}",
             lambda: self.backend.delete_snapshot(self.vm_name, snapshot),
             on_success=lambda _result: self.refresh(),
         )
@@ -1768,22 +1968,22 @@ class SnapshotDialog(QDialog):
 class NewVmTemplateDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("New VM Template")
+        self.setWindowTitle("Nueva plantilla de máquina")
         self.setMinimumWidth(400)
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
         self.name_edit = QLineEdit()
         self.name_edit.textChanged.connect(self.validate)
-        form.addRow("Name:", self.name_edit)
+        form.addRow("Nombre:", self.name_edit)
 
         self.id_preview = QLabel()
         self.id_preview.setObjectName("mutedLabel")
-        form.addRow("Template ID:", self.id_preview)
+        form.addRow("ID de plantilla:", self.id_preview)
 
         self.os_type = QComboBox()
-        self.os_type.addItems(["linux", "windows", "other"])
-        form.addRow("OS Type:", self.os_type)
+        self.os_type.addItems(["linux", "windows", "otro"])
+        form.addRow("Sistema operativo:", self.os_type)
 
         self.ram_mib = QSpinBox()
         self.ram_mib.setRange(512, 65536)
@@ -1801,23 +2001,23 @@ class NewVmTemplateDialog(QDialog):
         self.disk_gb.setRange(1, 1024)
         self.disk_gb.setValue(40)
         self.disk_gb.setSuffix(" GiB")
-        form.addRow("Disk:", self.disk_gb)
+        form.addRow("Disco:", self.disk_gb)
 
         self.network_mode = QComboBox()
         self.network_mode.addItems(["nat", "isolated"])
-        form.addRow("Network:", self.network_mode)
+        form.addRow("Red:", self.network_mode)
 
         self.display_mode = QComboBox()
         self.display_mode.addItems(["spice", "vnc"])
-        form.addRow("Display:", self.display_mode)
+        form.addRow("Pantalla:", self.display_mode)
 
         self.notes_edit = QLineEdit()
-        form.addRow("Notes:", self.notes_edit)
+        form.addRow("Notas:", self.notes_edit)
 
         layout.addLayout(form)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create")
+        self.buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Crear")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
@@ -1831,7 +2031,7 @@ class NewVmTemplateDialog(QDialog):
             self.id_preview.setStyleSheet("")
             valid = True
         except (ValueError, HyperGeryError):
-            self.id_preview.setText("Invalid ID")
+            self.id_preview.setText("ID no válido")
             self.id_preview.setStyleSheet("color: #ff5555;")
             valid = False
 
@@ -1856,33 +2056,33 @@ class NewVmTemplateDialog(QDialog):
 class NewLabTemplateDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("New Lab Template")
+        self.setWindowTitle("Nueva plantilla de laboratorio")
         self.setMinimumWidth(400)
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
         self.name_edit = QLineEdit()
         self.name_edit.textChanged.connect(self.validate)
-        form.addRow("Name:", self.name_edit)
+        form.addRow("Nombre:", self.name_edit)
 
         self.id_preview = QLabel()
         self.id_preview.setObjectName("mutedLabel")
-        form.addRow("Template ID:", self.id_preview)
+        form.addRow("ID de plantilla:", self.id_preview)
 
         self.desc_edit = QLineEdit()
-        form.addRow("Description:", self.desc_edit)
+        form.addRow("Descripción:", self.desc_edit)
 
         self.network_mode = QComboBox()
         self.network_mode.addItems(["nat", "isolated"])
-        form.addRow("Network:", self.network_mode)
+        form.addRow("Red:", self.network_mode)
 
         self.notes_edit = QLineEdit()
-        form.addRow("Notes:", self.notes_edit)
+        form.addRow("Notas:", self.notes_edit)
 
         layout.addLayout(form)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create")
+        self.buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Crear")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
@@ -1896,7 +2096,7 @@ class NewLabTemplateDialog(QDialog):
             self.id_preview.setStyleSheet("")
             valid = True
         except (ValueError, HyperGeryError):
-            self.id_preview.setText("Invalid ID")
+            self.id_preview.setText("ID no válido")
             self.id_preview.setStyleSheet("color: #ff5555;")
             valid = False
 
@@ -1920,24 +2120,24 @@ class DeleteVmTemplateDialog(QDialog):
         super().__init__(parent)
         self.template = template
         template_id = str(template.get("template_id", ""))
-        self.setWindowTitle(f"Delete VM Template: {template_id}")
-        title = QLabel(f"Delete VM template {template_id}?")
+        self.setWindowTitle(f"Eliminar plantilla de máquina: {template_id}")
+        title = QLabel(f"¿Eliminar la plantilla de máquina {template_id}?")
         title.setObjectName("sectionTitle")
-        warning = QLabel("This removes the template JSON file. No VMs or disks will be deleted.")
+        warning = QLabel("Solo se borra el archivo de la plantilla. No se borra ninguna máquina ni disco.")
         warning.setWordWrap(True)
         self.confirm_id = QLineEdit()
         self.confirm_id.setPlaceholderText(template_id)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.delete_button = buttons.addButton("Delete Template", QDialogButtonBox.ButtonRole.DestructiveRole)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
+        self.delete_button = buttons.addButton("Eliminar plantilla", QDialogButtonBox.ButtonRole.DestructiveRole)
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setEnabled(False)
         buttons.rejected.connect(self.reject)
         self.delete_button.clicked.connect(self.accept)
         self.confirm_id.textChanged.connect(self.update_state)
         form = QFormLayout()
-        form.addRow("Type template ID", self.confirm_id)
+        form.addRow("Escribe el ID", self.confirm_id)
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addWidget(warning)
@@ -1951,7 +2151,7 @@ class DeleteVmTemplateDialog(QDialog):
 
     def accept(self) -> None:
         if self.confirm_id.text().strip() != str(self.template.get("template_id", "")):
-            self.error_label.setText("Type the exact template ID to confirm deletion.")
+            self.error_label.setText("Escribe el ID exacto para confirmar el borrado.")
             return
         super().accept()
 
@@ -1961,24 +2161,24 @@ class DeleteLabTemplateDialog(QDialog):
         super().__init__(parent)
         self.template = template
         template_id = str(template.get("template_id", ""))
-        self.setWindowTitle(f"Delete Lab Template: {template_id}")
-        title = QLabel(f"Delete lab template {template_id}?")
+        self.setWindowTitle(f"Eliminar plantilla de laboratorio: {template_id}")
+        title = QLabel(f"¿Eliminar la plantilla de laboratorio {template_id}?")
         title.setObjectName("sectionTitle")
-        warning = QLabel("This removes the template JSON file. No labs or VMs will be deleted.")
+        warning = QLabel("Solo se borra el archivo de la plantilla. No se borra ningún laboratorio ni máquina.")
         warning.setWordWrap(True)
         self.confirm_id = QLineEdit()
         self.confirm_id.setPlaceholderText(template_id)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.delete_button = buttons.addButton("Delete Template", QDialogButtonBox.ButtonRole.DestructiveRole)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
+        self.delete_button = buttons.addButton("Eliminar plantilla", QDialogButtonBox.ButtonRole.DestructiveRole)
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.setEnabled(False)
         buttons.rejected.connect(self.reject)
         self.delete_button.clicked.connect(self.accept)
         self.confirm_id.textChanged.connect(self.update_state)
         form = QFormLayout()
-        form.addRow("Type template ID", self.confirm_id)
+        form.addRow("Escribe el ID", self.confirm_id)
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addWidget(warning)
@@ -1992,7 +2192,7 @@ class DeleteLabTemplateDialog(QDialog):
 
     def accept(self) -> None:
         if self.confirm_id.text().strip() != str(self.template.get("template_id", "")):
-            self.error_label.setText("Type the exact template ID to confirm deletion.")
+            self.error_label.setText("Escribe el ID exacto para confirmar el borrado.")
             return
         super().accept()
 
@@ -2003,22 +2203,22 @@ class CreateLabFromTemplateDialog(QDialog):
         self.template = template
         self.existing_lab_ids = existing_lab_ids
         self.existing_subnets = existing_subnets
-        self.setWindowTitle(f"Create Lab from Template: {template.get('template_id', '')}")
+        self.setWindowTitle(f"Crear laboratorio desde plantilla: {template.get('template_id', '')}")
 
         vms = template.get("vms", [])
         if vms:
             vm_names = ", ".join(str(v.get("name", "?")) for v in vms[:5])
-            suffix = f" (+{len(vms) - 5} more)" if len(vms) > 5 else ""
-            planned_text = f"Planned VMs ({len(vms)}): {vm_names}{suffix}"
+            suffix = f" (+{len(vms) - 5} más)" if len(vms) > 5 else ""
+            planned_text = f"Máquinas previstas ({len(vms)}): {vm_names}{suffix}"
         else:
-            planned_text = "No VMs defined in this template."
+            planned_text = "Esta plantilla no define máquinas."
         planned_label = QLabel(planned_text)
         planned_label.setObjectName("mutedLabel")
         planned_label.setWordWrap(True)
 
         caveat = QLabel(
-            "VMs are not created automatically. "
-            "After the lab is set up, create each VM manually or via a VM template."
+            "Las máquinas no se crean automáticamente. "
+            "Cuando el laboratorio esté listo, crea cada máquina a mano o desde una plantilla."
         )
         caveat.setObjectName("mutedLabel")
         caveat.setWordWrap(True)
@@ -2040,18 +2240,18 @@ class CreateLabFromTemplateDialog(QDialog):
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.create_button = buttons.addButton("Create Lab", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons = spanish_buttons(QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel))
+        self.create_button = buttons.addButton("Crear laboratorio", QDialogButtonBox.ButtonRole.AcceptRole)
         self.create_button.setObjectName("primaryButton")
         self.create_button.clicked.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
         form = QFormLayout()
-        form.addRow("Template", QLabel(f"{template.get('name', '')} ({template.get('template_id', '')})"))
-        form.addRow("New lab name", self.name_edit)
-        form.addRow("Description", self.description_edit)
-        form.addRow("Network mode", self.network_mode)
-        form.addRow("Preview", self.preview_label)
+        form.addRow("Plantilla", QLabel(f"{template.get('name', '')} ({template.get('template_id', '')})"))
+        form.addRow("Nombre del nuevo laboratorio", self.name_edit)
+        form.addRow("Descripción", self.description_edit)
+        form.addRow("Modo de red", self.network_mode)
+        form.addRow("Vista previa", self.preview_label)
         form.addRow("", self.error_label)
 
         layout = QVBoxLayout(self)
@@ -2080,14 +2280,14 @@ class CreateLabFromTemplateDialog(QDialog):
         if preview["valid"]:
             self.preview_label.setText(
                 details_block(
-                    ("Lab ID", preview["lab_id"]),
-                    ("Network", preview["network_id"]),
-                    ("Bridge", preview["bridge_name"]),
-                    ("Subnet", preview["subnet"]),
+                    ("ID", preview["lab_id"]),
+                    ("Red", preview["network_id"]),
+                    ("Puente", preview["bridge_name"]),
+                    ("Subred", preview["subnet"]),
                 )
             )
         else:
-            self.preview_label.setText("Enter a valid lab name to preview network resources.")
+            self.preview_label.setText("Escribe un nombre válido para ver la vista previa de la red.")
 
     def values(self) -> dict:
         preview = self.current_preview()
@@ -2109,8 +2309,8 @@ class _LabIdentityPage(QWizardPage):
         self.template = template
         self.existing_lab_ids = existing_lab_ids
         self.existing_subnets = existing_subnets
-        self.setTitle("Lab Identity")
-        self.setSubTitle("Choose a name for the new lab instance.")
+        self.setTitle("Identidad del laboratorio")
+        self.setSubTitle("Elige el nombre del nuevo laboratorio.")
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText(f"{template.get('name', 'Lab')} Instance")
         self.description_edit = QLineEdit(str(template.get("description", "")))
@@ -2125,11 +2325,11 @@ class _LabIdentityPage(QWizardPage):
         self.preview_label.setWordWrap(True)
         self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         form = QFormLayout(self)
-        form.addRow("Template", QLabel(f"{template.get('name', '')} ({template.get('template_id', '')})"))
-        form.addRow("New lab name *", self.name_edit)
-        form.addRow("Description", self.description_edit)
-        form.addRow("Network mode", self.network_mode)
-        form.addRow("Preview", self.preview_label)
+        form.addRow("Plantilla", QLabel(f"{template.get('name', '')} ({template.get('template_id', '')})"))
+        form.addRow("Nombre del laboratorio *", self.name_edit)
+        form.addRow("Descripción", self.description_edit)
+        form.addRow("Modo de red", self.network_mode)
+        form.addRow("Vista previa", self.preview_label)
         self.name_edit.textChanged.connect(self._refresh)
         self.network_mode.currentTextChanged.connect(self._refresh)
         self._refresh()
@@ -2154,7 +2354,7 @@ class _LabIdentityPage(QWizardPage):
                 )
             )
         else:
-            self.preview_label.setText(p["error"] or "Enter a valid lab name.")
+            self.preview_label.setText(p["error"] or "Escribe un nombre válido.")
         self.completeChanged.emit()
 
     def isComplete(self) -> bool:
@@ -2173,17 +2373,17 @@ class _LabIdentityPage(QWizardPage):
 class _IsoMappingPage(QWizardPage):
     def __init__(self, template: dict) -> None:
         super().__init__()
-        self.setTitle("ISO Mapping")
+        self.setTitle("ISOs de arranque")
         self.setSubTitle(
-            "Select a boot ISO for each VM that requires one. "
-            "VMs with ISO Required = No can be created without a boot image."
+            "Elige una ISO de arranque para cada máquina que la necesite. "
+            "Las máquinas marcadas con «No» pueden crearse sin imagen de arranque."
         )
         vms = template.get("vms", [])
         self.vm_rows: list[dict] = []
         self.iso_edits: list[QLineEdit] = []
 
         self.table = QTableWidget(len(vms), 5)
-        self.table.setHorizontalHeaderLabels(["ISO Path", "VM Name", "Role", "RAM MiB", "Required"])
+        self.table.setHorizontalHeaderLabels(["Ruta de la ISO", "Máquina", "Rol", "RAM MiB", "¿Necesita ISO?"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -2209,7 +2409,7 @@ class _IsoMappingPage(QWizardPage):
             self.table.setItem(row, 1, QTableWidgetItem(str(vm.get("name", ""))))
             self.table.setItem(row, 2, QTableWidgetItem(str(vm.get("role", ""))))
             self.table.setItem(row, 3, QTableWidgetItem(str(vm.get("ram_mib", ""))))
-            required_text = "Yes" if vm.get("iso_required", True) else "No"
+            required_text = "Sí" if vm.get("iso_required", True) else "No"
             req_item = QTableWidgetItem(required_text)
             req_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 4, req_item)
@@ -2223,9 +2423,9 @@ class _IsoMappingPage(QWizardPage):
 
         layout = QVBoxLayout(self)
         if not vms:
-            layout.addWidget(QLabel("This template has no planned VMs. The lab structure will be created."))
+            layout.addWidget(QLabel("Esta plantilla no tiene máquinas previstas. Se creará solo la estructura del laboratorio."))
         else:
-            apply_all_btn = QPushButton("Apply same ISO to all VMs…")
+            apply_all_btn = QPushButton("Usar la misma ISO para todas…")
             apply_all_btn.clicked.connect(self._apply_all_iso)
             apply_all_row = QHBoxLayout()
             apply_all_row.addWidget(apply_all_btn)
@@ -2236,7 +2436,7 @@ class _IsoMappingPage(QWizardPage):
 
     def _apply_all_iso(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select ISO for all VMs", "", "ISO images (*.iso);;All files (*)", "", FILE_DIALOG_OPTIONS
+            self, "Elegir ISO para todas las máquinas", "", "Imágenes ISO (*.iso);;Todos los archivos (*)", "", FILE_DIALOG_OPTIONS
         )
         if path:
             for edit in self.iso_edits:
@@ -2244,7 +2444,7 @@ class _IsoMappingPage(QWizardPage):
 
     def _browse(self, edit: QLineEdit) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select ISO", "", "ISO images (*.iso);;All files (*)", "", FILE_DIALOG_OPTIONS
+            self, "Elegir ISO", "", "Imágenes ISO (*.iso);;Todos los archivos (*)", "", FILE_DIALOG_OPTIONS
         )
         if path:
             edit.setText(path)
@@ -2256,7 +2456,7 @@ class _IsoMappingPage(QWizardPage):
             if row_info["iso_required"] and not iso_edit.text().strip()
         ]
         if missing:
-            self.status_label.setText(f"ISO required for: {', '.join(missing)}")
+            self.status_label.setText(f"Falta la ISO de: {', '.join(missing)}")
             return False
         self.status_label.setText("")
         return True
@@ -2272,8 +2472,8 @@ class _InstantiateReviewPage(QWizardPage):
         self.template = template
         self.identity_page = identity_page
         self.iso_page = iso_page
-        self.setTitle("Review")
-        self.setSubTitle("Confirm the lab and VMs that will be created.")
+        self.setTitle("Resumen")
+        self.setSubTitle("Confirma el laboratorio y las máquinas que se van a crear.")
         self.summary = QTextEdit()
         self.summary.setReadOnly(True)
         layout = QVBoxLayout(self)
@@ -2283,30 +2483,30 @@ class _InstantiateReviewPage(QWizardPage):
         vms = self.template.get("vms", [])
         iso_map = self.iso_page.iso_map()
         lines = [
-            f"Template:    {self.template.get('name', '')} ({self.template.get('template_id', '')})",
-            f"Lab name:    {self.identity_page.lab_name()}",
-            f"Lab ID:      {self.identity_page.lab_id()}",
-            f"Network:     {self.template.get('network_mode', 'nat')}",
-            f"Description: {self.identity_page.lab_description()}",
+            f"Plantilla:   {self.template.get('name', '')} ({self.template.get('template_id', '')})",
+            f"Nombre:      {self.identity_page.lab_name()}",
+            f"ID:          {self.identity_page.lab_id()}",
+            f"Red:         {self.template.get('network_mode', 'nat')}",
+            f"Descripción: {self.identity_page.lab_description()}",
             "",
-            f"VMs to create ({len(vms)}):",
+            f"Máquinas que se crearán ({len(vms)}):",
         ]
         for vm in vms:
             name = str(vm.get("name", ""))
             iso = iso_map.get(name, "")
             role = vm.get("role", "")
-            role_str = f"  role={role}" if role else ""
+            role_str = f"  rol={role}" if role else ""
             lines.append(
                 f"  • {name}{role_str}  RAM={vm.get('ram_mib', '?')}MiB"
-                f"  vCPUs={vm.get('vcpus', '?')}  Disk={vm.get('disk_gb', '?')}GB"
+                f"  vCPUs={vm.get('vcpus', '?')}  Disco={vm.get('disk_gb', '?')}GB"
             )
-            lines.append(f"    ISO: {iso or '(none)'}")
+            lines.append(f"    ISO: {iso or '(ninguna)'}")
         if not vms:
-            lines.append("  (no planned VMs — lab structure only)")
+            lines.append("  (sin máquinas previstas — solo la estructura del laboratorio)")
         lines += [
             "",
-            "Click 'Create Lab' to start. VMs are created sequentially.",
-            "If creation fails partway, already-created VMs will be removed.",
+            "Pulsa «Crear laboratorio» para empezar. Las máquinas se crean una a una.",
+            "Si algo falla a medias, las máquinas ya creadas se eliminan.",
         ]
         self.summary.setPlainText("\n".join(lines))
 
@@ -2314,7 +2514,7 @@ class _InstantiateReviewPage(QWizardPage):
 class InstantiateLabTemplateWizard(QWizard):
     def __init__(self, template: dict, existing_lab_ids: set, existing_subnets: set, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(f"Create Lab from Template: {template.get('template_id', '')}")
+        self.setWindowTitle(f"Crear laboratorio desde plantilla: {template.get('template_id', '')}")
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
         self.identity_page = _LabIdentityPage(template, existing_lab_ids, existing_subnets)
         self.iso_page = _IsoMappingPage(template)
@@ -2322,7 +2522,8 @@ class InstantiateLabTemplateWizard(QWizard):
         self.addPage(self.identity_page)
         self.addPage(self.iso_page)
         self.addPage(self.review_page)
-        self.setButtonText(QWizard.WizardButton.FinishButton, "Create Lab")
+        self.setButtonText(QWizard.WizardButton.FinishButton, "Crear laboratorio")
+        spanish_wizard_buttons(self)
         self.resize(760, 500)
 
     def values(self) -> dict:
@@ -2342,10 +2543,10 @@ class EditVmTemplateDialog(QDialog):
     def __init__(self, template: dict, parent=None) -> None:
         super().__init__(parent)
         self.template = template
-        self.setWindowTitle(f"Edit VM Template: {template.get('template_id', '')}")
+        self.setWindowTitle(f"Editar plantilla de máquina: {template.get('template_id', '')}")
         self.name_edit = QLineEdit(str(template.get("name", "")))
         self.os_type = QComboBox()
-        self.os_type.addItems(["linux", "windows", "other"])
+        self.os_type.addItems(["linux", "windows", "otro"])
         idx = self.os_type.findText(str(template.get("os_type", "linux")))
         if idx >= 0:
             self.os_type.setCurrentIndex(idx)
@@ -2373,21 +2574,21 @@ class EditVmTemplateDialog(QDialog):
             self.display.setCurrentIndex(disp_idx)
         self.notes_edit = QTextEdit(str(template.get("notes", "")))
         self.notes_edit.setMaximumHeight(80)
-        buttons = QDialogButtonBox(
+        buttons = spanish_buttons(QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
+        ))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form = QFormLayout()
-        form.addRow("Template ID", QLabel(str(template.get("template_id", ""))))
-        form.addRow("Name", self.name_edit)
-        form.addRow("OS type", self.os_type)
+        form.addRow("ID de plantilla", QLabel(str(template.get("template_id", ""))))
+        form.addRow("Nombre", self.name_edit)
+        form.addRow("Sistema operativo", self.os_type)
         form.addRow("RAM", self.ram)
         form.addRow("vCPUs", self.vcpus)
-        form.addRow("Disk", self.disk)
-        form.addRow("Network", self.network_mode)
-        form.addRow("Display", self.display)
-        form.addRow("Notes", self.notes_edit)
+        form.addRow("Disco", self.disk)
+        form.addRow("Red", self.network_mode)
+        form.addRow("Pantalla", self.display)
+        form.addRow("Notas", self.notes_edit)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(buttons)
@@ -2415,16 +2616,16 @@ class PlannedVmDialog(QDialog):
 
     def __init__(self, existing: dict | None = None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Edit Planned VM" if existing else "Add Planned VM")
+        self.setWindowTitle("Editar máquina prevista" if existing else "Añadir máquina prevista")
         self._original_name = str(existing.get("name", "")) if existing else ""
         self.name_edit = QLineEdit(self._original_name)
         self.name_edit.setPlaceholderText("server-01")
         self.role_edit = QLineEdit(str(existing.get("role", "")) if existing else "")
-        self.role_edit.setPlaceholderText("server / client / router (optional)")
+        self.role_edit.setPlaceholderText("servidor / cliente / router (opcional)")
         self.vm_template_edit = QLineEdit(str(existing.get("template_id", "")) if existing else "")
-        self.vm_template_edit.setPlaceholderText("ubuntu-base (optional VM template id)")
+        self.vm_template_edit.setPlaceholderText("ubuntu-base (ID de plantilla, opcional)")
         self.os_type = QComboBox()
-        self.os_type.addItems(["linux", "windows", "other"])
+        self.os_type.addItems(["linux", "windows", "otro"])
         os_idx = self.os_type.findText(str(existing.get("os_type", "linux")) if existing else "linux")
         if os_idx >= 0:
             self.os_type.setCurrentIndex(os_idx)
@@ -2446,25 +2647,25 @@ class PlannedVmDialog(QDialog):
         if disp_idx >= 0:
             self.display.setCurrentIndex(disp_idx)
         self.notes_edit = QLineEdit(str(existing.get("notes", "")) if existing else "")
-        self.iso_required = QCheckBox("ISO required at instantiation time")
+        self.iso_required = QCheckBox("Necesita ISO al crear el laboratorio")
         self.iso_required.setChecked(bool(existing.get("iso_required", True)) if existing else True)
         self.error_label = QLabel("")
         self.error_label.setObjectName("errorLabel")
-        buttons = QDialogButtonBox(
+        buttons = spanish_buttons(QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        ))
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         form = QFormLayout()
-        form.addRow("VM name *", self.name_edit)
-        form.addRow("Role", self.role_edit)
-        form.addRow("VM template id", self.vm_template_edit)
-        form.addRow("OS type", self.os_type)
+        form.addRow("Nombre de la máquina *", self.name_edit)
+        form.addRow("Rol", self.role_edit)
+        form.addRow("Plantilla de máquina", self.vm_template_edit)
+        form.addRow("Sistema operativo", self.os_type)
         form.addRow("RAM", self.ram)
         form.addRow("vCPUs", self.vcpus)
-        form.addRow("Disk", self.disk)
-        form.addRow("Display", self.display)
-        form.addRow("Notes", self.notes_edit)
+        form.addRow("Disco", self.disk)
+        form.addRow("Pantalla", self.display)
+        form.addRow("Notas", self.notes_edit)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self.iso_required)
@@ -2475,11 +2676,11 @@ class PlannedVmDialog(QDialog):
     def _validate_and_accept(self) -> None:
         name = self.name_edit.text().strip()
         if not name:
-            self.error_label.setText("VM name cannot be empty.")
+            self.error_label.setText("El nombre de la máquina no puede estar vacío.")
             return
         import re as _re
         if not _re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_\-]{0,61}", name):
-            self.error_label.setText("VM name must start with a letter/digit, only letters, digits, dashes, underscores.")
+            self.error_label.setText("El nombre debe empezar por letra o número, y solo puede llevar letras, números, guiones y guiones bajos.")
             return
         self.accept()
 
@@ -2502,14 +2703,14 @@ class PlannedVmDialog(QDialog):
 # EditLabTemplateDialog — improved (Fase 2 v0.5.0)
 # ---------------------------------------------------------------------------
 
-_VM_TABLE_COLS = ["Name", "Role", "OS", "RAM MiB", "vCPUs", "Disk GB", "Display", "ISO req."]
+_VM_TABLE_COLS = ["Nombre", "Rol", "SO", "RAM MiB", "vCPUs", "Disco GB", "Pantalla", "¿ISO?"]
 
 
 class EditLabTemplateDialog(QDialog):
     def __init__(self, template: dict, parent=None) -> None:
         super().__init__(parent)
         self.template = template
-        self.setWindowTitle(f"Edit Lab Template: {template.get('template_id', '')}")
+        self.setWindowTitle(f"Editar plantilla de laboratorio: {template.get('template_id', '')}")
         self.name_edit = QLineEdit(str(template.get("name", "")))
         self.description_edit = QLineEdit(str(template.get("description", "")))
         self.network_mode = QComboBox()
@@ -2537,9 +2738,9 @@ class EditLabTemplateDialog(QDialog):
         for vm in vms:
             self._append_vm_row(vm)
 
-        add_btn = QPushButton("Add VM…")
-        edit_btn = QPushButton("Edit Selected…")
-        remove_btn = QPushButton("Remove Selected")
+        add_btn = QPushButton("Añadir máquina…")
+        edit_btn = QPushButton("Editar seleccionada…")
+        remove_btn = QPushButton("Quitar seleccionada")
         add_btn.clicked.connect(self._add_vm)
         edit_btn.clicked.connect(self._edit_vm)
         remove_btn.clicked.connect(self._remove_vm)
@@ -2549,22 +2750,22 @@ class EditLabTemplateDialog(QDialog):
         vm_buttons.addWidget(remove_btn)
         vm_buttons.addStretch()
 
-        buttons = QDialogButtonBox(
+        buttons = spanish_buttons(QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
+        ))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
         form = QFormLayout()
-        form.addRow("Template ID", QLabel(str(template.get("template_id", ""))))
-        form.addRow("Name", self.name_edit)
-        form.addRow("Description", self.description_edit)
-        form.addRow("Network mode", self.network_mode)
-        form.addRow("Notes", self.notes_edit)
+        form.addRow("ID de plantilla", QLabel(str(template.get("template_id", ""))))
+        form.addRow("Nombre", self.name_edit)
+        form.addRow("Descripción", self.description_edit)
+        form.addRow("Modo de red", self.network_mode)
+        form.addRow("Notas", self.notes_edit)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(QLabel("Planned VMs (double-click to edit):"))
+        layout.addWidget(QLabel("Máquinas previstas (doble clic para editar):"))
         layout.addWidget(self.vm_table)
         layout.addLayout(vm_buttons)
         layout.addWidget(buttons)
@@ -2581,7 +2782,7 @@ class EditLabTemplateDialog(QDialog):
             str(vm.get("vcpus", "")),
             str(vm.get("disk_gb", "")),
             str(vm.get("display", "")),
-            "Yes" if vm.get("iso_required", True) else "No",
+            "Sí" if vm.get("iso_required", True) else "No",
         ]
         for col, text in enumerate(items):
             self.vm_table.setItem(row, col, QTableWidgetItem(text))
@@ -2595,7 +2796,7 @@ class EditLabTemplateDialog(QDialog):
             str(vm.get("vcpus", "")),
             str(vm.get("disk_gb", "")),
             str(vm.get("display", "")),
-            "Yes" if vm.get("iso_required", True) else "No",
+            "Sí" if vm.get("iso_required", True) else "No",
         ]
         for col, text in enumerate(items):
             self.vm_table.setItem(row, col, QTableWidgetItem(text))
@@ -2607,7 +2808,7 @@ class EditLabTemplateDialog(QDialog):
         vm = dialog.values()
         existing_names = {v["name"] for v in self._vms}
         if vm["name"] in existing_names:
-            QMessageBox.warning(self, "Duplicate name", f"A planned VM named '{vm['name']}' already exists.")
+            QMessageBox.warning(self, "Nombre repetido", f"Ya existe una máquina prevista llamada '{vm['name']}'.")
             return
         self._vms.append(vm)
         self._append_vm_row(vm)
@@ -2624,7 +2825,7 @@ class EditLabTemplateDialog(QDialog):
         if updated["name"] != existing["name"]:
             other_names = {v["name"] for i, v in enumerate(self._vms) if i != row}
             if updated["name"] in other_names:
-                QMessageBox.warning(self, "Duplicate name", f"A planned VM named '{updated['name']}' already exists.")
+                QMessageBox.warning(self, "Nombre repetido", f"Ya existe una máquina prevista llamada '{updated['name']}'.")
                 return
         self._vms[row] = updated
         self._refresh_row(row, updated)
@@ -2655,45 +2856,45 @@ class CleanupPreviewDialog(QDialog):
 
     def __init__(self, vms: list, labs: list, vm_templates: list, lab_templates: list, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("HyperGery Resource Overview")
+        self.setWindowTitle("Recursos de HyperGery")
         self.resize(760, 520)
 
-        lines = ["HyperGery-managed resources\n"]
-        lines.append(f"VMs ({len(vms)}):")
+        lines = ["Recursos gestionados por HyperGery\n"]
+        lines.append(f"Máquinas ({len(vms)}):")
         for vm in vms:
             state = getattr(vm, "state", "?")
             lab = getattr(vm, "lab_id", "") or "default-lab"
-            lines.append(f"  • {vm.name}  state={state}  lab={lab}")
+            lines.append(f"  • {vm.name}  estado={state}  laboratorio={lab}")
         lines.append("")
-        lines.append(f"Labs ({len(labs)}):")
+        lines.append(f"Laboratorios ({len(labs)}):")
         for lab in labs:
             vm_count = len(lab.get("vms", []))
             subnet = lab.get("subnet", "")
-            lines.append(f"  • {lab.get('lab_id', '?')}  name={lab.get('name', '')}  vms={vm_count}  subnet={subnet}")
+            lines.append(f"  • {lab.get('lab_id', '?')}  nombre={lab.get('name', '')}  máquinas={vm_count}  subred={subnet}")
         lines.append("")
-        lines.append(f"VM Templates ({len(vm_templates)}):")
+        lines.append(f"Plantillas de máquina ({len(vm_templates)}):")
         for tmpl in vm_templates:
             lines.append(f"  • {tmpl.get('template_id', '?')}  ({tmpl.get('os_type', '')}  {tmpl.get('ram_mib', '')} MiB)")
         lines.append("")
-        lines.append(f"Lab Templates ({len(lab_templates)}):")
+        lines.append(f"Plantillas de laboratorio ({len(lab_templates)}):")
         for tmpl in lab_templates:
             vm_count = len(tmpl.get("vms", []))
-            lines.append(f"  • {tmpl.get('template_id', '?')}  planned VMs={vm_count}")
+            lines.append(f"  • {tmpl.get('template_id', '?')}  máquinas previstas={vm_count}")
         lines.append("")
-        lines.append("To delete resources, use the Delete buttons in the main window.")
-        lines.append("No resources are modified by this dialog.")
+        lines.append("Para borrar recursos usa los botones «Eliminar» de la ventana principal.")
+        lines.append("Esta ventana no modifica nada.")
 
         text = QTextEdit("\n".join(lines))
         text.setReadOnly(True)
         text.setFont(QFont("monospace", 9))
 
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton("Cerrar")
         close_btn.clicked.connect(self.accept)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Overview of all HyperGery-managed resources (read-only):"))
+        layout.addWidget(QLabel("Resumen de todos los recursos gestionados por HyperGery (solo lectura):"))
         layout.addWidget(text)
         layout.addLayout(btn_row)

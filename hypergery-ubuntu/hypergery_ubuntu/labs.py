@@ -19,6 +19,12 @@ LAB_VM_ROLES = ("router", "firewall", "dns", "ad", "server", "db", "web", "clien
 # v0.9 lab subjects (course/topic the lab belongs to).
 LAB_SUBJECTS = ("ASR", "PAR", "ISO", "SAD", "DB", "WEB", "CUSTOM")
 
+# Tercer octeto de 192.168.X.0/24 reservados que nunca se asignan a un lab:
+#   122 -> red por defecto de libvirt (192.168.122.0/24)
+# El rango de candidatos cubre 0-255 (256 subredes posibles) menos estos.
+RESERVED_LAB_SUBNET_OCTETS = frozenset({122})
+LAB_SUBNET_OCTET_RANGE = range(0, 256)
+
 
 def normalize_lab_id(name: str) -> str:
     value = name.strip().lower()
@@ -61,15 +67,23 @@ def allocate_lab_subnet(lab_id: str, existing_subnets: set[str] | list[str] | tu
     import hashlib
 
     existing = set(existing_subnets)
+    # Octetos candidatos: todo el rango válido 0-255 menos los reservados
+    # (p. ej. 122, la red por defecto de libvirt). Recorremos el rango completo
+    # para no quedarnos sin direcciones cuando hay muchos labs.
+    candidates = [octet for octet in LAB_SUBNET_OCTET_RANGE if octet not in RESERVED_LAB_SUBNET_OCTETS]
+    span = len(candidates)
+    # Punto de inicio determinista por lab_id para repartir las subredes y
+    # mantener estable la asignación de un lab concreto entre ejecuciones.
     seed = int(hashlib.sha256(validate_lab_id(lab_id).encode("utf-8")).hexdigest()[:4], 16)
-    for offset in range(180):
-        octet = 20 + ((seed + offset) % 180)
-        if octet == 122:
-            continue
+    for offset in range(span):
+        octet = candidates[(seed + offset) % span]
         subnet = f"192.168.{octet}.0/24"
         if subnet not in existing:
             return subnet
-    raise HyperGeryError("Could not allocate a non-conflicting lab subnet.")
+    raise HyperGeryError(
+        "No quedan subredes 192.168.X.0/24 libres para asignar al laboratorio; "
+        "libera o elimina algún laboratorio existente antes de crear uno nuevo."
+    )
 
 
 def subnet_gateway(subnet: str) -> str:

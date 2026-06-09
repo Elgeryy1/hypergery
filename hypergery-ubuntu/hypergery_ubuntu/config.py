@@ -20,6 +20,13 @@ CONFIG_FIELDS = {
     "default_vm_storage_path",
 }
 
+# Placeholder Hub URL para un entorno de laboratorio doméstico (el Hub corría en
+# Container Station de un NAS en 192.168.1.150). NO es una dirección real para
+# instalaciones nuevas: solo sirve como valor de respaldo cuando no hay nada
+# configurado. La interfaz debe mostrar "sin configurar" en lugar de esta IP
+# (ver hub_is_configured / effective_config con source="default").
+HUB_URL_PLACEHOLDER = "http://192.168.1.150:8765"
+
 ENV_KEYS = {
     "hub_url": ("HYPERGERY_HUB_URL", "HYPERGERY_REGISTRY_URL"),
     "host_id": ("HYPERGERY_HOST_ID",),
@@ -43,9 +50,11 @@ def config_path() -> Path:
 
 def default_config_values() -> dict[str, str]:
     return {
-        # The Hub runs in Container Station on the NAS; point at it directly
-        # so fresh installs on any LAN host work without extra configuration.
-        "hub_url": "http://192.168.1.150:8765",
+        # Valor de respaldo de laboratorio doméstico; ver HUB_URL_PLACEHOLDER.
+        # Cuando se usa este valor, effective_config lo marca con source="default"
+        # y hub_is_configured() devuelve False para que la UI muestre
+        # "sin configurar" en vez de esta IP ficticia.
+        "hub_url": HUB_URL_PLACEHOLDER,
         "host_id": socket.gethostname(),
         "host_name": socket.gethostname(),
         "nas_staging_path": str(Path.home() / "hypergery-nas" / "migrations"),
@@ -126,3 +135,12 @@ def effective_value(field: str, path: str | Path | None = None) -> str:
     if field not in CONFIG_FIELDS:
         raise KeyError(field)
     return effective_config(path)[field].value
+
+
+def hub_is_configured(path: str | Path | None = None) -> bool:
+    """Return True only when hub_url comes from a real source (env var or
+    config file). When nothing is configured the effective value falls back to
+    HUB_URL_PLACEHOLDER (source="default"), so the UI can show "sin configurar"
+    instead of the fake home-lab IP.
+    """
+    return effective_config(path)["hub_url"].source != "default"

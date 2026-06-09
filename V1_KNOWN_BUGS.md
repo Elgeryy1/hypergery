@@ -2,6 +2,45 @@
 
 Formato: bug/limitación · severidad · reproducción · workaround · objetivo.
 
+## Corregidos en la revisión pre-v1 (2026-06-09, rama feature/v1.1-ux)
+
+Revisión completa de código previa a UAT final. Dos bloqueantes corregidos
+con tests de regresión que fallaban antes del fix:
+
+- **Path traversal / rutas absolutas en paquetes de migración** (alta):
+  `validate_vm_package`/`import_vm_package` y
+  `state_migration.validate_state_package`/`import_vm_state_package`
+  construían rutas con `package / rel` directamente; un manifest corrupto o
+  malicioso con `relative_path="/etc/hosts"`, `"../escape.qcow2"`,
+  `"assets/../../escape.qcow2"`, `memory_state`/`domain_xml` absolutos o un
+  symlink dentro del paquete apuntando fuera podía leer/copiar ficheros
+  fuera del root del paquete. Ahora todas esas rutas pasan por
+  `migration.safe_package_member()`, que rechaza vacío, absolutos, `..`,
+  escapes del root y symlinks. Tests en `test_migration.py` y
+  `test_v1_state_migration.py`.
+- **`host test` bloqueaba por defecto** (media): encolaba el ping y se
+  quedaba esperando respuesta hasta 30 s aunque solo quisieras encolarlo.
+  Ahora encola y devuelve de inmediato; solo espera con `--wait`, y
+  `--timeout` solo aplica con `--wait`. Tests en `test_cli.py`.
+
+### Mejoras opcionales pospuestas (documentadas, no bloquean v1)
+
+- **`_stop_connect_worker` puede congelar la UI hasta 10 s**
+  (`ui_qt/console.py`): al cerrar la consola mientras el worker de conexión
+  VNC está dentro del connect bloqueante, `thread.wait()` (sin límite)
+  espera hasta el timeout. Severidad: baja (acotado a 10 s, las señales ya
+  se desconectan para que un resultado tardío no toque la UI). No se cambia
+  ahora porque ese `wait()` es justamente lo que evita el aviso "QThread:
+  Destroyed while thread is still running" al destruir el widget; un
+  `wait(200)` con retorno temprano requiere gestionar la vida del hilo
+  (reparent + deleteLater garantizado) para no reintroducir ese crash.
+  Objetivo v1.1: wait acotado + mantener el QThread vivo hasta `finished`.
+- **La preview puede lanzar varios jobs de captura** al cambiar rápido de
+  VM (`ui_qt/detail_panel.py`/`main_window.py`): conviene throttle/cache por
+  VM (15–30 s), no lanzar si ya hay una captura en curso para esa VM e
+  ignorar el resultado si la VM ya no está seleccionada. Severidad: baja
+  (solo trabajo redundante). Objetivo v1.1.
+
 ## Corregidos en la ronda de QA (2026-06-06)
 
 Tras una revisión adversarial + pruebas dinámicas se encontraron y

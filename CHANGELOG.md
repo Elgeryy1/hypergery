@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.0.0 - Stable Release (2026-06-09)
+
+First stable release of HyperGery. Promotes the `v1.0-rc1` candidate to final
+after the v1.1-ux work: VirtualBox-style Spanish UX (VM-first layout with VM
+tree, central detail panel and preview), humanised states/messages with no raw
+JSON, off-thread VNC console, safer runtime defaults, ISO validation, shared
+formatting helpers, and a card-based Control Center. Two pre-v1 blockers were
+closed with tests: unsafe migration package paths rejected (`d731440`) and the
+host test made non-blocking by default (`708ed85`).
+
+Final QA: `compileall` OK, focused Qt suite **128 passed**, full suite
+**661 passed, 0 skipped** (Python 3.14.4 · PySide6 6.11.1 · pytest 9.0.3).
+Final UAT (visual + real two-host safe/verifiable migration) **PASS** — see
+[RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md),
+[docs/qa/V1_FINAL_UAT_RESULT.md](docs/qa/V1_FINAL_UAT_RESULT.md) and the
+evidence in `docs/qa/evidence/v1-final/`.
+
+Version metadata bumped from `1.0.0rc1` to `1.0.0` (`pyproject.toml`,
+`hypergery_ubuntu/__init__.py`); the Qt UI display version goes from `1.1-dev`
+to `1.0.0`. Known issues (non-blocking): Control Center → Networks
+DHCP/CIDR/Duplicate Gateway error; Hub/API without strong auth (trusted LAN
+only). Live migration is **out of scope for v1.0** and planned for v1.5
+([docs/roadmap/V1_5_LIVE_MIGRATION.md](docs/roadmap/V1_5_LIVE_MIGRATION.md)).
+
 ## v1.0-rc1 - Release Candidate 1 (2026-06-06)
 
 First release candidate for v1.0: the closed v0.8 base plus the v0.9/v1.0

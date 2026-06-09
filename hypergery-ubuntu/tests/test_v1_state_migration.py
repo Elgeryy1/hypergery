@@ -113,6 +113,69 @@ class StateMigrationTests(unittest.TestCase):
         self.assertFalse(validation["ok"])
         self.assertTrue(any("Memory state" in e for e in validation["errors"]))
 
+    def _export_and_patch_manifest(self, **manifest_updates):
+        import json
+
+        backend = StateFakeBackend(self.root, state="running")
+        package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
+        manifest_path = package / "state-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(manifest_updates)
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return package
+
+    def test_validate_rejects_absolute_memory_state(self):
+        package = self._export_and_patch_manifest(memory_state="/etc/hosts")
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertIn("Absolute package member path", "; ".join(validation["errors"]))
+
+    def test_validate_rejects_absolute_domain_xml(self):
+        package = self._export_and_patch_manifest(domain_xml="/etc/passwd")
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertIn("Absolute package member path", "; ".join(validation["errors"]))
+
+    def test_validate_rejects_absolute_asset_relative_path(self):
+        package = self._export_and_patch_manifest(
+            disks=[{"original": "/x.qcow2", "relative_path": "/etc/hosts"}]
+        )
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertIn("Absolute package member path", "; ".join(validation["errors"]))
+
+    def test_validate_rejects_traversal_in_asset_relative_path(self):
+        package = self._export_and_patch_manifest(
+            disks=[{"original": "/x.qcow2", "relative_path": "../../escape.qcow2"}]
+        )
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertIn("Path traversal", "; ".join(validation["errors"]))
+
+    def test_validate_rejects_symlink_member(self):
+        backend = StateFakeBackend(self.root, state="running")
+        package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
+        outside = self.root / "secret.bin"
+        outside.write_bytes(b"top secret")
+        link = package / "disks" / "linked.qcow2"
+        link.symlink_to(outside)
+        import json
+
+        manifest_path = package / "state-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["disks"] = [{"original": str(backend.disk), "relative_path": "disks/linked.qcow2"}]
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertIn("Symlinks are not allowed", "; ".join(validation["errors"]))
+
+    def test_import_rejects_malicious_state_package(self):
+        package = self._export_and_patch_manifest(memory_state="/etc/hosts")
+        tgt = StateFakeBackend(self.root / "tgt", state="shut off")
+        with self.assertRaises(HyperGeryError):
+            import_vm_state_package(tgt, package)
+        self.assertIsNone(tgt.restored_with)
+
     def test_import_restores_preserving_identity_on_fresh_host(self):
         src = StateFakeBackend(self.root / "src", state="running")
         package = export_vm_state_package(src, "vm1", self.root / "out")["package_dir"]

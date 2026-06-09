@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from .backend import HyperGeryBackend, HyperGeryError
 from .labs import LabStore
 from .templates import TemplateStore
+from .ui_qt.formatting import format_size
 
 
 def default_hub_url() -> str:
@@ -255,15 +256,6 @@ def registry_action(args: argparse.Namespace) -> int:
     return 2
 
 
-def format_size(size_bytes: int) -> str:
-    size = float(size_bytes or 0)
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if size < 1024 or unit == "GiB":
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-        size /= 1024
-    return f"{int(size)} B"
-
-
 def print_staged_packages(listing: dict) -> int:
     packages = listing.get("packages") or []
     print(f"staging_dir: {listing.get('staging_dir', '')}")
@@ -367,7 +359,7 @@ def host_action(args: argparse.Namespace) -> int:
         return print_json(client.get_host(args.host_id))
     if args.host_command == "test":
         command = client.create_command(args.host_id, "ping", {})
-        if args.timeout > 0:
+        if args.wait and args.timeout > 0:
             command = wait_for_command(
                 client,
                 command["command_id"],
@@ -622,7 +614,12 @@ def main(argv: list[str] | None = None) -> int:
     host_test = host_sub.add_parser("test")
     host_test.add_argument("host_id")
     host_test.add_argument("--hub-url", "--registry-url", dest="hub_url", default=default_hub_url())
-    host_test.add_argument("--timeout", type=float, default=30.0)
+    host_test.add_argument(
+        "--wait",
+        action="store_true",
+        help="Wait for the agent to answer the ping; without it the command is queued and returned immediately.",
+    )
+    host_test.add_argument("--timeout", type=float, default=30.0, help="Max seconds to wait (only with --wait).")
     host_test.add_argument("--interval", type=float, default=1.0)
     migrate_parser = sub.add_parser("migrate", help="Create, validate, import, and inspect safe VM migration packages.")
     migrate_sub = migrate_parser.add_subparsers(dest="migrate_command", required=True)

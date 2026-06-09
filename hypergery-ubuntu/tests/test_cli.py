@@ -253,7 +253,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(parser_default, "http://hub.local:8765")
 
     @patch("hypergery_ubuntu.cli.HyperGeryBackend")
-    def test_host_test_waits_for_ping_result(self, backend_cls):
+    def test_host_test_wait_polls_for_ping_result(self, backend_cls):
         class FakeRegistryClient:
             def __init__(self, url):
                 self.url = url
@@ -271,11 +271,59 @@ class CliTests(unittest.TestCase):
         buf = StringIO()
         with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient), patch("hypergery_ubuntu.cli.time.sleep"):
             with redirect_stdout(buf):
-                code = cli.main(["host", "test", "hg-target", "--hub-url", "http://hub:8765", "--interval", "0.01"])
+                code = cli.main(["host", "test", "hg-target", "--hub-url", "http://hub:8765", "--wait", "--interval", "0.01"])
         self.assertEqual(code, 0)
         data = json.loads(buf.getvalue())
         self.assertEqual(data["status"], "done")
         self.assertTrue(data["result"]["pong"])
+        backend_cls.assert_not_called()
+
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_host_test_without_wait_only_queues_command(self, backend_cls):
+        called = {"create": 0}
+
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def create_command(self, host_id, command_type, payload):
+                called["create"] += 1
+                return {"command_id": "cmd-1", "target_host_id": host_id, "command_type": command_type, "status": "pending", "result": {}}
+
+            def command(self, command_id):
+                raise AssertionError("default host test must not poll command status")
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient), patch("hypergery_ubuntu.cli.wait_for_command") as wait_mock:
+            with redirect_stdout(buf):
+                # Even a non-zero --timeout must be ignored without --wait.
+                code = cli.main(["host", "test", "hg-target", "--hub-url", "http://hub:8765", "--timeout", "30"])
+        self.assertEqual(code, 0)
+        self.assertEqual(called["create"], 1)
+        wait_mock.assert_not_called()
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["status"], "pending")
+        backend_cls.assert_not_called()
+
+    @patch("hypergery_ubuntu.cli.HyperGeryBackend")
+    def test_host_test_wait_passes_timeout_to_wait_for_command(self, backend_cls):
+        class FakeRegistryClient:
+            def __init__(self, url):
+                self.url = url
+
+            def create_command(self, host_id, command_type, payload):
+                return {"command_id": "cmd-1", "target_host_id": host_id, "command_type": command_type, "status": "pending", "result": {}}
+
+        buf = StringIO()
+        with patch("hypergery_ubuntu.registry.RegistryClient", FakeRegistryClient), patch(
+            "hypergery_ubuntu.cli.wait_for_command",
+            return_value={"command_id": "cmd-1", "status": "done", "result": {"pong": True}},
+        ) as wait_mock:
+            with redirect_stdout(buf):
+                code = cli.main(["host", "test", "hg-target", "--hub-url", "http://hub:8765", "--wait", "--timeout", "5"])
+        self.assertEqual(code, 0)
+        wait_mock.assert_called_once()
+        self.assertEqual(wait_mock.call_args.kwargs["timeout_seconds"], 5.0)
         backend_cls.assert_not_called()
 
     def test_hub_packages_cli_prints_staging_summary(self):
