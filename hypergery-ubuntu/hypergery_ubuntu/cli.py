@@ -465,7 +465,10 @@ def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import __version__
+
     parser = argparse.ArgumentParser(prog="hypergery-cli")
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight", help="Run non-GUI host dependency checks.")
     sub.add_parser("doctor", help="Run v0.6 Hub, agent, NAS, Docker, and libvirt diagnostics without changing the system.")

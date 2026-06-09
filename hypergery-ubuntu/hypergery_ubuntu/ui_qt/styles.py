@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+from .. import __version__ as APP_DISPLAY_VERSION
 from .formatting import format_mib
-
-APP_DISPLAY_VERSION = "1.0.1"
 
 # Tema VirtualBox 7 (modo oscuro). Sustituye al antiguo tema navy/cyan v0.7.
 # El objetivo es parecerse al máximo al gestor de VirtualBox: grises neutros,
