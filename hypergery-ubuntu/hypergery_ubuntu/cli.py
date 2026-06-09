@@ -359,7 +359,7 @@ def host_action(args: argparse.Namespace) -> int:
         return print_json(client.get_host(args.host_id))
     if args.host_command == "test":
         command = client.create_command(args.host_id, "ping", {})
-        if args.timeout > 0:
+        if args.wait and args.timeout > 0:
             command = wait_for_command(
                 client,
                 command["command_id"],
@@ -614,7 +614,12 @@ def main(argv: list[str] | None = None) -> int:
     host_test = host_sub.add_parser("test")
     host_test.add_argument("host_id")
     host_test.add_argument("--hub-url", "--registry-url", dest="hub_url", default=default_hub_url())
-    host_test.add_argument("--timeout", type=float, default=30.0)
+    host_test.add_argument(
+        "--wait",
+        action="store_true",
+        help="Wait for the agent to answer the ping; without it the command is queued and returned immediately.",
+    )
+    host_test.add_argument("--timeout", type=float, default=30.0, help="Max seconds to wait (only with --wait).")
     host_test.add_argument("--interval", type=float, default=1.0)
     migrate_parser = sub.add_parser("migrate", help="Create, validate, import, and inspect safe VM migration packages.")
     migrate_sub = migrate_parser.add_subparsers(dest="migrate_command", required=True)
