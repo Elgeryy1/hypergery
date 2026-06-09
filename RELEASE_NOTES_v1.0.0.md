@@ -1,13 +1,12 @@
-# HyperGery v1.0.0 — Release Notes (BORRADOR)
+# HyperGery v1.0.0 — Release Notes
 
-> **Estado: BORRADOR.** Estas notas se preparan sobre la rama `feature/v1.1-ux` como
-> final candidate. **No es la release final:** no hay merge a `main`, no hay tag `v1.0.0`
-> y v1.0 **no** está declarada como final. La publicación requiere decisión explícita de
-> Gerard (ver checklist en `docs/qa/V1_RELEASE_READINESS.md`).
+> **Estado: release estable.** Primera versión final de HyperGery. Promovida desde la
+> candidate `v1.0-rc1` tras el trabajo de `feature/v1.1-ux` y el UAT final aprobado.
 
-- **Versión:** 1.0.0 (candidate; `pyproject.toml` aún en `1.0.0rc1`)
-- **Fecha de redacción:** 2026-06-09
-- **Rama:** `feature/v1.1-ux`
+- **Versión:** 1.0.0 (`pyproject.toml` y `hypergery_ubuntu/__init__.py` en `1.0.0`;
+  UI muestra `v1.0.0`). Promovida desde la candidate `1.0.0rc1`.
+- **Fecha:** 2026-06-09
+- **Origen:** rama `feature/v1.1-ux`, integrada en `main` y etiquetada `v1.0.0`.
 
 ---
 
@@ -91,7 +90,8 @@ QT_QPA_PLATFORM=xcb ~/.venvs/hypergery/bin/hypergery
 ```
 
 Notas de upgrade desde release candidate (1.0.0rc1):
-- Antes del release final habrá que subir la versión de `pyproject.toml` de `1.0.0rc1` a `1.0.0`.
+- La versión ya está fijada en `1.0.0` (`pyproject.toml` y `hypergery_ubuntu/__init__.py`); la UI
+  muestra `v1.0.0` (antes `v1.1-dev` durante el desarrollo).
 - No hay migración de estado destructiva conocida; el estado v1 se migra de forma compatible
   (cubierto por `tests/test_v1_state_migration.py`).
 
