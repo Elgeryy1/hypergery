@@ -105,6 +105,53 @@ class StateMigrationTests(unittest.TestCase):
         self.assertTrue(validation["ok"], validation["errors"])
         self.assertEqual(validation["manifest"]["source_will_be_deleted"], False)
 
+    def test_export_resumes_source_and_cleans_up_when_disk_copy_fails(self):
+        # save_vm froze the VM; then the disk copy fails. The source must be
+        # resumed from its saved state and no partial package left behind.
+        backend = StateFakeBackend(self.root, state="running")
+        backend.disk.unlink()  # disk vanishes -> copy step raises after save_vm
+        out = self.root / "out"
+        with self.assertRaises(HyperGeryError) as ctx:
+            export_vm_state_package(backend, "vm1", out)
+        self.assertIsNotNone(backend.restored_with)  # restore/resume was called
+        self.assertEqual(backend._state, "running")  # continues where it was
+        self.assertFalse((out / "state-vm1").exists())  # no partial package
+        self.assertIn("resumed locally", str(ctx.exception))
+
+    def test_export_preserves_state_when_resume_also_fails(self):
+        # Worst case: packaging fails AND the automatic resume fails too. We must
+        # keep the saved RAM state so the user can restore it by hand, and say so.
+        backend = StateFakeBackend(self.root, state="running")
+        backend.disk.unlink()
+
+        def broken_restore(state_path, xml_path=None):
+            raise HyperGeryError("restore exploded")
+
+        backend.restore_vm = broken_restore
+        out = self.root / "out"
+        with self.assertRaises(HyperGeryError) as ctx:
+            export_vm_state_package(backend, "vm1", out)
+        self.assertEqual(backend._state, "shut off")  # could not be resumed
+        self.assertTrue((out / "state-vm1" / "memory-state.save").is_file())  # preserved
+        self.assertIn("state preserved", str(ctx.exception))
+
+    def test_export_failure_before_save_leaves_source_running(self):
+        # If we fail before save_vm runs, the source was never frozen by us.
+        backend = StateFakeBackend(self.root, state="running")
+
+        def failing_virsh(args, *, check=True, timeout=120):
+            if args[:1] == ["dumpxml"]:
+                return CommandResult(["virsh", *args], 1, "", "boom")
+            return CommandResult(["virsh", *args], 0, "", "")
+
+        backend.virsh = failing_virsh
+        out = self.root / "out"
+        with self.assertRaises(HyperGeryError):
+            export_vm_state_package(backend, "vm1", out)
+        self.assertEqual(backend._state, "running")  # never frozen
+        self.assertIsNone(backend.restored_with)
+        self.assertFalse((out / "state-vm1").exists())  # partial package dropped
+
     def test_validate_detects_missing_pieces(self):
         backend = StateFakeBackend(self.root, state="running")
         package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
@@ -112,6 +159,42 @@ class StateMigrationTests(unittest.TestCase):
         validation = validate_state_package(package)
         self.assertFalse(validation["ok"])
         self.assertTrue(any("Memory state" in e for e in validation["errors"]))
+
+    def test_validate_detects_truncated_memory_state(self):
+        backend = StateFakeBackend(self.root, state="running")
+        package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
+        (package / "memory-state.save").write_bytes(b"trunc")  # shorter than original
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertTrue(any("memory-state.save" in e for e in validation["errors"]), validation["errors"])
+
+    def test_validate_detects_corrupt_disk_same_size(self):
+        backend = StateFakeBackend(self.root, state="running")
+        package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
+        disk = package / "disks" / "src-disk.qcow2"
+        corrupted = b"X" * disk.stat().st_size  # same size, different bytes
+        disk.write_bytes(corrupted)
+        validation = validate_state_package(package)
+        self.assertFalse(validation["ok"])
+        self.assertTrue(any("Checksum mismatch" in e for e in validation["errors"]), validation["errors"])
+
+    def test_validate_accepts_legacy_package_without_checksums(self):
+        # A package written before v1.0.1 has no sha256/size; it still validates
+        # on existence so old staged packages keep working.
+        import json
+
+        backend = StateFakeBackend(self.root, state="running")
+        package = Path(export_vm_state_package(backend, "vm1", self.root / "out")["package_dir"])
+        manifest_path = package / "state-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for key in [k for k in manifest if k.endswith("_sha256") or k.endswith("_size_bytes")]:
+            manifest.pop(key)
+        for asset in manifest.get("disks", []):
+            asset.pop("sha256", None)
+            asset.pop("size_bytes", None)
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        validation = validate_state_package(package)
+        self.assertTrue(validation["ok"], validation["errors"])
 
     def _export_and_patch_manifest(self, **manifest_updates):
         import json

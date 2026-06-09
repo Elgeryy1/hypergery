@@ -2,7 +2,7 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v1.0.0-blue)
+![Version](https://img.shields.io/badge/version-v1.0.1-blue)
 ![Status](https://img.shields.io/badge/status-stable-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
@@ -10,7 +10,7 @@
 
 HyperGery is a real desktop virtual machine manager for Ubuntu, functionally inspired by VirtualBox workflows but using KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
 
-**Branch status**: **v1.0.0** is the current stable release (tag `v1.0.0` on `main`): v0.8 (closed) plus the v0.9/v1.0 service layer and the VirtualBox-style Spanish UX, with a real two-physical-host migration UAT passed and the full offscreen Qt suite green (**661 passed**). See [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md) and the final UAT evidence in [docs/qa/V1_FINAL_UAT_RESULT.md](docs/qa/V1_FINAL_UAT_RESULT.md). It was promoted from the **v1.0-rc1** candidate (see [RELEASE_NOTES_v1.0-rc1.md](RELEASE_NOTES_v1.0-rc1.md)). Live migration is **not** part of v1.0 and is planned for v1.5 ([docs/roadmap/V1_5_LIVE_MIGRATION.md](docs/roadmap/V1_5_LIVE_MIGRATION.md)). The last previous stable release was **v0.7.0**. See [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) for the v1 quick start.
+**Branch status**: **v1.0.1** is the current stable release (tag `v1.0.1` on `main`): a migration-safety bugfix over v1.0.0 — safe rollback when a state export fails, checksum integrity for state packages, explicit "snapshots are not migrated" behavior, repo-hygiene `.gitignore` fixes, and reinforced Hub/API LAN-only security warnings. QA: `compileall` OK, focused suites 95 passed, full suite **668 passed**, and a real KVM-host UAT (`gerard-MS-7E26`) **5/5 PASS** (see [RELEASE_NOTES_v1.0.1.md](RELEASE_NOTES_v1.0.1.md) and [docs/qa/V1_0_1_UAT_RESULT.md](docs/qa/V1_0_1_UAT_RESULT.md)). The previous stable release was **v1.0.0** (see [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md) and the v1.0 UAT evidence in [docs/qa/V1_FINAL_UAT_RESULT.md](docs/qa/V1_FINAL_UAT_RESULT.md)). Live migration is **not** part of v1.0.x and is planned for v1.5 ([docs/roadmap/V1_5_LIVE_MIGRATION.md](docs/roadmap/V1_5_LIVE_MIGRATION.md)). See [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) for the v1 quick start.
 
 HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
 
@@ -118,6 +118,20 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 - App-level settings live in `~/.config/hypergery/config.json`; environment variables remain overrides.
 - `python -m hypergery_ubuntu.cli doctor` checks Python, KVM, libvirt, Hub, NAS staging, Docker Compose, and Hub VM inventory without changing the system.
 - See [docs/HYPERGERY_HUB.md](docs/HYPERGERY_HUB.md), [docs/NAS_DEPLOYMENT.md](docs/NAS_DEPLOYMENT.md), and [docs/QUICK_START_V06.md](docs/QUICK_START_V06.md).
+
+> ⚠️ **Security: the Hub/API has no authentication. Use it only on a trusted LAN.**
+> The Hub control plane and the v1 HTTP API have **no authentication or TLS** in
+> v1.0.x. Anyone who can reach the Hub port can queue commands (including remote
+> **Force Off**), upload/delete migration packages, and read the inventory.
+> - The Hub binds to **`127.0.0.1` by default** (`hypergery hub serve --host 127.0.0.1`).
+>   It is only reachable from other machines if you deliberately bind a routable
+>   address (e.g. `--host 0.0.0.0` or `HYPERGERY_HUB_HOST`) — which exposes an
+>   **unauthenticated** control plane. The v1 API likewise requires an explicit
+>   `--allow-remote` to leave loopback.
+> - **Do not expose the Hub or API to the Internet** or to an untrusted network.
+>   Keep it on a trusted home/lab LAN behind your router; do not port-forward it.
+> - Token authentication and TLS are planned for **v1.2** (see
+>   [NEXT_STEPS_V12_SECURITY.md](NEXT_STEPS_V12_SECURITY.md)), not v1.0.x.
 
 ### NAS Live Migration (v0.6.0)
 
