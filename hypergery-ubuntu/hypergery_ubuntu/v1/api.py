@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
@@ -23,6 +24,9 @@ from .external_nodes import ExternalNodeStore, health_check as node_health_check
 from .teleport import TeleportEngine
 
 API_VERSION = "v1"
+
+# HG-BUG-0029: máximo de long-polls de progreso bloqueando hilos a la vez.
+MAX_CONCURRENT_LONG_POLLS = 32
 
 
 class ApiContext:
@@ -202,6 +206,9 @@ class ApiServer(ThreadingHTTPServer):
         # HG-BUG-0027: el mismo anti fuerza bruta del Hub también aquí (el
         # API companion lo consumirá un móvil expuesto en la VPN).
         self.auth_limiter = AuthRateLimiter()
+        # HG-BUG-0029: techo de long-polls concurrentes para no agotar los
+        # hilos del ThreadingHTTPServer; el resto recibe 503 y reintenta.
+        self.long_poll_slots = threading.BoundedSemaphore(MAX_CONCURRENT_LONG_POLLS)
         if not self.auth_token:
             get_logger().warning("api", "v1 API auth is DISABLED (explicit empty token).")
 
@@ -417,10 +424,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     timeout = min(60.0, max(0.0, float(first("timeout") or 25.0)))
                 except ValueError:
                     timeout = 25.0
+                # HG-BUG-0029: limitar long-polls concurrentes (no bloquear si
+                # no hay hueco → 503 para que el cliente reintente).
+                if not self.server.long_poll_slots.acquire(blocking=False):
+                    self._send(
+                        503,
+                        envelope(error={"code": "busy", "message": "Too many concurrent progress subscriptions; retry shortly."}),
+                    )
+                    return
                 try:
                     operation = get_progress_channel().wait_for_change(path[1], since_version=since, timeout=timeout)
                 except KeyError as exc:
                     raise HyperGeryError(str(exc)) from exc
+                finally:
+                    self.server.long_poll_slots.release()
                 self._ok({"operation": operation})
                 return
             if path == ["external-nodes"]:
