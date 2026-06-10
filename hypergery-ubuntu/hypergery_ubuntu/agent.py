@@ -542,7 +542,10 @@ def main(argv: list[str] | None = None) -> int:
             agent.run_forever()
             return 0
     except HyperGeryError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        # HG-BUG-0023: humanizar el stderr de virsh también en el agente.
+        from .ui_qt.humanize import humanize_error_message
+
+        print(f"ERROR: {humanize_error_message(str(exc))}", file=sys.stderr)
         return 2
     return 2
 
