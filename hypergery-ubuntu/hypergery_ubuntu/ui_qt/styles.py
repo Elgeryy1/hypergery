@@ -461,6 +461,19 @@ QLabel#pageTitle {
     letter-spacing: -0.3px;
     color: #f0f0f0;
 }
+QToolButton#sectionHeader {
+    text-align: left;
+    padding: 8px 10px;
+    font-weight: 600;
+    font-size: 11pt;
+    color: #e8e8e8;
+    background: #2a2d31;
+    border: none;
+    border-radius: 6px;
+}
+QToolButton#sectionHeader:hover {
+    background: #32363b;
+}
 QLabel#statBig {
     font-size: 20pt;
     font-weight: 700;

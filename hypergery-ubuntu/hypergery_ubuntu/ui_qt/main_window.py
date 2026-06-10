@@ -67,6 +67,7 @@ from .dialogs import (
     RenameLabDialog,
     SettingsDialog,
     SnapshotDialog,
+    VBoxStyleVMCreator,
     VMWizard,
     confirm,
 )
@@ -4179,7 +4180,8 @@ class MainWindow(QMainWindow):
         self.new_vm(default_lab_id=str(lab["lab_id"]))
 
     def new_vm(self, default_lab_id: str = "default-lab") -> None:
-        wizard = VMWizard(self, default_lab_id=default_lab_id)
+        # UI estilo VirtualBox: una ventana con secciones plegables y sliders.
+        wizard = VBoxStyleVMCreator(self, default_lab_id=default_lab_id)
         if wizard.exec() != QDialog.DialogCode.Accepted:
             return
         values = wizard.values()

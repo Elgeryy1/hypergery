@@ -27,9 +27,12 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QStyle,
+    QToolButton,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -630,6 +633,281 @@ class ReviewPage(QWizardPage):
             )
             + "</pre>"
         )
+
+
+class CollapsibleSection(QWidget):
+    """Sección plegable estilo VirtualBox: cabecera con flecha + cuerpo."""
+
+    def __init__(self, title: str, expanded: bool = False) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.toggle = QToolButton()
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(expanded)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.toggle.setObjectName("sectionHeader")
+        self.toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.toggle.toggled.connect(self._on_toggled)
+        layout.addWidget(self.toggle)
+        self.body = QWidget()
+        self.body_layout = QFormLayout(self.body)
+        self.body_layout.setContentsMargins(28, 8, 12, 12)
+        self.body.setVisible(expanded)
+        layout.addWidget(self.body)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        self.body.setVisible(checked)
+
+    def add_row(self, label: str, widget) -> None:
+        self.body_layout.addRow(label, widget)
+
+
+class _SliderSpin(QWidget):
+    """Slider + spinbox sincronizados, estilo VirtualBox (con min/max)."""
+
+    def __init__(self, minimum: int, maximum: int, value: int, suffix: str = "", step: int = 1) -> None:
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        row = QHBoxLayout()
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setMinimum(minimum)
+        self.slider.setMaximum(maximum)
+        self.slider.setSingleStep(step)
+        self.slider.setValue(value)
+        self.spin = QSpinBox()
+        self.spin.setMinimum(minimum)
+        self.spin.setMaximum(maximum)
+        self.spin.setSingleStep(step)
+        self.spin.setValue(value)
+        if suffix:
+            self.spin.setSuffix(f" {suffix}")
+        self.slider.valueChanged.connect(self.spin.setValue)
+        self.spin.valueChanged.connect(self.slider.setValue)
+        row.addWidget(self.slider, 1)
+        row.addWidget(self.spin)
+        outer.addLayout(row)
+        labels = QHBoxLayout()
+        lo = QLabel(f"{minimum} {suffix}".strip())
+        lo.setObjectName("mutedLabel")
+        hi = QLabel(f"{maximum} {suffix}".strip())
+        hi.setObjectName("mutedLabel")
+        labels.addWidget(lo)
+        labels.addStretch()
+        labels.addWidget(hi)
+        outer.addLayout(labels)
+
+    def value(self) -> int:
+        return self.spin.value()
+
+    def setValue(self, value: int) -> None:  # noqa: N802 (API Qt)
+        self.spin.setValue(value)
+
+
+class VBoxStyleVMCreator(QDialog):
+    """Diálogo de creación de VM al estilo de VirtualBox: una ventana con
+    secciones plegables (Nombre y SO · Hardware · Disco) y sliders. Expone el
+    mismo `values()` que VMWizard, así que `backend.create_vm(**values)` no
+    cambia."""
+
+    # (clave de perfil, etiqueta del combo)
+    OS_ITEMS = (
+        ("linux", "Linux / Ubuntu"),
+        ("windows11", "Windows 11"),
+        ("windows-legacy", "Windows 10 / 8"),
+        ("other", "Otro"),
+    )
+
+    def __init__(self, parent=None, *, default_lab_id: str = "default-lab") -> None:
+        super().__init__(parent)
+        from .. import vm_profiles as _vp
+
+        self._vp = _vp
+        self.setWindowTitle("Nueva máquina virtual")
+        app_defaults = effective_config()
+        root = QVBoxLayout(self)
+
+        # --- Sección 1: Nombre y sistema operativo ---------------------------
+        self.sec_os = CollapsibleSection("Nombre y sistema operativo", expanded=True)
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Nombre de la máquina")
+        self.iso_edit = QLineEdit()
+        self.iso_edit.setPlaceholderText("/ruta/a/la/imagen.iso")
+        iso_browse = QPushButton("Examinar")
+        iso_browse.clicked.connect(self._pick_iso)
+        iso_row = QHBoxLayout()
+        iso_row.addWidget(self.iso_edit, 1)
+        iso_row.addWidget(iso_browse)
+        iso_holder = QWidget()
+        iso_holder.setLayout(iso_row)
+        self.os_combo = QComboBox()
+        for key, label in self.OS_ITEMS:
+            self.os_combo.addItem(label, key)
+        self.os_combo.currentIndexChanged.connect(self._on_os_changed)
+        self.firmware_info = QLabel("")
+        self.firmware_info.setObjectName("mutedLabel")
+        self.firmware_info.setWordWrap(True)
+        self.sec_os.add_row("Nombre", self.name_edit)
+        self.sec_os.add_row("Imagen ISO", iso_holder)
+        self.sec_os.add_row("Sistema operativo", self.os_combo)
+        self.sec_os.add_row("", self.firmware_info)
+        root.addWidget(self.sec_os)
+
+        # --- Sección 2: Hardware --------------------------------------------
+        self.sec_hw = CollapsibleSection("Hardware", expanded=True)
+        self.ram = _SliderSpin(512, 30720, 2048, "MB", step=256)
+        self.cpus = _SliderSpin(1, 16, 2, "CPU")
+        self.use_efi = QCheckBox("Usar EFI (UEFI)")
+        self.use_efi.toggled.connect(self._sync_firmware_info)
+        self.secure_tpm_info = QLabel("")
+        self.secure_tpm_info.setObjectName("mutedLabel")
+        self.secure_tpm_info.setWordWrap(True)
+        self.migratable_cpu = QCheckBox("Preparar para migración en vivo entre equipos (CPU compatible)")
+        self.sec_hw.add_row("Memoria base", self.ram)
+        self.sec_hw.add_row("Número de CPUs", self.cpus)
+        self.sec_hw.add_row("Firmware", self.use_efi)
+        self.sec_hw.add_row("", self.secure_tpm_info)
+        self.sec_hw.add_row("Migración", self.migratable_cpu)
+        root.addWidget(self.sec_hw)
+
+        # --- Sección 3: Disco duro virtual -----------------------------------
+        self.sec_disk = CollapsibleSection("Disco duro virtual", expanded=True)
+        self.disk = _SliderSpin(1, 2048, 25, "GB")
+        self.disk_dir = QLineEdit()
+        self.disk_dir.setText(app_defaults["default_vm_storage_path"].value)
+        self.disk_dir.setPlaceholderText("Carpeta por defecto de HyperGery")
+        disk_browse = QPushButton("Examinar")
+        disk_browse.clicked.connect(self._pick_disk_dir)
+        disk_row = QHBoxLayout()
+        disk_row.addWidget(self.disk_dir, 1)
+        disk_row.addWidget(disk_browse)
+        disk_holder = QWidget()
+        disk_holder.setLayout(disk_row)
+        self.sec_disk.add_row("Tamaño del disco", self.disk)
+        self.sec_disk.add_row("Carpeta", disk_holder)
+        root.addWidget(self.sec_disk)
+
+        # --- Red / pantalla / lab (compacto) ---------------------------------
+        self.sec_more = CollapsibleSection("Red y pantalla", expanded=False)
+        self.network = QComboBox()
+        self.network.addItems(["nat", "isolated"])
+        self.display = QComboBox()
+        self.display.addItems(["spice", "vnc"])
+        default_display = app_defaults["default_display"].value
+        idx = self.display.findText(default_display)
+        if idx >= 0:
+            self.display.setCurrentIndex(idx)
+        self.lab_id = QLineEdit(default_lab_id or "default-lab")
+        self.sec_more.add_row("Red", self.network)
+        self.sec_more.add_row("Pantalla", self.display)
+        self.sec_more.add_row("Laboratorio", self.lab_id)
+        root.addWidget(self.sec_more)
+
+        root.addStretch()
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+        self.error_label.setWordWrap(True)
+        root.addWidget(self.error_label)
+        buttons = QDialogButtonBox()
+        self.finish_button = buttons.addButton("Terminar", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton("Cancelar", QDialogButtonBox.ButtonRole.RejectRole)
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+        self.resize(720, 600)
+
+        self.iso_edit.textChanged.connect(self._sync_firmware_info)
+        self._on_os_changed()
+        self.resize(720, 620)
+
+    # ---- perfil/firmware ----
+    def _current_os_key(self) -> str:
+        return str(self.os_combo.currentData() or "linux")
+
+    def resolved_profile(self) -> str:
+        os_key = self._current_os_key()
+        if os_key == "linux":
+            return "linux-uefi" if self.use_efi.isChecked() else "linux"
+        return os_key
+
+    def _on_os_changed(self, *_a) -> None:
+        os_key = self._current_os_key()
+        profile = self._vp.PROFILES[os_key if os_key != "linux" else "linux"]
+        # EFI: Windows siempre UEFI (bloqueado); Linux elegible; Otro = BIOS.
+        if os_key in {"windows11", "windows-legacy"}:
+            self.use_efi.setChecked(True)
+            self.use_efi.setEnabled(False)
+        elif os_key == "other":
+            self.use_efi.setChecked(False)
+            self.use_efi.setEnabled(False)
+        else:
+            self.use_efi.setEnabled(True)
+        # Valores recomendados por perfil.
+        self.ram.setValue(max(self.ram.value(), profile.min_ram_mib))
+        self.disk.setValue(max(self.disk.value(), profile.min_disk_gb))
+        self.firmware_info.setText(profile.notes)
+        self._sync_firmware_info()
+
+    def _sync_firmware_info(self, *_a) -> None:
+        profile = self._vp.profile_for(self.resolved_profile())
+        pf = self._vp.preflight_profile(profile)
+        bits = []
+        if profile.firmware in {"uefi", "uefi-secure"}:
+            bits.append("UEFI")
+        if profile.firmware == "uefi-secure":
+            bits.append("Secure Boot")
+        if profile.tpm:
+            bits.append("TPM 2.0")
+        line = "Firmware: " + (" + ".join(bits) if bits else "BIOS")
+        if not pf.ok:
+            line += "  ⚠️ " + " ".join(pf.errors)
+            if pf.suggested_commands:
+                line += "  → " + " && ".join(pf.suggested_commands)
+        self.secure_tpm_info.setText(line)
+
+    # ---- file pickers ----
+    def _pick_iso(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Elegir ISO", "", "Imágenes (*.iso *.img);;Todos (*)")
+        if path:
+            self.iso_edit.setText(path)
+
+    def _pick_disk_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Carpeta del disco")
+        if path:
+            self.disk_dir.setText(path)
+
+    # ---- contrato ----
+    def values(self) -> dict:
+        profile_key = self.resolved_profile()
+        return {
+            "name": self.name_edit.text().strip(),
+            "iso_path": self.iso_edit.text().strip(),
+            "os_type": self._vp.PROFILES[profile_key].os_type,
+            "profile": profile_key,
+            "ram_mib": self.ram.value(),
+            "vcpus": self.cpus.value(),
+            "disk_gb": self.disk.value(),
+            "disk_dir": self.disk_dir.text().strip() or None,
+            "network_mode": self.network.currentText(),
+            "display_mode": self.display.currentText(),
+            "lab_id": self.lab_id.text().strip() or "default-lab",
+            "migratable_cpu": self.migratable_cpu.isChecked(),
+        }
+
+    def _accept_if_valid(self) -> None:
+        if not self.name_edit.text().strip():
+            self.error_label.setText("Pon un nombre a la máquina.")
+            return
+        if not self.iso_edit.text().strip():
+            self.error_label.setText("Elige una imagen ISO de arranque.")
+            return
+        self.accept()
 
 
 class VMWizard(QWizard):
