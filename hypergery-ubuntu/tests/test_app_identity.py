@@ -147,12 +147,21 @@ class BuildDebTests(unittest.TestCase):
                 "./usr/bin/hypergery-cli",
                 "./usr/bin/hypergery-agent",
                 "./usr/lib/hypergery/hypergery_ubuntu/app.py",
+                "./usr/lib/systemd/user/hypergery-agent.service",
                 "./usr/share/applications/hypergery.desktop",
                 "./usr/share/icons/hicolor/scalable/apps/hypergery.svg",
                 "./usr/share/doc/hypergery/copyright",
             ):
                 self.assertIn(expected, contents)
             self.assertNotIn("__pycache__", contents)
+            # El agente debe auto-arrancar: postinst habilita la unidad de usuario.
+            control = subprocess.run(
+                ["dpkg-deb", "--ctrl-tarfile", str(deb)], capture_output=True
+            ).stdout
+            postinst = subprocess.run(
+                ["tar", "-xO", "-f", "-", "./postinst"], input=control, capture_output=True
+            ).stdout.decode("utf-8", "replace")
+            self.assertIn("systemctl --global enable hypergery-agent.service", postinst)
 
 
 if __name__ == "__main__":

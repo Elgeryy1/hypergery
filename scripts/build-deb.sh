@@ -37,6 +37,7 @@ trap 'rm -rf "$STAGE"' EXIT
 install -d "$STAGE/DEBIAN" \
   "$STAGE/usr/lib/hypergery" \
   "$STAGE/usr/bin" \
+  "$STAGE/usr/lib/systemd/user" \
   "$STAGE/usr/share/applications" \
   "$STAGE/usr/share/icons/hicolor/scalable/apps" \
   "$STAGE/usr/share/doc/hypergery"
@@ -57,6 +58,9 @@ WRAPPER
   chmod 0755 "$STAGE/usr/bin/$bin_name"
 done
 
+# Servicio de usuario del agente: arranca solo en cada sesión (auto-enable global
+# en postinst). Solo corre para usuarios con HyperGery configurado (ExecCondition).
+install -m 0644 "$PKG_DIR/hypergery-agent.service" "$STAGE/usr/lib/systemd/user/hypergery-agent.service"
 install -m 0644 "$PKG_DIR/hypergery.desktop" "$STAGE/usr/share/applications/hypergery.desktop"
 install -m 0644 "$PKG_DIR/hypergery.svg" "$STAGE/usr/share/icons/hicolor/scalable/apps/hypergery.svg"
 install -m 0644 "$PROJECT_ROOT/LICENSE" "$STAGE/usr/share/doc/hypergery/copyright"
@@ -89,8 +93,25 @@ fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q /usr/share/icons/hicolor || true
 fi
+# Auto-arranque del agente: habilita la unidad de usuario para TODOS los usuarios
+# en su próxima sesión. Solo corre de hecho si el usuario tiene HyperGery
+# configurado (ExecCondition en la unidad). No requiere sudo del usuario final.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --global enable hypergery-agent.service >/dev/null 2>&1 || true
+fi
 exit 0
 POSTINST
+
+cat > "$STAGE/DEBIAN/prerm" <<'PRERM'
+#!/bin/sh
+set -e
+# Al desinstalar/actualizar, deshabilita la unidad de usuario (antes de borrar
+# el fichero). El agente en ejecución de cada usuario se detiene al cerrar sesión.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --global disable hypergery-agent.service >/dev/null 2>&1 || true
+fi
+exit 0
+PRERM
 
 cat > "$STAGE/DEBIAN/postrm" <<'POSTRM'
 #!/bin/sh
@@ -101,7 +122,7 @@ fi
 exit 0
 POSTRM
 
-chmod 0755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/postrm"
+chmod 0755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm" "$STAGE/DEBIAN/postrm"
 
 mkdir -p "$DIST_DIR"
 OUT="$DIST_DIR/hypergery_${DEB_VERSION}_all.deb"
