@@ -72,11 +72,13 @@ incompatible).
 
 ---
 
-## Test D — PC y portátil online (desde la UI)
+## Test D — PC y portátil online en el Hub (desde la UI)
 
 1. Arranca el agente en cada equipo (en el portátil, su servicio/agent).
 2. En la UI, **Centro de control → «Salud del sistema»** (o la pestaña de
    equipos): **PC y portátil aparecen CONECTADOS**, con RAM/última señal.
+   - **Esperar:** ambos online. **No** hace falta que «se vean» entre sí: lo
+     único que importa es que ambos estén emparejados con el MISMO Hub.
 
 **PASS si:** ambos equipos salen «conectados» en la UI.
 
@@ -86,10 +88,16 @@ incompatible).
 
 1. Crea/usa una VM **apagada** `hgtest-user-hub`.
 2. Selecciónala → botón **«Mover a otro equipo»**.
-3. En el asistente: **Equipo destino** = el portátil (detectado por el Hub) →
-   **Forma de envío = «Por el Hub … (oficial)»** → Opciones (nombre destino) →
+3. En el asistente: **Equipo destino** → el desplegable muestra los equipos del
+   Hub (host_id · hostname · IP · estado), **excluido este PC**. Selecciona el
+   **portátil** (sale como candidato porque está online en el Hub; **no** hace
+   falta conectividad directa PC↔portátil).
+   - Si el portátil saliera deshabilitado, el motivo aparece a su lado (p. ej.
+     «online pero sin KVM») — no es un problema de que «no se vean».
+4. **Forma de envío = «Por el Hub … (oficial)»** → Opciones (nombre destino) →
    **«Comprobar antes de empezar»**.
-   - **Esperar:** la comprobación pasa (destino online, KVM/libvirt OK).
+   - **Esperar:** la comprobación pasa sin pedir SSH/libvirt directo entre los
+     equipos (el Hub coordina).
 4. **«Empezar el traslado»**.
    - **Esperar:** aparece el **ID del traslado (migration_id)** y la lista de
      estados avanza: `preflight → packaging → uploaded → waiting_target →
@@ -116,6 +124,10 @@ origen queda intacto (source_will_be_deleted=false).
    - **Esperar:** si la VM estuviera apagada o la URI fuera insegura
      (`qemu+tcp`), lo **rechaza** con mensaje claro. Con VM encendida + URI
      `qemu+ssh`, pasa.
+   - **Aquí SÍ** hace falta conectividad directa libvirt/SSH entre origen y
+     destino (a diferencia del Hub). Si falla la conexión directa, el error lo
+     dice expresamente y sugiere usar «Migración por Hub/NAS» — no se confunde
+     con el modo Hub.
 4. **«Empezar el traslado».**
    - **Esperar:** Resultado «Migración en vivo completada», con **downtime
      medido en ms**, destino ENCENDIDO y origen ya no corriendo.

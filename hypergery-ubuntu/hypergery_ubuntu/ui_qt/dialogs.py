@@ -1135,6 +1135,57 @@ class DeleteConfirmationDialog(QDialog):
         return self.delete_disk.isChecked()
 
 
+def hub_target_candidates(hosts: list[dict], source_host_id: str, source_hostname: str = "") -> list[dict]:
+    """Candidatos de destino para migración mediada por el Hub (B5).
+
+    Lógica pura y testeable: usa SOLO el registro del Hub (list_hosts), NUNCA
+    descubrimiento de red ni conectividad directa PC↔portátil. Excluye el host
+    de origen (por host_id o, si no, por hostname), elimina duplicados, y marca
+    cada candidato como listo/no-listo con la razón concreta. Un destino es
+    apto para el modo Hub si está ONLINE en el Hub y tiene KVM disponible para
+    importar: no hace falta que origen y destino «se vean» entre sí."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for host in hosts:
+        host_id = str(host.get("host_id") or "")
+        if not host_id or host_id in seen:
+            continue
+        seen.add(host_id)
+        hostname = str(host.get("hostname") or "")
+        is_source = host_id == source_host_id or (
+            bool(source_hostname) and hostname == source_hostname and source_host_id in ("", hostname)
+        )
+        if is_source:
+            continue
+        online = str(host.get("status") or "offline") == "online"
+        kvm = bool(host.get("kvm_ok"))
+        libvirt = bool(host.get("libvirt_ok"))
+        if not online:
+            ready, reason = False, "sin conexión con el Hub"
+        elif not kvm:
+            ready, reason = False, "online pero sin KVM disponible para importar"
+        elif not libvirt:
+            ready, reason = False, "online pero libvirt no responde en ese equipo"
+        else:
+            ready, reason = True, ""
+        address = str(host.get("address") or host.get("agent_url") or "")
+        out.append(
+            {
+                "host": host,
+                "host_id": host_id,
+                "hostname": hostname,
+                "address": address,
+                "online": online,
+                "kvm_ok": kvm,
+                "libvirt_ok": libvirt,
+                "ready": ready,
+                "reason": reason,
+                "last_seen": str(host.get("last_seen") or ""),
+            }
+        )
+    return out
+
+
 def live_uri_for_host(host: dict) -> str:
     """Deriva una URI qemu+ssh del registro de un host del Hub (B3).
 
@@ -1491,14 +1542,25 @@ class LiveMigrationDialog(QDialog):
         target_id = str(self.target_host.currentData() or "")
         return next((host for host in self.hosts if host.get("host_id") == target_id), None)
 
+    def _is_live_mode(self) -> bool:
+        return str(self.transfer_mode.currentData() or "") == "live"
+
     def _target_ready(self) -> bool:
         target = self._selected_target()
+        if not target:
+            return False
+        if str(target.get("host_id") or "") == self.source_host_id.text().strip():
+            return False
+        # Modo en vivo: el destino solo necesita estar online en el Hub; la
+        # conectividad qemu+ssh la valida el preflight de la migración en vivo.
+        if self._is_live_mode():
+            return target.get("status") == "online"
+        # Modo Hub/NAS: online + KVM/libvirt en el destino (lo coordina el Hub;
+        # NO hace falta que origen y destino se vean entre sí).
         return bool(
-            target
-            and target.get("status") == "online"
+            target.get("status") == "online"
             and target.get("kvm_ok")
             and target.get("libvirt_ok")
-            and str(target.get("host_id") or "") != self.source_host_id.text().strip()
         )
 
     def _update_buttons(self) -> None:
@@ -1525,7 +1587,18 @@ class LiveMigrationDialog(QDialog):
             self.error_label.setText("No se puede mover una máquina encendida: apágala primero.")
             return
         if step == 1 and not self._target_ready():
-            self.error_label.setText("Elige un equipo de destino en línea, con KVM/libvirt listos y distinto del de origen.")
+            target = self._selected_target()
+            if not target:
+                msg = "Elige un equipo de destino del Hub. Si solo sale este equipo, arranca el agente en el otro."
+            elif str(target.get("host_id") or "") == self.source_host_id.text().strip():
+                msg = "El destino debe ser un equipo distinto del de origen."
+            elif target.get("status") != "online":
+                msg = "Ese equipo está sin conexión con el Hub. Arranca su agente."
+            elif self._is_live_mode():
+                msg = "El destino debe estar en línea en el Hub."
+            else:
+                msg = "El destino está en línea pero su KVM/libvirt no está listo para importar (lo coordina el Hub; no hace falta conectividad directa entre los equipos)."
+            self.error_label.setText(msg)
             return
         if step < 3:
             self.error_label.clear()
@@ -1557,17 +1630,35 @@ class LiveMigrationDialog(QDialog):
             self.invalidate_preflight()
             return
         self.hosts = hosts
-        for host in hosts:
-            host_id = str(host.get("host_id") or "")
-            status = str(host.get("status") or "offline")
-            label = f"{host_id} ({'en línea' if status == 'online' else 'sin conexión'})"
-            if host.get("hostname"):
-                label += f" - {host.get('hostname')}"
-            self.target_host.addItem(label, host_id)
+        import socket as _socket
+
+        # B5: destinos = hosts del Hub (excluido el origen). Sin descubrimiento
+        # de red ni conectividad directa: el Hub coordina.
+        candidates = hub_target_candidates(
+            hosts, self.source_host_id.text().strip(), source_hostname=_socket.gethostname()
+        )
+        self.target_candidates = candidates
+        for cand in candidates:
+            online = "en línea" if cand["online"] else "sin conexión"
+            label = f"{cand['host_id']} ({online})"
+            if cand["hostname"]:
+                label += f" · {cand['hostname']}"
+            if cand["address"]:
+                label += f" · {cand['address']}"
+            if cand["online"] and not cand["ready"]:
+                label += f" — {cand['reason']}"
+            self.target_host.addItem(label, cand["host_id"])
             index = self.target_host.count() - 1
-            self.target_host.model().item(index).setEnabled(status == "online")
+            item = self.target_host.model().item(index)
+            item.setEnabled(cand["ready"])
+            if not cand["ready"]:
+                item.setToolTip(cand["reason"])
         if not hosts:
             self.result_view.setPlainText("El Hub no tiene equipos. Arranca antes los agentes en el origen y el destino.")
+        elif not candidates:
+            self.result_view.setPlainText(
+                "El Hub solo conoce este equipo. Arranca el agente en el OTRO equipo y emparéjalo con el mismo Hub."
+            )
         else:
             self.result_view.setPlainText(self._format_hosts(hosts))
         self._render_target_summary()
@@ -1651,7 +1742,10 @@ class LiveMigrationDialog(QDialog):
             self.package_button.setEnabled(False)
             return
         if not target.get("kvm_ok") or not target.get("libvirt_ok"):
-            self.error_label.setText("El destino no está listo: falló la comprobación de KVM/libvirt.")
+            self.error_label.setText(
+                "El destino está online en el Hub pero su KVM/libvirt no está listo para importar. "
+                "Esto NO es un problema de conectividad entre los equipos: el Hub coordina el traslado."
+            )
             self.package_button.setEnabled(False)
             return
         if values["transfer"] == "hub":
