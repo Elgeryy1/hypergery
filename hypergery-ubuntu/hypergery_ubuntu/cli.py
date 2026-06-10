@@ -754,7 +754,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "migrate":
             return migrate_action(backend, args)
     except HyperGeryError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        # HG-BUG-0023: humanizar el stderr de virsh también fuera de la UI Qt.
+        from .ui_qt.humanize import humanize_error_message
+
+        print(f"ERROR: {humanize_error_message(str(exc))}", file=sys.stderr)
         return 2
     return 2
 

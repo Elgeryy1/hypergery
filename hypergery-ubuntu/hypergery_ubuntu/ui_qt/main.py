@@ -32,7 +32,10 @@ def main(argv: list[str] | None = None) -> int:
     from .. import APP_NAME, __version__
     from .icons import app_icon
     from .main_window import MainWindow
+    from .screenshot import cleanup_stale_previews
 
+    # HG-BUG-0019: barre capturas de preview huérfanas de una sesión anterior.
+    cleanup_stale_previews()
     configure_qt_application()
     app = QApplication(argv if argv is not None else sys.argv)
     app.setStyle("Fusion")
