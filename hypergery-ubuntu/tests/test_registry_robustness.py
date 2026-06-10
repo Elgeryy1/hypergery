@@ -141,6 +141,7 @@ class UploadLimitTests(unittest.TestCase):
             store,
             staging_dir=self.staging,
             max_upload_bytes=1024,
+            auth_token="hgtest-token",
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -155,6 +156,7 @@ class UploadLimitTests(unittest.TestCase):
 
     def _put(self, rel: str, data: bytes, headers: dict | None = None) -> int:
         request = Request(f"{self.base_url}/packages/mig-x/{rel}", data=data, method="PUT")
+        request.add_header("Authorization", "Bearer hgtest-token")
         for key, value in (headers or {}).items():
             request.add_header(key, value)
         try:

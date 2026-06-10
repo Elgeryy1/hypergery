@@ -12,9 +12,10 @@ from .hosts import HostRegistry
 from .labsx import filter_labs, validate_lab
 from .nas import NasService
 from .networks import networks_from_labs, validate_networks
+from .auth import ApiTokenStore, load_or_create_api_token, resolve_user
 from .orchestrator import OrchestratorService
 from .providers import VmInfo
-from .rbac import UserStore
+from .rbac import User, UserStore, require_permission
 from .settings import V1Settings
 from .telemetry import TelemetryService, evaluate_alerts
 from .external_nodes import ExternalNodeStore, health_check as node_health_check
@@ -121,9 +122,22 @@ def envelope(data: Any = None, *, error: dict[str, str] | None = None) -> dict[s
 
 
 class ApiServer(ThreadingHTTPServer):
-    def __init__(self, server_address: tuple[str, int], context: ApiContext) -> None:
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        context: ApiContext,
+        *,
+        auth_token: str | None = None,
+        token_store: ApiTokenStore | None = None,
+    ) -> None:
         super().__init__(server_address, ApiRequestHandler)
         self.context = context
+        # TD-5: token obligatorio por defecto. auth_token="" lo desactiva
+        # explícitamente (solo loopback/desarrollo; queda registrado).
+        self.auth_token = load_or_create_api_token() if auth_token is None else auth_token
+        self.token_store = token_store or ApiTokenStore()
+        if not self.auth_token:
+            get_logger().warning("api", "v1 API auth is DISABLED (explicit empty token).")
 
 
 class ApiRequestHandler(BaseHTTPRequestHandler):
@@ -156,6 +170,37 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         get_logger().warning("api", f"request failed: {exc}", details={"code": error_code(exc)})
         self._send(status, envelope(error={"code": error_code(exc), "message": str(exc)}))
 
+    def _authenticate(self) -> User | None:
+        """TD-5: Bearer token obligatorio (excepto GET /health).
+
+        Devuelve el usuario RBAC autenticado, o None si ya se envió el 401.
+        """
+        if not self.server.auth_token:
+            from .auth import OWNER_USER
+
+            return OWNER_USER
+        header = (self.headers.get("Authorization") or "").strip()
+        token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        user = resolve_user(
+            token,
+            owner_token=self.server.auth_token,
+            token_store=self.server.token_store,
+            user_store=self.server.context.user_store,
+        )
+        if user is not None:
+            return user
+        client_ip = self.client_address[0] if self.client_address else "?"
+        get_logger().warning(
+            "api",
+            f"auth failure: {self.command} {urlparse(self.path).path} from {client_ip}",
+            details={"ip": client_ip},
+        )
+        self._send(
+            401,
+            envelope(error={"code": "auth_required", "message": "Authentication required: Authorization: Bearer <token>."}),
+        )
+        return None
+
     def _read_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
@@ -185,6 +230,12 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             if path == ["health"]:
                 self._ok({"service": "hypergery-v1-api", "status": "ok"})
                 return
+            user = self._authenticate()
+            if user is None:
+                return
+            # RBAC (TD-5): lecturas generales → can_view_labs; la gestión de
+            # usuarios → can_manage_guests. require_permission audita siempre.
+            require_permission(user, "can_manage_guests" if path == ["guests"] else "can_view_labs")
             if path == ["hosts"]:
                 self._ok({"hosts": [host.to_dict() for host in context.host_registry.list_hosts()]})
                 return
@@ -272,10 +323,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001 - everything becomes an API error
             self._fail(exc)
 
+    POST_PERMISSIONS = {
+        ("orchestrator", "dry-run"): "can_use_remote_compute",
+        ("teleport", "dry-run"): "can_teleport",
+        ("teleport", "start"): "can_teleport",
+    }
+
     def do_POST(self) -> None:  # noqa: N802
         context = self.server.context
         path = [part for part in urlparse(self.path).path.split("/") if part]
+        user = self._authenticate()
+        if user is None:
+            return
         try:
+            require_permission(user, self.POST_PERMISSIONS.get(tuple(path), "can_change_settings"))
             body = self._read_body()
             if path == ["orchestrator", "dry-run"]:
                 plans = context.orchestrator_plan(
@@ -329,24 +390,25 @@ def serve_api(
 ) -> None:
     """Blocking API server (CLI entry point).
 
-    The API has no authentication yet (see NEXT_STEPS_V12_SECURITY.md), and
-    /teleport/start can suspend a live VM. Binding to a non-loopback address
-    therefore requires an explicit opt-in so it cannot happen by passing a
-    single --host flag by mistake.
+    v1.2: bearer token obligatorio (token de propietario o tokens por
+    usuario RBAC). Aun así el transporte es HTTP plano: para salir del
+    loopback hace falta opt-in explícito, y para salir de la LAN un reverse
+    proxy TLS o VPN (docs/HUB_SECURITY.md).
     """
     context = context or ApiContext()
     bind_host = host or context.settings.api_host
     bind_port = port or context.settings.api_port
     if bind_host not in LOOPBACK_HOSTS and not allow_remote:
         raise HyperGeryError(
-            f"Refusing to bind the unauthenticated v1 API to a non-loopback address ({bind_host}). "
-            "It exposes host/VM inventory and /teleport/start to the network. "
-            "Pass allow_remote=True (CLI: --allow-remote) only on a trusted LAN."
+            f"Refusing to bind the v1 API to a non-loopback address ({bind_host}) without explicit opt-in. "
+            "It exposes host/VM inventory and /teleport/start to the network over plain HTTP. "
+            "Pass allow_remote=True (CLI: --allow-remote) only on a trusted LAN, ideally behind TLS."
         )
     server = ApiServer((bind_host, bind_port), context)
     if bind_host not in LOOPBACK_HOSTS:
         get_logger().warning(
-            "api", f"v1 API bound to NON-LOOPBACK {bind_host}:{bind_port} with no authentication — trusted LAN only."
+            "api",
+            f"v1 API bound to NON-LOOPBACK {bind_host}:{bind_port} over plain HTTP — use a TLS reverse proxy or VPN.",
         )
     get_logger().info("api", f"v1 API listening on http://{bind_host}:{bind_port}")
     try:

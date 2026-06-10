@@ -71,7 +71,10 @@ class ApiTests(unittest.TestCase):
             local_vms=lambda: [VmInfo(id="local-vm", ram_mb=2048, status="running", host_id="laptop", lab_id="asr-lab")],
             hub_client=hub_client,
         )
-        cls.server = ApiServer(("127.0.0.1", 0), context)
+        from hypergery_ubuntu.v1.auth import ApiTokenStore
+
+        cls.token_store = ApiTokenStore(root / "api_tokens.json")
+        cls.server = ApiServer(("127.0.0.1", 0), context, auth_token="test-owner-token", token_store=cls.token_store)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
@@ -83,14 +86,19 @@ class ApiTests(unittest.TestCase):
         cls.thread.join(timeout=5)
         cls.tmp.cleanup()
 
-    def get(self, path):
-        with urlopen(Request(self.base + path, method="GET"), timeout=10) as response:
+    def get(self, path, token="test-owner-token"):
+        request = Request(self.base + path, method="GET")
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
+        with urlopen(request, timeout=10) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
 
-    def post(self, path, payload=None):
+    def post(self, path, payload=None, token="test-owner-token"):
         data = json.dumps(payload or {}).encode("utf-8")
         request = Request(self.base + path, data=data, method="POST")
         request.add_header("Content-Type", "application/json")
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
         with urlopen(request, timeout=10) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
 

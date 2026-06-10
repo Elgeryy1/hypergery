@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import time
@@ -11,6 +12,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ..backend import HyperGeryError
+from .auth import AuthRateLimiter, bearer_token, load_or_create_hub_token, token_matches
 from .store import MIGRATION_STATUSES, RegistryStore
 
 TRANSFER_CHUNK_BYTES = 1024 * 1024
@@ -239,11 +241,18 @@ class RegistryServer(ThreadingHTTPServer):
         *,
         staging_dir: str | Path | None = None,
         max_upload_bytes: int | None = None,
+        auth_token: str | None = None,
     ) -> None:
         super().__init__(server_address, RegistryRequestHandler)
         self.store = store
         self.staging_dir = Path(staging_dir).expanduser() if staging_dir else default_staging_dir(store.db_path)
         self.max_upload_bytes = default_max_upload_bytes() if max_upload_bytes is None else max(0, int(max_upload_bytes))
+        # HG-BUG-0001: token obligatorio por defecto. auth_token="" lo
+        # desactiva explícitamente (solo LAN de confianza; queda registrado).
+        self.auth_token = load_or_create_hub_token(store.db_path) if auth_token is None else auth_token
+        if not self.auth_token:
+            logging.warning("Hub auth is DISABLED (explicit empty token). Only safe on a trusted LAN.")
+        self.auth_limiter = AuthRateLimiter()
 
 
 class RegistryRequestHandler(BaseHTTPRequestHandler):
@@ -262,6 +271,46 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
 
     def _send_error(self, status: int, message: str) -> None:
         self._send_json(status, {"error": message})
+
+    def _authenticate(self) -> bool:
+        """HG-BUG-0001: Bearer token obligatorio en todo excepto GET /health.
+
+        Los fallos se auditan en la tabla de eventos y se limitan por IP
+        (anti fuerza bruta). Devuelve False si ya se envió una respuesta.
+        """
+        if not self.server.auth_token:
+            return True
+        path = [part for part in urlparse(self.path).path.split("/") if part]
+        if self.command == "GET" and path == ["health"]:
+            return True
+        client_ip = self.client_address[0] if self.client_address else "?"
+        if self.server.auth_limiter.is_blocked(client_ip):
+            self._send_error(429, "Too many failed authentication attempts. Try again later.")
+            return False
+        presented = bearer_token(self.headers.get("Authorization"))
+        if token_matches(self.server.auth_token, presented):
+            self.server.auth_limiter.record_success(client_ip)
+            return True
+        self.server.auth_limiter.record_failure(client_ip)
+        logging.warning("Hub auth failure from %s for %s %s", client_ip, self.command, self.path)
+        try:
+            self.server.store.create_event(
+                {
+                    "kind": "auth_failure",
+                    "message": f"Rejected {self.command} {urlparse(self.path).path} from {client_ip}",
+                    "payload": {"ip": client_ip, "method": self.command},
+                }
+            )
+        except Exception:
+            pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", "Bearer")
+        body = json.dumps({"error": "Authentication required: send Authorization: Bearer <hub token>."}).encode("utf-8")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return False
 
     def _package_parts(self) -> tuple[str, str] | None:
         """Return (migration_id, rel_path) for /packages/... URLs, else None."""
@@ -336,6 +385,8 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
         self._send_json(201, {"migration_id": migration_id, "path": rel_path, "size_bytes": length})
 
     def do_PUT(self) -> None:  # noqa: N802
+        if not self._authenticate():
+            return
         try:
             package = self._package_parts()
             if package is None:
@@ -348,6 +399,8 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
             self._send_error(500, str(exc))
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if not self._authenticate():
+            return
         try:
             package = self._package_parts()
             if package is None:
@@ -367,6 +420,8 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
             self._send_error(500, str(exc))
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._authenticate():
+            return
         try:
             if [part for part in urlparse(self.path).path.split("/") if part] == ["packages"]:
                 self._send_json(200, list_staged_packages(self.server.staging_dir, self.server.store))
@@ -446,6 +501,8 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
             self._send_error(500, str(exc))
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._authenticate():
+            return
         try:
             path = [part for part in urlparse(self.path).path.split("/") if part]
             body = _read_json(self)
@@ -501,9 +558,19 @@ def serve_registry(
     offline_timeout_seconds: int = 90,
     staging_dir: str | Path | None = None,
     max_upload_bytes: int | None = None,
+    auth_token: str | None = None,
 ) -> None:
     store = RegistryStore(db_path, offline_timeout_seconds=offline_timeout_seconds)
-    server = RegistryServer((host, port), store, staging_dir=staging_dir, max_upload_bytes=max_upload_bytes)
+    server = RegistryServer(
+        (host, port),
+        store,
+        staging_dir=staging_dir,
+        max_upload_bytes=max_upload_bytes,
+        auth_token=auth_token,
+    )
+    if server.auth_token:
+        token_path = Path(store.db_path).expanduser().parent / "hub_token"
+        logging.info("Hub auth enabled (token from %s)", "env" if os.environ.get("HYPERGERY_HUB_TOKEN") else token_path)
     try:
         server.serve_forever()
     finally:

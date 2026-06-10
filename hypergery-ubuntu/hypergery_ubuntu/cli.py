@@ -243,6 +243,7 @@ def registry_action(args: argparse.Namespace) -> int:
             args.port,
             db_path=args.db_path,
             offline_timeout_seconds=args.offline_timeout,
+            auth_token="" if args.no_auth else (args.token or None),
         )
         return 0
     if args.registry_command == "health":
@@ -308,8 +309,16 @@ def hub_action(args: argparse.Namespace) -> int:
             db_path=args.db_path,
             offline_timeout_seconds=args.offline_timeout,
             staging_dir=args.staging_dir or None,
+            auth_token="" if args.no_auth else (args.token or None),
         )
         return 0
+    if args.hub_command == "pairing-info":
+        from .registry.auth import load_or_create_hub_token
+
+        store = RegistryStore(args.db_path or None)
+        token = load_or_create_hub_token(store.db_path)
+        print("ADVERTENCIA: el token es un secreto. Compártelo solo por un canal seguro (TLS/VPN).", file=sys.stderr)
+        return print_json({"hub_url": args.hub_url, "token": token, "pair_uri": f"hypergery://pair?url={args.hub_url}&token={token}"})
     if args.hub_command == "init-db":
         store = RegistryStore(args.db_path)
         return print_json({"ok": True, "db_path": str(store.db_path)})
@@ -568,6 +577,8 @@ def main(argv: list[str] | None = None) -> int:
     registry_serve.add_argument("--port", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_PORT", "8765")))
     registry_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_REGISTRY_DB", ""))
     registry_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90")))
+    registry_serve.add_argument("--token", default="", help="Hub auth token. Default: HYPERGERY_HUB_TOKEN or auto-generated hub_token file next to the DB.")
+    registry_serve.add_argument("--no-auth", action="store_true", help="DANGEROUS: disable Hub authentication (trusted LAN only).")
     registry_health = registry_sub.add_parser("health")
     registry_health.add_argument("--registry-url", default=default_hub_url())
     hub_parser = sub.add_parser("hub", help="Run or query the HyperGery Hub control plane.")
@@ -578,8 +589,13 @@ def main(argv: list[str] | None = None) -> int:
     hub_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
     hub_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_HUB_OFFLINE_TIMEOUT", os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90"))))
     hub_serve.add_argument("--staging-dir", default=os.environ.get("HYPERGERY_HUB_STAGING", ""))
+    hub_serve.add_argument("--token", default="", help="Hub auth token. Default: HYPERGERY_HUB_TOKEN or auto-generated hub_token file next to the DB.")
+    hub_serve.add_argument("--no-auth", action="store_true", help="DANGEROUS: disable Hub authentication (trusted LAN only).")
     hub_health = hub_sub.add_parser("health")
     hub_health.add_argument("--hub-url", default=default_hub_url())
+    hub_pairing = hub_sub.add_parser("pairing-info", help="Print the Hub URL and token for pairing another host or the mobile app. The token is a SECRET.")
+    hub_pairing.add_argument("--hub-url", default=default_hub_url())
+    hub_pairing.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
     hub_init = hub_sub.add_parser("init-db")
     hub_init.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
     hub_vms = hub_sub.add_parser("vms")

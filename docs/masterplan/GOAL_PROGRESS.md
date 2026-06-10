@@ -6,7 +6,7 @@
 ## Estado global
 
 - **Baseline verificado:** `main` @ 2148aec — `compileall` OK, `pytest -q` = **667 passed, 1 skipped** (30.8s), venv `~/.venvs/hypergery` (Python 3.14).
-- **Milestone actual:** M6 — v1.2 seguridad Hub (token/TLS/RBAC/audit).
+- **Milestone actual:** M7 — v1.3 Template Store + Backup Verifier + snapshots + tags.
 - **Ramas:** las ramas de milestone van encadenadas (cada una parte de la anterior) para no perder la versión 1.1.0.dev0 ni este fichero: `feat/v1.1-app-identity` → `feat/v1.1-jobmanager` → …
 
 ## Milestones (orden §10 del goalplan)
@@ -18,8 +18,8 @@
 | 3 | v1.1 Hub robusto (busy_timeout/WAL, TTL, upload) (0005/0006/0010) | HECHO |
 | 4 | v1.1 redes coherentes + colisión octetos (0009/0012/0016) | HECHO |
 | 5 | v1.1 needsRealLibvirt + higiene (0011/0017/0018, retirar Tk) | HECHO |
-| 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | EN CURSO |
-| 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | pendiente |
+| 6 | v1.2 token/TLS + RBAC enforced + audit log (0001, TD-5) | HECHO |
+| 7 | v1.3 Template Store + Backup Verifier + snapshots + tags | EN CURSO |
 | 8 | v1.4 orchestrator aplicable + /telemetry + health + API companion | pendiente |
 | 9 | v1.5 prep migration_engine (TD-4) + canal progreso (TD-9) | pendiente |
 | 10 | v1.5 live migration en caliente + preflight + wizard | pendiente |
@@ -71,6 +71,16 @@
 - HG-BUG-0017 (resto): app_tk.py eliminado → ya no existe ninguna versión duplicada; test de versión única sin exclusiones.
 - HG-BUG-0018: eliminados HTML/zip de diseño (~5MB) de docs/design/v0.7 (recuperables del historial git); V09/V10_REPORT, V09_V10_START_STATE, RESUMEN_EJECUTIVO_SESION, FINAL_V09_V10_HANDOVER movidos a docs/archive/. TD-7: app_tk retirado; dev-run.sh sin --legacy-tk; ARCHITECTURE.md actualizado.
 - Gates: compileall OK; pytest = 721 passed, 7 skipped (6 = suite real gated + 1 preexistente); con HYPERGERY_REAL_LIBVIRT=1 → 6/6 PASS reales.
+
+## M6 — v1.2 seguridad Hub/API (HECHO)
+
+- Rama `feat/v1.2-hub-security` (encadenada sobre M5, pusheada).
+- **HG-BUG-0001 (Hub):** `registry/auth.py` — token bearer obligatorio por defecto (env `HYPERGERY_HUB_TOKEN` > fichero `hub_token` 0600 autogenerado junto a la DB); 401 sin/con token erróneo (comparación constante con hmac); `GET /health` abierto; rate limit anti fuerza bruta (10 fallos/60s por IP → 429); cada rechazo auditado en eventos del Hub (`auth_failure`); `--no-auth` explícito (con warning) para LAN de confianza; bind por defecto sigue 127.0.0.1.
+- Cliente/agente: `RegistryClient(token=...)` añade `Authorization: Bearer` en request() y en upload/download; config con campo `hub_token` (fichero config ahora 0600); `AgentConfig.registry_token` (redactado en `config show`); docker-compose pasa `HYPERGERY_HUB_TOKEN`.
+- **TD-5 (API v1):** `v1/auth.py` — token de propietario (SuperAdmin, `api_token` 0600) + tokens por usuario (`api_tokens.json` 0600, `v1 guests token <user>` / `--revoke`); RBAC enforced en `v1/api.py`: 401 sin token; lecturas → can_view_labs; /guests → can_manage_guests; orchestrator/dry-run → can_use_remote_compute; teleport/* → can_teleport; require_permission audita en hglog; tests de escalada (Guest con extra_permissions prohibidos sigue 403; token revocado → 401).
+- Pairing: `hypergery-cli hub pairing-info` (URL+token+pair_uri, aviso de secreto). TLS: `docs/HUB_SECURITY.md` (Caddy/nginx, VPN/SSH, nunca exponer a Internet).
+- Gates: compileall OK; pytest = **742 passed, 7 skipped** (21 tests nuevos en test_security_v12.py + harnesses actualizados).
+- UAT automatizable: U7 (token/RBAC/escalada) PASS por tests.
 
 ## M1 (notas de auditoría originales)
 
