@@ -86,18 +86,24 @@ PROFILES: dict[str, VmProfile] = {
         machine="q35",
         firmware="uefi-secure",
         tpm=True,
+        # El instalador de Windows NO trae drivers virtio: disco SATA y red
+        # e1000 para que vea el disco y la red sin pasos extra.
+        disk_bus="sata",
+        net_model="e1000",
         min_ram_mib=4096,
         min_disk_gb=64,
-        notes="Requisitos de Microsoft: UEFI, Secure Boot y TPM 2.0. Necesita ovmf + swtpm.",
+        notes="Requisitos de Microsoft: UEFI, Secure Boot y TPM 2.0. Necesita ovmf + swtpm. Disco SATA + red e1000 (sin virtio) para que el instalador los detecte.",
     ),
     "windows-legacy": VmProfile(
         key="windows-legacy",
         label="Windows 10 / 8 (UEFI, sin TPM)",
         os_type="Windows",
         firmware="uefi",
+        disk_bus="sata",
+        net_model="e1000",
         min_ram_mib=2048,
         min_disk_gb=40,
-        notes="Windows 10 y anteriores: UEFI sin el requisito de TPM de Windows 11.",
+        notes="Windows 10 y anteriores: UEFI sin el requisito de TPM de Windows 11. Disco SATA + red e1000.",
     ),
     "other": VmProfile(
         key="other",

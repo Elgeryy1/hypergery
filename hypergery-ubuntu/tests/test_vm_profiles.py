@@ -126,6 +126,63 @@ class WindowsXmlTests(unittest.TestCase):
         self.assertEqual(root.find("./devices/disk[@device='disk']/target").attrib["bus"], "virtio")
 
 
+class MigratableCpuTests(unittest.TestCase):
+    def _xml(self, migratable: bool) -> ET.Element:
+        backend = _XmlBackend()
+        xml = backend.domain_xml(
+            name="hgtest-mig",
+            iso_path="/isos/ubuntu.iso",
+            os_type="Linux",
+            ram_mib=2048,
+            vcpus=2,
+            disk_path="/tmp/hgtest-mig.qcow2",
+            network_id="hg-net-default-lab",
+            lab_id="default-lab",
+            migratable_cpu=migratable,
+        )
+        return ET.fromstring(xml)
+
+    def test_default_uses_host_passthrough(self):
+        cpu = self._xml(False).find("./cpu")
+        self.assertEqual(cpu.attrib.get("mode"), "host-passthrough")
+
+    def test_migratable_uses_portable_baseline_model(self):
+        root = self._xml(True)
+        cpu = root.find("./cpu")
+        self.assertEqual(cpu.attrib.get("mode"), "custom")
+        self.assertEqual(cpu.find("model").text, "qemu64")
+        self.assertEqual(
+            root.find(f"./metadata/{{{HG_NS}}}hypergery/{{{HG_NS}}}migratable_cpu").text, "true"
+        )
+
+
+class WindowsDeviceBusTests(unittest.TestCase):
+    def _win11_xml(self) -> ET.Element:
+        backend = _XmlBackend()
+        with patch.object(vp, "resolve_ovmf", return_value={"code": "/x/CODE.fd", "vars": "/x/VARS.fd", "secure_boot": "no"}):
+            xml = backend.domain_xml(
+                name="hgtest-win",
+                iso_path="/isos/win11.iso",
+                os_type="Windows",
+                ram_mib=4096,
+                vcpus=2,
+                disk_path="/tmp/hgtest-win.qcow2",
+                network_id="hg-net-default-lab",
+                lab_id="default-lab",
+                profile_key="windows11",
+            )
+        return ET.fromstring(xml)
+
+    def test_windows_uses_sata_disk_and_e1000_net_no_collision(self):
+        root = self._win11_xml()
+        disk = root.find("./devices/disk[@device='disk']/target")
+        self.assertEqual(disk.attrib["bus"], "sata")
+        self.assertEqual(disk.attrib["dev"], "sda")
+        cdrom = root.find("./devices/disk[@device='cdrom']/target")
+        self.assertEqual(cdrom.attrib["dev"], "sdb")  # sin colisión con el disco
+        self.assertEqual(root.find("./devices/interface/model").attrib["type"], "e1000")
+
+
 class IsoValidationTests(unittest.TestCase):
     def test_missing_iso_fails(self):
         result = vp.validate_iso("/nope/does-not-exist.iso")

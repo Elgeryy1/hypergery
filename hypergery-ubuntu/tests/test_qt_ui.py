@@ -105,7 +105,10 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
-    def test_live_migration_dialog_blocks_running_vm(self):
+    def test_hub_mode_still_blocks_running_vm(self):
+        # Una VM encendida NO se puede copiar por Hub (eso la apagaría); si se
+        # fuerza el modo Hub, el preflight la rechaza. (El modo correcto para una
+        # VM encendida es «migración en vivo», cubierto en otros tests.)
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
         MigrationFakeBackend = migration_fake_backend()
@@ -115,12 +118,31 @@ class QtUiTests(unittest.TestCase):
             with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
                 registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
                 dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
-            dialog.nas_path.setText(str(Path(tmp) / "nas"))
+            dialog.transfer_mode.setCurrentIndex(dialog.transfer_mode.findData("hub"))
             dialog.target_host.setCurrentIndex(0)
             dialog.run_preflight()
 
             self.assertFalse(dialog.package_button.isEnabled())
             self.assertIn("Running VM migration is blocked", dialog.result_view.toPlainText())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_running_vm_defaults_to_live_mode_and_can_advance(self):
+        # B3/fix: una VM encendida ya no queda bloqueada en el paso 1; entra en
+        # modo «migración en vivo» y puede avanzar para configurarla.
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp), state="running")
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+            self.assertEqual(str(dialog.transfer_mode.currentData()), "live")
+            self.assertTrue(dialog.next_button.isEnabled())
+            dialog.go_next()
+            self.assertEqual(dialog.current_step(), 1)  # avanzó, no se quedó bloqueado
             dialog.close()
         self.assertIsNotNone(app)
 
@@ -1077,13 +1099,13 @@ class QtUiTests(unittest.TestCase):
                 ["Elegir máquina", "Equipo destino", "Opciones", "Comprobación", "Progreso", "Resultado"],
             )
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("no es migración de RAM en vivo", texts)
             self.assertIn("La máquina original y sus discos no se borran.", texts)
-            self.assertIn("Debe estar apagada", texts)
+            # VM apagada → chip de modo «Copia por Hub/NAS».
+            self.assertIn("Copia por Hub/NAS", texts)
             dialog.close()
         self.assertIsNotNone(app)
 
-    def test_migration_wizard_running_vm_blocks_next_with_callout(self):
+    def test_migration_wizard_running_vm_shows_live_mode_callout(self):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QLabel
         from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
@@ -1096,11 +1118,11 @@ class QtUiTests(unittest.TestCase):
                 dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
 
             self.assertEqual(dialog.current_step(), 0)
-            self.assertFalse(dialog.next_button.isEnabled())
+            # Ya NO se bloquea: el botón Siguiente está activo para una VM encendida.
+            self.assertTrue(dialog.next_button.isEnabled())
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("No se puede mover una máquina encendida", texts)
-            dialog.go_next()
-            self.assertEqual(dialog.current_step(), 0)
+            self.assertIn("se usará migración en vivo", texts)
+            self.assertNotIn("No se puede mover una máquina encendida", texts)
             dialog.close()
         self.assertIsNotNone(app)
 

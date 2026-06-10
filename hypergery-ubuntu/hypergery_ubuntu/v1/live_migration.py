@@ -280,8 +280,10 @@ class LiveMigrator:
         cpu_xml = ET.tostring(root.find("./cpu"), encoding="unicode") if root.find("./cpu") is not None else ""
         if cpu_xml and "host-passthrough" in cpu_xml:
             warnings.append(
-                "CPU mode host-passthrough: migration requires identical CPUs on both hosts "
-                "(consider host-model or a custom baseline)."
+                "Esta VM usa la CPU real del equipo (host-passthrough): la migración en vivo "
+                "SOLO funcionará entre equipos con CPU del mismo fabricante. Si el origen es AMD "
+                "y el destino Intel (o al revés), fallará. Para migrar en caliente entre equipos "
+                "distintos, recrea la VM marcando «preparar para migración en vivo» (CPU compatible)."
             )
 
         report("Decidiendo estrategia de almacenamiento", fraction=0.85)

@@ -666,6 +666,7 @@ class HyperGeryBackend:
         display_mode: str = "spice",
         lab_id: str = "default-lab",
         profile: str = "",
+        migratable_cpu: bool = False,
     ) -> VmSummary:
         from .vm_profiles import preflight_profile, profile_for, validate_iso
 
@@ -715,6 +716,7 @@ class HyperGeryBackend:
             lab_id=lab_id,
             display_mode=display_mode,
             profile_key=vm_profile.key,
+            migratable_cpu=migratable_cpu,
         )
         self.define_domain_xml(xml)
         self.update_lab_for_vm(lab_id, name, str(disk_path), str(iso), network_id)
@@ -772,6 +774,7 @@ class HyperGeryBackend:
         lab_id: str,
         display_mode: str = "spice",
         profile_key: str = "",
+        migratable_cpu: bool = False,
     ) -> str:
         from .vm_profiles import profile_for, resolve_ovmf
 
@@ -790,6 +793,7 @@ class HyperGeryBackend:
         ET.SubElement(hg, f"{{{HG_NS}}}created_at").text = now_iso()
         ET.SubElement(hg, f"{{{HG_NS}}}os_type").text = os_type
         ET.SubElement(hg, f"{{{HG_NS}}}profile").text = vm_profile.key
+        ET.SubElement(hg, f"{{{HG_NS}}}migratable_cpu").text = "true" if migratable_cpu else "false"
         ET.SubElement(hg, f"{{{HG_NS}}}iso_path").text = iso_path
         ET.SubElement(hg, f"{{{HG_NS}}}disk_path").text = disk_path
         ET.SubElement(hg, f"{{{HG_NS}}}network_id").text = network_id
@@ -823,7 +827,15 @@ class HyperGeryBackend:
         # Secure Boot requiere SMM activado en q35/OVMF.
         if vm_profile.firmware == "uefi-secure" and resolve_ovmf(secure_boot=True).get("secure_boot") == "yes":
             ET.SubElement(features, "smm", {"state": "on"})
-        ET.SubElement(domain, "cpu", {"mode": "host-passthrough", "check": "none"})
+        if migratable_cpu:
+            # CPU baseline portable: permite live migration entre equipos con CPU
+            # distinta (p. ej. AMD ↔ Intel). Pierde algo de rendimiento frente a
+            # host-passthrough, pero es la única forma de migrar en caliente
+            # cross-vendor (el invitado no ve features específicas de un fabricante).
+            cpu_el = ET.SubElement(domain, "cpu", {"mode": "custom", "match": "exact", "check": "partial"})
+            ET.SubElement(cpu_el, "model", {"fallback": "allow"}).text = "qemu64"
+        else:
+            ET.SubElement(domain, "cpu", {"mode": "host-passthrough", "check": "none"})
         ET.SubElement(domain, "clock", {"offset": "utc"})
         on_poweroff = ET.SubElement(domain, "on_poweroff")
         on_poweroff.text = "destroy"
@@ -834,16 +846,18 @@ class HyperGeryBackend:
         disk = ET.SubElement(devices, "disk", {"type": "file", "device": "disk"})
         ET.SubElement(disk, "driver", {"name": "qemu", "type": "qcow2", "discard": "unmap"})
         ET.SubElement(disk, "source", {"file": disk_path})
-        disk_target_dev = "vda" if vm_profile.disk_bus == "virtio" else "sda"
+        disk_is_sata = vm_profile.disk_bus != "virtio"
+        disk_target_dev = "sda" if disk_is_sata else "vda"
         ET.SubElement(disk, "target", {"dev": disk_target_dev, "bus": vm_profile.disk_bus})
         cdrom = ET.SubElement(devices, "disk", {"type": "file", "device": "cdrom"})
         ET.SubElement(cdrom, "driver", {"name": "qemu", "type": "raw"})
         ET.SubElement(cdrom, "source", {"file": iso_path})
-        ET.SubElement(cdrom, "target", {"dev": "sda", "bus": "sata"})
+        # El CD-ROM va por SATA; si el disco principal ya ocupa 'sda', el CD usa 'sdb'.
+        ET.SubElement(cdrom, "target", {"dev": "sdb" if disk_is_sata else "sda", "bus": "sata"})
         ET.SubElement(cdrom, "readonly")
         iface = ET.SubElement(devices, "interface", {"type": "network"})
         ET.SubElement(iface, "source", {"network": network_id})
-        ET.SubElement(iface, "model", {"type": "virtio"})
+        ET.SubElement(iface, "model", {"type": vm_profile.net_model})
         ET.SubElement(devices, "input", {"type": "tablet", "bus": "usb"})
         ET.SubElement(devices, "graphics", {"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
         video = ET.SubElement(devices, "video")

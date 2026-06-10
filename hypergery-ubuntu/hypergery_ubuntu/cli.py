@@ -70,6 +70,8 @@ def create_vm(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
         network_mode=args.network,
         display_mode=args.display,
         lab_id=args.lab_id,
+        profile=getattr(args, "profile", ""),
+        migratable_cpu=getattr(args, "migratable_cpu", False),
     )
     print(f"created={vm.name}")
     print(f"state={vm.state}")
@@ -550,6 +552,16 @@ def main(argv: list[str] | None = None) -> int:
     create_parser.add_argument("--network", choices=["nat", "isolated"], default="nat")
     create_parser.add_argument("--display", choices=["spice", "vnc"], default="spice")
     create_parser.add_argument("--lab-id", default="default-lab")
+    create_parser.add_argument(
+        "--profile",
+        default="",
+        help="VM profile: linux | linux-uefi | windows11 | windows-legacy | other (overrides --os-type).",
+    )
+    create_parser.add_argument(
+        "--migratable-cpu",
+        action="store_true",
+        help="Use a portable baseline CPU so the running VM can be live-migrated between different hosts (AMD<->Intel).",
+    )
     for command, help_text in (
         ("start", "Start a real libvirt VM."),
         ("shutdown", "Request ACPI shutdown for a real libvirt VM."),

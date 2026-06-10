@@ -60,6 +60,8 @@ class CliTests(unittest.TestCase):
             network_mode="nat",
             display_mode="spice",
             lab_id="default-lab",
+            profile="",
+            migratable_cpu=False,
         )
 
     @patch("hypergery_ubuntu.cli.HyperGeryBackend")

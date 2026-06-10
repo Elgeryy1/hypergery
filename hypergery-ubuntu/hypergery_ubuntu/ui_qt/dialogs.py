@@ -558,6 +558,8 @@ class IntegrationPage(QWizardPage):
             if idx >= 0:
                 self.display.setCurrentIndex(idx)
         self.lab_id = QLineEdit(default_lab_id or "default-lab")
+        # Live migration entre equipos con CPU distinta (AMD↔Intel).
+        self.migratable_cpu = QCheckBox("Preparar para migración en vivo entre equipos (CPU compatible)")
 
         disk_row = QHBoxLayout()
         disk_row.addWidget(self.disk_dir, 1)
@@ -568,6 +570,14 @@ class IntegrationPage(QWizardPage):
         form.addRow("Red", self.network)
         form.addRow("Pantalla", self.display)
         form.addRow("Laboratorio", self.lab_id)
+        form.addRow("Migración", self.migratable_cpu)
+        cpu_hint = QLabel(
+            "Márcalo si vas a mover esta máquina ENCENDIDA entre tu sobremesa y el portátil. "
+            "Usa una CPU compatible (un poco menos rápida) para que funcione entre AMD e Intel."
+        )
+        cpu_hint.setObjectName("mutedLabel")
+        cpu_hint.setWordWrap(True)
+        form.addRow("", cpu_hint)
         hint = QLabel("Si dejas la carpeta vacía se usa ~/.local/share/hypergery/vms/<nombre>/")
         hint.setObjectName("mutedLabel")
         form.addRow("", hint)
@@ -682,6 +692,7 @@ class VMWizard(QWizard):
             "network_mode": self.integration_page.network.currentText(),
             "display_mode": self.integration_page.display.currentText(),
             "lab_id": self.integration_page.lab_id.text().strip() or "default-lab",
+            "migratable_cpu": self.integration_page.migratable_cpu.isChecked(),
         }
 
 
@@ -1256,8 +1267,9 @@ class LiveMigrationDialog(QDialog):
         title = QLabel(f"Mover a otro equipo · {vm.name}")
         title.setObjectName("pageTitle")
         strategy_note = QLabel(
-            "La máquina se copia a otro equipo (no es migración de RAM en vivo). La máquina original y sus discos "
-            "no se tocan; en el destino se importa una copia con UUID y MAC nuevos."
+            "Si la máquina está APAGADA se copia al otro equipo por el Hub/NAS (el original no se toca, "
+            "se importa una copia con UUID y MAC nuevos). Si está ENCENDIDA se usa migración en vivo: "
+            "la RAM se traspasa en caliente y solo se congela unos milisegundos al final."
         )
         strategy_note.setObjectName("calloutInfo")
         strategy_note.setWordWrap(True)
@@ -1327,6 +1339,11 @@ class LiveMigrationDialog(QDialog):
         self.target_host.currentIndexChanged.connect(self.invalidate_preflight)
         self.target_host.currentIndexChanged.connect(self._render_target_summary)
         self.transfer_mode.currentIndexChanged.connect(self._on_transfer_mode_changed)
+        # VM encendida → modo «migración en vivo» por defecto; apagada → «Hub».
+        if "running" in (self.vm.state or "").lower():
+            live_idx = self.transfer_mode.findData("live")
+            if live_idx >= 0:
+                self.transfer_mode.setCurrentIndex(live_idx)
         self._on_transfer_mode_changed()
 
         self._set_step(0)
@@ -1368,11 +1385,11 @@ class LiveMigrationDialog(QDialog):
         running = "running" in (self.vm.state or "").lower()
         state_chip = QLabel(humanize_vm_status(self.vm.state, "table"))
         state_chip.setObjectName("statusChipBad" if running else "statusChipOk")
-        must_off = QLabel("Debe estar apagada")
-        must_off.setObjectName("statusChipWarn")
+        mode_chip = QLabel("Migración en vivo" if running else "Copia por Hub/NAS")
+        mode_chip.setObjectName("statusChipWarn")
         head.addWidget(name)
         head.addWidget(state_chip)
-        head.addWidget(must_off)
+        head.addWidget(mode_chip)
         head.addStretch()
         card_layout.addLayout(head)
         detail = QLabel(
@@ -1385,8 +1402,10 @@ class LiveMigrationDialog(QDialog):
         layout.addWidget(card)
         if running:
             layout.addWidget(self._wizard_callout(
-                "No se puede mover una máquina encendida. Apágala primero con «Apagar (suave)».",
-                "calloutDanger",
+                "Máquina ENCENDIDA: se usará migración en vivo (modo avanzado). La VM sigue "
+                "funcionando durante el traslado y solo se congela unos milisegundos al final. "
+                "Necesita conexión libvirt directa (qemu+ssh) entre los equipos.",
+                "calloutInfo",
             ))
         form = QFormLayout()
         form.addRow("URL del Hub", self.registry_url)
@@ -1573,8 +1592,10 @@ class LiveMigrationDialog(QDialog):
             step == 5 and bool(self.last_status) and str(self.last_status.get("status")) == "failed"
         )
         if step == 0:
-            self.next_button.setEnabled(not self._vm_running() and not self.allow_paused.isChecked() or self.allow_paused.isChecked() and not self._vm_running())
-            self.next_button.setEnabled(not self._vm_running())
+            # Una VM ENCENDIDA puede avanzar: el único modo válido será la
+            # migración en vivo (los modos Hub/NAS la rechazan en su preflight).
+            # Una VM APAGADA también avanza (modos Hub/NAS). Nunca se bloquea aquí.
+            self.next_button.setEnabled(True)
         elif step == 1:
             self.next_button.setEnabled(self._target_ready())
         elif step == 2:
@@ -1583,9 +1604,12 @@ class LiveMigrationDialog(QDialog):
 
     def go_next(self) -> None:
         step = self.current_step()
+        # VM encendida → fuerza el modo «migración en vivo» (es el único que la
+        # acepta sin apagarla); VM apagada → deja los modos de copia (Hub/NAS).
         if step == 0 and self._vm_running():
-            self.error_label.setText("No se puede mover una máquina encendida: apágala primero.")
-            return
+            live_idx = self.transfer_mode.findData("live")
+            if live_idx >= 0 and str(self.transfer_mode.currentData() or "") != "live":
+                self.transfer_mode.setCurrentIndex(live_idx)
         if step == 1 and not self._target_ready():
             target = self._selected_target()
             if not target:
