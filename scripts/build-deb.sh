@@ -26,8 +26,10 @@ if [ ! -d "$SRC_DIR/hypergery_ubuntu" ]; then
 fi
 
 VERSION="$(PYTHONPATH="$SRC_DIR" python3 -c 'import hypergery_ubuntu; print(hypergery_ubuntu.__version__)')"
-# PEP 440 → versión Debian: 1.1.0.dev0 → 1.1.0~dev0 (las pre-releases ordenan antes).
+# PEP 440 → versión Debian: 1.1.0.dev0 → 1.1.0~dev0; 1.5.0rc0 → 1.5.0~rc0
+# (las pre-releases ordenan antes que la final).
 DEB_VERSION="${VERSION/.dev/\~dev}"
+DEB_VERSION="${DEB_VERSION/rc/\~rc}"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT

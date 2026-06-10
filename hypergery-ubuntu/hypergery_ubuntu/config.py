@@ -19,6 +19,8 @@ CONFIG_FIELDS = {
     "default_display",
     "default_iso_folder",
     "default_vm_storage_path",
+    "first_run_completed",
+    "setup_profile",
 }
 
 # Placeholder Hub URL para un entorno de laboratorio doméstico (el Hub corría en
@@ -37,6 +39,8 @@ ENV_KEYS = {
     "default_display": ("HYPERGERY_DEFAULT_DISPLAY",),
     "default_iso_folder": ("HYPERGERY_DEFAULT_ISO_FOLDER",),
     "default_vm_storage_path": ("HYPERGERY_DEFAULT_VM_STORAGE_PATH",),
+    "first_run_completed": ("HYPERGERY_FIRST_RUN_COMPLETED",),
+    "setup_profile": ("HYPERGERY_SETUP_PROFILE",),
 }
 
 
@@ -64,6 +68,10 @@ def default_config_values() -> dict[str, str]:
         "default_display": "vnc",
         "default_iso_folder": str(Path.home()),
         "default_vm_storage_path": "",
+        # First Run Setup (v1.5): "" = wizard pendiente; "true" = completado.
+        "first_run_completed": "",
+        # Perfil elegido en el wizard: solo | local-docker | nas-docker | client.
+        "setup_profile": "",
     }
 
 
@@ -83,6 +91,8 @@ class HyperGeryConfig:
     default_display: str = ""
     default_iso_folder: str = ""
     default_vm_storage_path: str = ""
+    first_run_completed: str = ""
+    setup_profile: str = ""
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "HyperGeryConfig":

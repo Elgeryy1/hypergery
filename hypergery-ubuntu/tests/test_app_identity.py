@@ -122,8 +122,8 @@ class BuildDebTests(unittest.TestCase):
             deb = Path(result.stdout.strip())
             self.assertTrue(deb.is_file(), deb)
             # El nombre del artefacto es parte del contrato de U1
-            # (PEP 440 → Debian: 1.1.0.dev0 → 1.1.0~dev0).
-            deb_version = __version__.replace(".dev", "~dev")
+            # (PEP 440 → Debian: .dev0 → ~dev0, rc0 → ~rc0).
+            deb_version = __version__.replace(".dev", "~dev").replace("rc", "~rc")
             self.assertEqual(deb.name, f"hypergery_{deb_version}_all.deb")
 
             field = subprocess.run(

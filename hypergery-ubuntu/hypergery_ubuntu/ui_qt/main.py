@@ -18,7 +18,7 @@ def configure_qt_application() -> None:
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, force_first_run: bool = False) -> int:
     configure_qt_environment()
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
@@ -44,6 +44,11 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName(APP_NAME)
     app.setDesktopFileName("hypergery")
     app.setWindowIcon(app_icon())
+    # v1.5 First Run Setup: en la primera ejecución (o con --first-run) se
+    # ofrece el asistente. Cancelarlo nunca bloquea la app.
+    from .setup_wizard import maybe_run_setup_wizard
+
+    maybe_run_setup_wizard(force=force_first_run)
     try:
         window = MainWindow()
     except Exception as exc:

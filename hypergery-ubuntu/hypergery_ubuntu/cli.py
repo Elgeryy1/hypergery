@@ -5,10 +5,12 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .backend import HyperGeryBackend, HyperGeryError
+from .config import HyperGeryConfig
 from .labs import LabStore
 from .templates import TemplateStore
 from .ui_qt.formatting import format_size
@@ -484,6 +486,43 @@ def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
     return 2
 
 
+def setup_action(args) -> int:
+    """`hypergery-cli setup …` (v1.5 First Run Setup). Nunca imprime tokens."""
+    from . import firstrun
+
+    if args.setup_command == "status":
+        status = firstrun.setup_status()
+        for key, value in status.items():
+            print(f"{key}: {value}")
+        return 0
+    if args.setup_command == "wizard":
+        from .ui_qt.main import main as qt_main
+
+        return qt_main([sys.argv[0]], force_first_run=True)
+    if args.setup_command == "generate-docker-bundle":
+        written = firstrun.generate_docker_bundle(args.output)
+        print(f"Bundle del Hub generado en {Path(args.output).expanduser()}:")
+        for item in written:
+            print(f"  {item}")
+        print("Siguiente paso: lee README_SETUP.md dentro de la carpeta. (No se ha ejecutado Docker.)")
+        return 0
+    if args.setup_command == "test-hub":
+        config = HyperGeryConfig.load()
+        url = args.url or config.hub_url
+        token = args.token or config.hub_token
+        if not url:
+            print("ERROR: no hay URL del Hub (pásala con --url o configúrala antes).", file=sys.stderr)
+            return 2
+        result = firstrun.test_hub_connection(url, token)
+        print(f"{result['status']}: {result['message']}")
+        return 0 if result["status"] == "ok" else 1
+    if args.setup_command == "reset-first-run":
+        path = firstrun.reset_first_run()
+        print(f"first_run_completed borrado en {path}: el asistente volverá a salir al arrancar la app.")
+        return 0
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -702,6 +741,16 @@ def main(argv: list[str] | None = None) -> int:
     migrate_remote.add_argument("--no-snapshots", action="store_true")
     migrate_remote.add_argument("--start-after-import", action="store_true")
     migrate_remote.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
+    setup_parser = sub.add_parser("setup", help="First Run Setup: estado, bundle Docker del Hub, prueba de conexión.")
+    setup_sub = setup_parser.add_subparsers(dest="setup_command", required=True)
+    setup_sub.add_parser("status", help="Show first-run status and chosen profile (never prints the token).")
+    setup_sub.add_parser("wizard", help="Launch the graphical First Run wizard (requires a display).")
+    setup_bundle = setup_sub.add_parser("generate-docker-bundle", help="Write the self-contained Hub Docker folder (compose, Dockerfile, source, docs). Runs nothing.")
+    setup_bundle.add_argument("--output", default="dist/hypergery-hub-docker", help="Destination folder (default: dist/hypergery-hub-docker).")
+    setup_test = setup_sub.add_parser("test-hub", help="Test Hub connectivity and token (states: ok / auth_error / unreachable).")
+    setup_test.add_argument("--url", default="", help="Hub URL (default: configured hub_url).")
+    setup_test.add_argument("--token", default="", help="Hub token (default: configured hub_token).")
+    setup_sub.add_parser("reset-first-run", help="Clear first_run_completed so the wizard shows again on next launch.")
     from .v1.cli_v1 import add_v1_parser
 
     add_v1_parser(sub)
@@ -726,6 +775,8 @@ def main(argv: list[str] | None = None) -> int:
             return v1_action(args)
         if args.command == "doctor":
             return doctor_action()
+        if args.command == "setup":
+            return setup_action(args)
         backend = HyperGeryBackend()
         if args.command == "preflight":
             return print_preflight(backend)
