@@ -87,6 +87,17 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     orch_apply.add_argument("--local-only", action="store_true")
     orch_apply.add_argument("--confirm", action="store_true")
 
+    migrate_journal = v1_sub.add_parser(
+        "migrate-journal",
+        help="Inspect/clear in-flight live migrations (HG-BUG-0028 safety journal).",
+    )
+    journal_sub = migrate_journal.add_subparsers(dest="journal_command", required=True)
+    journal_sub.add_parser("list", help="List VMs with an unconfirmed migration that cannot be started.")
+    journal_clear = journal_sub.add_parser(
+        "clear",
+        help="Clear a VM's migration journal entry (ONLY after confirming it is not running on the target).",
+    )
+    journal_clear.add_argument("vm_name")
     migrate_live = v1_sub.add_parser(
         "migrate-live",
         help="LIVE migration (RAM+CPU, VM running) to another host via qemu+ssh:// or qemu+tls://.",
@@ -284,6 +295,16 @@ def v1_action(args: argparse.Namespace) -> int:
             raise HyperGeryError(f"No plan found for VM: {args.vm_id}")
         engine = TeleportEngine(backend, settings=settings, hub_client=_hub_client()) if backend is not None else None
         return _print_json(apply_plan(plan, teleport_engine=engine, confirm=args.confirm))
+    if args.v1_command == "migrate-journal":
+        from ..migration_journal import MigrationJournal
+
+        journal = MigrationJournal()
+        if args.journal_command == "list":
+            return _print_json({"in_flight": journal.list()})
+        if args.journal_command == "clear":
+            cleared = journal.clear(args.vm_name)
+            return _print_json({"vm_name": args.vm_name, "cleared": cleared})
+        return 2
     if args.v1_command == "migrate-live":
         if not args.confirm:
             raise HyperGeryError("migrate-live requires --confirm (it moves a RUNNING VM between hosts).")

@@ -122,12 +122,18 @@ def estimate_downtime_ms(ram_mib: float, dirty_rate_mibps: float, bandwidth_mibp
 class LiveMigrator:
     """Construye y ejecuta la máquina de estados (TD-4) de una live migration."""
 
-    def __init__(self, backend: Any, plan: LiveMigrationPlan, *, channel: ProgressChannel | None = None) -> None:
+    def __init__(self, backend: Any, plan: LiveMigrationPlan, *, channel: ProgressChannel | None = None,
+                 journal: Any | None = None) -> None:
         self.backend = backend
         self.plan = plan
         self.channel = channel
         self._migrate_thread: threading.Thread | None = None
         self._migrate_result: dict[str, Any] = {}
+        if journal is None:
+            from ..migration_journal import MigrationJournal
+
+            journal = MigrationJournal()
+        self.journal = journal
         self.engine = MigrationEngine(self._build_phases(), channel=channel, kind="live-migration")
 
     # virsh helpers ---------------------------------------------------------- #
@@ -314,6 +320,14 @@ class LiveMigrator:
         plan = self.plan
         args = self._migrate_args(context)
         outcome: dict[str, Any] = {}
+        # HG-BUG-0028: punto de no retorno. A partir de aquí, si el proceso
+        # muere el origen queda parado pero arrancable: el journal persistente
+        # impide arrancarlo a mano hasta confirmar/limpiar la migración.
+        self.journal.begin(
+            plan.vm_name,
+            target_uri=plan.target_uri,
+            operation_id=str(context.get("operation_id") or ""),
+        )
 
         def migrate_worker() -> None:
             try:
@@ -379,6 +393,11 @@ class LiveMigrator:
             # nunca activa en dos hosts: limpiar el destino.
             self._target_virsh(["destroy", plan.vm_name], check=False)
             self._target_virsh(["undefine", plan.vm_name, "--nvram"], check=False)
+        # HG-BUG-0028: solo se libera el journal si el origen ha vuelto a ser
+        # la copia viva. Si el destino quedó promovido (origen parado), la
+        # entrada permanece para que start_vm siga rechazando el origen.
+        if source_running:
+            self.journal.clear(plan.vm_name)
 
     # activate (confirmar destino y SOLO entonces limpiar el origen) ----------- #
 
@@ -406,4 +425,16 @@ class LiveMigrator:
         if plan.undefine_source_on_success and source_state.returncode == 0:
             report("Destino confirmado: limpiando la definición del origen", fraction=0.7)
             self._virsh(["undefine", plan.vm_name, "--nvram"], check=False)
+            # HG-BUG-0028: el origen ya no existe → arrancarlo es imposible y
+            # seguro liberar el journal.
+            self.journal.clear(plan.vm_name)
+        else:
+            # Se conserva la definición del origen (--keep-source-definition):
+            # con shared storage arrancarlo sigue siendo peligroso, así que la
+            # entrada del journal permanece y debe limpiarse a mano
+            # (hypergery-cli v1 migrate-journal clear <vm>).
+            report(
+                "VM activa en el destino. El origen se conserva: limpia el journal a mano para poder arrancarlo.",
+                fraction=0.9,
+            )
         report("VM activa en el destino", fraction=1.0)
