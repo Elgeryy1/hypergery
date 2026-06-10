@@ -162,6 +162,17 @@ def lab_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
         print(f"deleted_lab={args.lab_id}")
         print(f"delete_vms={args.delete_vms}")
         return 0
+    if args.lab_command == "set-vm-tags":
+        return print_json(store.set_vm_tags(args.lab_id, args.vm_name, args.tags))
+    if args.lab_command == "set-budget":
+        return print_json(
+            store.set_budget(
+                args.lab_id,
+                max_ram_mib=args.max_ram_mib,
+                max_vcpus=args.max_vcpus,
+                max_vms=args.max_vms,
+            )
+        )
     if args.lab_command == "export":
         output = store.export_lab(args.lab_id, args.output)
         print(f"exported_lab={args.lab_id}")
@@ -539,6 +550,15 @@ def main(argv: list[str] | None = None) -> int:
     lab_delete = lab_sub.add_parser("delete")
     lab_delete.add_argument("lab_id")
     lab_delete.add_argument("--delete-vms", action="store_true")
+    lab_tags = lab_sub.add_parser("set-vm-tags", help="Set (or clear with no tags) free-form tags on one lab VM.")
+    lab_tags.add_argument("lab_id")
+    lab_tags.add_argument("vm_name")
+    lab_tags.add_argument("tags", nargs="*")
+    lab_budget = lab_sub.add_parser("set-budget", help="Set the lab resource budget (0 = unlimited).")
+    lab_budget.add_argument("lab_id")
+    lab_budget.add_argument("--max-ram-mib", type=int, default=0)
+    lab_budget.add_argument("--max-vcpus", type=int, default=0)
+    lab_budget.add_argument("--max-vms", type=int, default=0)
     lab_export = lab_sub.add_parser("export")
     lab_export.add_argument("lab_id")
     lab_export.add_argument("output")
