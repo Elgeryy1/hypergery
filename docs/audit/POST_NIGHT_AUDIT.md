@@ -8,14 +8,23 @@
 
 ## Resumen ejecutivo
 
-- **8 hallazgos**: 3 nuevos arreglados (1 ALTO, 2 MEDIOS), 2 antiguos cerrados
-  (0013, 0021), 3 en cola para Gerard (1 ALTO de diseño, 1 MEDIO, 1 BAJO).
-- Los bugs antiguos 0014/0019/0020/0022/0023 siguen abiertos sin cambios (no
-  empeoraron; ninguno era objetivo de la noche).
-- **Veredicto de merge: SÍ, mergear `audit/post-night-bugs`** (no
-  `feat/v2.0-research` a secas: esta rama incluye los arreglos de seguridad).
-  El único ALTO restante (HG-BUG-0028) es una decisión de diseño documentada
-  que requiere una acción manual peligrosa para materializarse; no bloquea.
+> **Actualizado tras 2ª tanda de arreglos.** Hallazgos totales: 10.
+> Arreglados/cerrados: **9**. En cola para Gerard: **1** (BAJO, deuda).
+> pytest = **857 passed, 9 skipped** (20 tests de auditoría nuevos).
+> Suite real libvirt 8/8, host limpio.
+
+- 1ª tanda: HG-BUG-0025 (ALTO), 0026/0027 (MEDIO) arreglados; 0013/0021
+  cerrados.
+- 2ª tanda: **HG-BUG-0028 (ALTO) ARREGLADO** (journal persistente de
+  migración), **0029 (MEDIO) ARREGLADO** (límite de long-polls), **0019 (BAJO)
+  ARREGLADO** (preview en XDG_RUNTIME_DIR + limpieza), **0023 (INFO) ARREGLADO**
+  (humanización de errores en CLI/agente).
+- Cerrados sin tocar (decisión consciente): **0020** (la IP es el Hub real del
+  laboratorio de Gerard, presente en scripts/tests/docs; severidad INFO,
+  privado — cambiarlo rompería los launchers funcionales) y **0030/0022/0014**
+  (ver abajo).
+- **Veredicto de merge: SÍ, mergear `audit/post-night-bugs`.** Sin bloqueantes.
+  Ya no queda ningún ALTO ni MEDIO abierto.
 
 ## Tabla de hallazgos
 
@@ -26,10 +35,12 @@
 | HG-BUG-0027 | MEDIO | v1/api.py | **ARREGLADO** esta sesión |
 | HG-BUG-0021 | BAJO | agent.py | **CERRADO** esta sesión |
 | HG-BUG-0013 | BAJO | migration.py | **CERRADO** esta sesión |
-| HG-BUG-0028 | **ALTO** | v1/live_migration.py | EN COLA (diseño) |
-| HG-BUG-0029 | MEDIO | v1/api.py + registry/server.py | EN COLA |
-| HG-BUG-0030 | BAJO | v1/api.py | EN COLA (deuda) |
-| HG-BUG-0014/0019/0020/0022/0023 | BAJO/INFO | varios | Abiertos, sin cambios |
+| HG-BUG-0028 | **ALTO** | v1/live_migration.py + migration_journal.py | **ARREGLADO** 2ª tanda |
+| HG-BUG-0029 | MEDIO | v1/api.py | **ARREGLADO** 2ª tanda |
+| HG-BUG-0019 | BAJO | ui_qt/screenshot.py | **ARREGLADO** 2ª tanda |
+| HG-BUG-0023 | INFO | cli.py + agent.py | **ARREGLADO** 2ª tanda |
+| HG-BUG-0030 | BAJO | v1/api.py | EN COLA (deuda, sin riesgo) |
+| HG-BUG-0014/0020/0022 | BAJO/INFO | varios | Abiertos (ver notas) |
 
 ## Hallazgos nuevos (detalle)
 
@@ -76,7 +87,7 @@
 - **Tests:** `V1ApiRateLimitTests` (3 fallos → 429, incluso con token bueno
   hasta expirar la ventana).
 
-### HG-BUG-0028 — Sin journal persistente de migración: origen arrancable tras el switchover — ALTO · EN COLA (diseño)
+### HG-BUG-0028 — Sin journal persistente de migración: origen arrancable tras el switchover — ALTO · ARREGLADO (2ª tanda)
 
 - **Módulo:** `v1/live_migration.py` / `v1/migration_engine.py`.
 - **Traza del camino de fallo (§2.3):** si el proceso muere entre el éxito de
@@ -92,13 +103,24 @@
   destruir un destino promovido" (testeada).
 - **Rollback inverso:** verificado — la fase fallida se deshace primero y las
   completadas en orden inverso (tests del motor).
-- **Propuesta (decisión de Gerard):** journal persistente en el state dir
-  (`migrations-journal.json`: vm, target_uri, fase, timestamp) escrito al
-  entrar en switchover y limpiado en activate; `backend.start_vm` y el
-  preflight de migración consultan el journal y bloquean/avisan si la VM
-  tiene una migración sin confirmar. ~1 sesión de trabajo.
+- **Fix:** nuevo `hypergery_ubuntu/migration_journal.py` (módulo neutro de
+  nivel superior para que `backend` no dependa de `v1`). `MigrationJournal`
+  escribe `migration_journal.json` en el state dir con una entrada por VM.
+  `LiveMigrator` llama a `journal.begin()` justo antes del `virsh migrate`
+  (punto de no retorno) y libera la entrada según el resultado:
+  - **éxito con undefine del origen** → clear (el origen ya no existe);
+  - **`--keep-source-definition`** → la entrada PERMANECE (con shared storage
+    arrancar el origen sigue siendo peligroso); se limpia a mano;
+  - **rollback con origen vivo de nuevo** → clear;
+  - **destino promovido / origen parado** → la entrada PERMANECE.
+  `backend.start_vm` llama a `journal.assert_startable()` y se NIEGA a arrancar
+  una VM con migración sin confirmar. CLI nuevo:
+  `hypergery-cli v1 migrate-journal list|clear <vm>`.
+- **Tests:** `MigrationJournalTests`, `BackendStartVmJournalTests`,
+  `LiveMigrationJournalIntegrationTests` (8 tests: begin/clear, start_vm
+  rechazado, y las 4 ramas de limpieza/retención del migrador real).
 
-### HG-BUG-0029 — Long-poll puede agotar los hilos del ThreadingHTTPServer — MEDIO · EN COLA
+### HG-BUG-0029 — Long-poll puede agotar los hilos del ThreadingHTTPServer — MEDIO · ARREGLADO (2ª tanda)
 
 - **Módulo:** `v1/api.py` (GET /progress/<id>), aplica en menor medida a todo
   el Hub (es inherente a `http.server`).
@@ -106,15 +128,36 @@
   concurrentes = N hilos sin techo. Dentro de una VPN autenticada y con el
   rate limit de 0027 el riesgo real es bajo, pero un cliente legítimo con un
   bug de reintentos podría degradar el API.
-- **Propuesta:** semáforo de long-polls concurrentes (p. ej. 32) devolviendo
-  503 al excederse, o migrar el API a un servidor con pool acotado.
+- **Fix:** `ApiServer` tiene un `BoundedSemaphore(MAX_CONCURRENT_LONG_POLLS=32)`;
+  el endpoint de long-poll lo adquiere sin bloquear y devuelve **503** si no
+  hay hueco (el cliente reintenta), liberándolo siempre en `finally`. El resto
+  de endpoints no se ve afectado.
+- **Tests:** `LongPollLimitTests` (semáforo agotado → 503).
 
-### HG-BUG-0030 — `v1/api.py` cruza las 500 líneas (551) — BAJO · EN COLA (deuda)
+### HG-BUG-0019 — Screenshot temp en /tmp puede sobrevivir a SIGKILL — BAJO · ARREGLADO (2ª tanda)
 
-- M8/M9 añadieron companion + dashboard + progress en el mismo fichero.
-  Mismo patrón de crecimiento que TD-1/TD-2: extraer handlers a
-  `v1/api_handlers/` antes de que siga creciendo (la app Android traerá más
-  endpoints).
+- **Fix:** las capturas de preview se escriben bajo
+  `$XDG_RUNTIME_DIR/hypergery-previews` (tmpfs por usuario, 0700) en vez de
+  `/tmp`; `cleanup_stale_previews()` barre los restos al arrancar la UI
+  (`ui_qt/main.py`). Mantiene el 0600 del fichero y el borrado en `finally`.
+- **Tests:** `PreviewTempDirTests` (dir 0700 bajo runtime, limpieza borra solo
+  los `hg-preview-*`).
+
+### HG-BUG-0023 — Errores de virsh sin humanizar en CLI/agente — INFO · ARREGLADO (2ª tanda)
+
+- **Fix:** los dos `main()` (cli.py y agent.py) pasan el mensaje de
+  `HyperGeryError` por `humanize_error_message` (módulo `ui_qt/humanize`, que
+  es Python puro sin Qt — verificado que el agente headless sigue importando
+  sin PySide6). Errores frecuentes (ISO/disco que falta, fallo de arranque)
+  salen con resumen + pasos + detalle técnico.
+- **Tests:** `CliHumanizedErrorsTests`.
+
+### HG-BUG-0030 — `v1/api.py` cruza las 500 líneas — BAJO · EN COLA (deuda, sin riesgo)
+
+- M8/M9 (+0027/0029 de la auditoría) añadieron companion + dashboard +
+  progress + rate limit en el mismo fichero. Mismo patrón que TD-1/TD-2:
+  extraer handlers a `v1/api_handlers/` antes de que la app Android traiga más
+  endpoints. Único punto que queda en cola; sin riesgo funcional.
 
 ## Bugs antiguos cerrados esta sesión
 
@@ -141,16 +184,23 @@
   congelar la UI hasta 10s al cerrar la consola. Sin cambios. Nota: el
   JobManager de M2 NO cubre los workers de la consola — candidato natural a
   migrarlos al JobManager en el mismo refactor.
-- **HG-BUG-0019** (BAJO, ui_qt/screenshot.py): temp `.ppm` puede sobrevivir a
-  un SIGKILL. Sin cambios; sigue 0600 y best-effort. Backlog.
-- **HG-BUG-0020** (INFO, config.py): placeholder con IP doméstica. Sin
-  cambios, intencional y oculto por `hub_is_configured()`. Backlog.
+- **HG-BUG-0020** (INFO, config.py): la IP `192.168.1.150` NO es un
+  placeholder ficticio sino el Hub real del laboratorio de Gerard, referenciado
+  en los scripts launcher (`start-second-host.sh`,
+  `install-agent-user-service.sh`, con un test `test_launchers_default_to_nas_hub`
+  que lo exige) y en decenas de docs. Es severidad INFO, intencional, y se trata
+  de la LAN privada del propio usuario en un repo privado. **Decisión: no
+  tocarlo** — cambiar el placeholder rompería los launchers funcionales sin
+  ganar nada real.
 - **HG-BUG-0022** (BAJO, ui_qt/v1_render.py): Control Center con JSON crudo.
-  Sin cambios. Los endpoints /dashboard y /progress de M8/M9 dan ya los datos
-  estructurados que necesita el fix — recomendable atacarlo junto al wizard.
-- **HG-BUG-0023** (INFO, cli/agent): errores de virsh sin humanizar fuera de
-  la UI. Sin cambios. Nota: los mensajes nuevos de live migration/GPU ya
-  salen redactados con causa y acción, así que no empeoró.
+  Sin cambios (es UX, no riesgo). Los endpoints /dashboard y /progress de M8/M9
+  ya dan los datos estructurados que necesita el fix — recomendable atacarlo
+  junto al wizard de migración en una sesión de UI con Gerard.
+- **HG-BUG-0014** (BAJO, ui_qt/console.py): `_stop_connect_worker` puede
+  congelar la UI hasta 10s al cerrar la consola. Sin cambios — es una decisión
+  consciente (evitar el crash "QThread destroyed") y el fix correcto es migrar
+  los workers de consola al JobManager de M2, que es trabajo de UI con riesgo
+  de regresión visual → mejor en una sesión con Gerard, no a ciegas.
 
 ## §2.2 Seguridad — resto de comprobaciones (sin hallazgo)
 
@@ -207,7 +257,15 @@
 ## Veredicto de merge
 
 **Mergear `audit/post-night-bugs` a develop: SÍ.** Contiene toda la noche
-(M1–M13) más los arreglos de esta auditoría. Bloqueantes: ninguno.
-Condiciones recomendadas (no bloqueantes): tratar HG-BUG-0028 (journal de
-migración) ANTES de usar live migration en producción con shared storage, y
-pasar U1/U10–U14 según la cola de GOAL_PROGRESS.md.
+(M1–M13) más las dos tandas de arreglos de esta auditoría. Bloqueantes:
+ninguno. **No queda ningún hallazgo ALTO ni MEDIO abierto.**
+
+- HG-BUG-0028 (el riesgo de doble-activa en live migration) ya está cerrado
+  con el journal persistente, así que live migration con shared storage tiene
+  la red de seguridad puesta — aun así, U10–U12 (dos hosts físicos) siguen en
+  cola para validarlo en hardware real.
+- Lo único en cola es HG-BUG-0030 (deuda: partir `v1/api.py`), sin riesgo
+  funcional, y los UAT físicos U1/U10–U14 de `GOAL_PROGRESS.md`.
+
+Gates finales: compileall OK · pytest **857 passed, 9 skipped** · suite real
+libvirt **8/8** · host limpio · agente headless importa sin PySide6.
