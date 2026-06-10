@@ -55,12 +55,21 @@ v1.5 con journal anti double-active · hardening completo (0014/0022/0030/0020)
   sudo queda como smoke opcional.
 - **Hardening: PASS** (`docs/security/V1_5_SECURITY_READINESS.md`); bandit no
   disponible offline.
-- **U10–U12: PENDIENTES** — plan exacto en `docs/qa/V1_5_UAT_PLAN.md`. Son la
-  única condición para el tag.
+- **Flujo OFICIAL (Hub-mediated): HM1–HM4 PASS** en hardware real
+  (`docs/qa/V1_5_HUB_MIGRATION_UAT_RESULT.md`, 2026-06-10) — Hub Docker del NAS
+  redesplegado con la RC, job creado/autorizado, paquete por staging,
+  checksums e2e (corrupción rechazada), origen nunca liberado solo, destino
+  obedece al Hub, sin token no hay migración. **Este es el gate de release y
+  está superado.**
+- **Modo avanzado (live directa): U11/U12 PASS**; U10 requiere NFS y **ya no
+  bloquea** (decisión de arquitectura 2026-06-10). `docs/qa/V1_5_UAT_RESULT.md`.
 - First Run Wizard: lógica y reglas de seguridad testeadas offscreen (26
   tests); pase visual humano recomendado en el primer arranque real.
 
 ## Veredicto
 
-**v1.5.0 RC PREPARADA** en `release/v1.5.0-rc`.
-**NO tag, NO release, NO publicación hasta U10–U12 PASS físicos.**
+**v1.5.0 RC PREPARADA y con el gate de release SUPERADO** en
+`release/v1.5.0-rc`: el flujo oficial mediado por el Hub pasa HM1–HM4 en
+hardware real. **Técnicamente lista para tag/release de v1.5.0** cuando Gerard
+lo autorice (el tag/release sigue siendo su decisión explícita; este informe
+no lo ejecuta).
