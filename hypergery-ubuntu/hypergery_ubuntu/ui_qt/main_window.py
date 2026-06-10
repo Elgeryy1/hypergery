@@ -4232,7 +4232,21 @@ class MainWindow(QMainWindow):
         except HyperGeryError as exc:
             self.show_error(str(exc))
             return
-        self.run_operation(f"Encendiendo {name}", lambda: self.backend.start_vm(name))
+        # Si la VM tiene una ISO conectada (instalación), abre la consola al
+        # encender para que el usuario llegue a tiempo al «Press any key to boot
+        # from CD» (la ventana dura ~5 s; si abres la consola tarde, la pierdes).
+        vm = self.selected_vm
+        has_install_iso = bool(vm and getattr(vm, "iso_path", ""))
+
+        def after_start(_result) -> None:
+            if has_install_iso:
+                self.open_console(force_connect=True)
+
+        self.run_operation(
+            f"Encendiendo {name}",
+            lambda: self.backend.start_vm(name),
+            on_success=after_start,
+        )
 
     def shutdown_vm(self) -> None:
         try:
@@ -4258,7 +4272,7 @@ class MainWindow(QMainWindow):
             return
         self.run_operation(f"Apagando a la fuerza {name}", lambda: self.backend.force_off_vm(name))
 
-    def open_console(self) -> None:
+    def open_console(self, *, force_connect: bool = False) -> None:
         if self.selected_vm is None:
             self.show_error("Selecciona una máquina primero.")
             return
@@ -4273,7 +4287,14 @@ class MainWindow(QMainWindow):
         window.show()
         window.raise_()
         window.activateWindow()
-        if should_autoconnect_console(vm.graphics, vm.state) and not window.console.is_connected():
+        # force_connect: tras encender (instalación), el estado en caché aún es
+        # «apagada»; conectamos igualmente porque la VM ya está arrancando.
+        if not window.console.is_connected() and (
+            force_connect or should_autoconnect_console(vm.graphics, vm.state)
+        ):
+            # Instalación: la consola pulsará «espacio» sola al conectar para
+            # cazar el «Press any key to boot from CD».
+            window.console.nudge_boot_on_connect = bool(force_connect)
             window.console.connect_console()
 
     def open_external_console(self) -> None:

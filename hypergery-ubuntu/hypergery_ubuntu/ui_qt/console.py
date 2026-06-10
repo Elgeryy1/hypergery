@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
@@ -203,6 +203,11 @@ class IntegratedConsoleWidget(QWidget):
         # Cancelled connect threads draining in the background (HG-BUG-0014):
         # kept referenced until finished so Qt never destroys a running QThread.
         self._draining_threads: set[QThread] = set()
+        # Instalación: pulsa «espacio» automáticamente unas veces al conectar para
+        # cazar el «Press any key to boot from CD» (ventana de ~5 s) sin que el
+        # usuario tenga que clavar el momento. Lo activa open_console(force).
+        self.nudge_boot_on_connect = False
+        self._boot_nudges_left = 0
         self.connecting = False
         self.buffer = bytearray()
         self.state = "idle"
@@ -699,6 +704,8 @@ class IntegratedConsoleWidget(QWidget):
                 self.request_update(False)
                 self.state = "message"
                 self.set_status(f"Conectada - {self.fb_width}x{self.fb_height} - Tecla para soltar: {HOST_KEY_NAME}")
+                if self.nudge_boot_on_connect:
+                    self._start_boot_nudges()
                 self.update_controls(True)
             elif self.state == "message":
                 msg_type = self._take(1)
@@ -782,6 +789,24 @@ class IntegratedConsoleWidget(QWidget):
             self.socket.write(struct.pack(">BBxxI", 4, 1, key))
         for key in (0xFFFF, 0xFFE9, 0xFFE3):
             self.socket.write(struct.pack(">BBxxI", 4, 0, key))
+
+    def _start_boot_nudges(self) -> None:
+        """Programa unas pulsaciones de «espacio» espaciadas para cazar el
+        «Press any key to boot from CD» del instalador (la ventana es corta)."""
+        self.nudge_boot_on_connect = False  # solo una vez por conexión
+        self._boot_nudges_left = 4
+        QTimer.singleShot(1200, self._boot_nudge_tick)
+
+    def _boot_nudge_tick(self) -> None:
+        if self._boot_nudges_left <= 0 or not self.socket or self.state == "idle":
+            return
+        # Espacio (keysym 0x20): arranca el CD en el prompt; inofensivo en la
+        # pantalla de idioma de Windows si ya pasó la ventana.
+        self.socket.write(struct.pack(">BBxxI", 4, 1, 0x20))
+        self.socket.write(struct.pack(">BBxxI", 4, 0, 0x20))
+        self._boot_nudges_left -= 1
+        if self._boot_nudges_left > 0:
+            QTimer.singleShot(1800, self._boot_nudge_tick)
 
     def send_pointer(self, event: QMouseEvent) -> None:
         if not self.socket or not self.framebuffer:
