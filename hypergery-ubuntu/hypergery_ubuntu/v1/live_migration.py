@@ -27,11 +27,14 @@ canal de progreso (TD-9), y downtime real medido con
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
 import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .errors import HyperGeryError
@@ -289,9 +292,10 @@ class LiveMigrator:
         report("Decidiendo estrategia de almacenamiento", fraction=0.85)
         disk_paths = [
             source.attrib.get("file", "")
-            for source in root.findall("./devices/disk/source")
+            for source in root.findall("./devices/disk[@device='disk']/source")
             if source.attrib.get("file")
         ]
+        context["disk_paths"] = disk_paths
         shared = plan.shared_storage
         if shared is None:
             # Heurística: rutas bajo monturas de red típicas → shared.
@@ -333,14 +337,66 @@ class LiveMigrator:
         if context.get("shared_storage"):
             report("Almacenamiento compartido: no hay que preparar discos", fraction=1.0)
             return
-        report(
-            "Block migration: los discos se copiarán por el canal de migración (--copy-storage-*)",
-            fraction=1.0,
-        )
+        # Block migration: libvirt NO crea el disco de destino solo (sin un
+        # storage pool que cubra la ruta falla con «no storage pool»). Lo
+        # pre-creamos por SSH, con su carpeta y el mismo tamaño virtual.
+        ssh_dest = self._ssh_destination()
+        disk_paths = context.get("disk_paths") or []
+        if not ssh_dest or not disk_paths:
+            report("Block migration: el canal copiará los discos", fraction=1.0)
+            return
+        prepared = []
+        for path in disk_paths:
+            virtual_bytes = self._disk_virtual_bytes(path)
+            directory = str(Path(path).parent)
+            script = (
+                f"mkdir -p {shlex.quote(directory)} && "
+                f"qemu-img create -f qcow2 {shlex.quote(path)} {int(virtual_bytes)}"
+            )
+            result = self.backend.run(["ssh", "-o", "BatchMode=yes", ssh_dest, script], check=False, timeout=120)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                raise HyperGeryError(
+                    f"No se pudo preparar el disco en el destino ({path}): {detail}. "
+                    "Para migración en vivo entre equipos con USUARIOS distintos, la ruta del "
+                    "disco debe existir y ser escribible en AMBOS (p. ej. en /var/lib/libvirt/images "
+                    "o en un montaje NFS compartido), no bajo /home de un solo usuario. "
+                    "Lo más fiable es almacenamiento NFS compartido (ver docs/setup)."
+                )
+            prepared.append(path)
+        context["prepared_target_disks"] = prepared
+        report(f"Discos de destino preparados ({len(prepared)})", fraction=1.0)
+
+    def _ssh_destination(self) -> str:
+        """Extrae user@host de la URI qemu+ssh://user@host/system (o "")."""
+        uri = self.plan.target_uri
+        if not uri.startswith("qemu+ssh://"):
+            return ""
+        rest = uri[len("qemu+ssh://"):]
+        return rest.split("/", 1)[0]  # user@host[:port]
+
+    def _disk_virtual_bytes(self, path: str) -> int:
+        result = self.backend.run(["qemu-img", "info", "--output=json", path], check=False, timeout=30)
+        if result.returncode == 0:
+            try:
+                return int(json.loads(result.stdout).get("virtual-size") or 0)
+            except (ValueError, json.JSONDecodeError):
+                pass
+        return 0
 
     def _rollback_target(self, context: dict[str, Any]) -> None:
-        # Nada que deshacer: la preparación no crea estado persistente.
-        return
+        # Borra los discos que pre-creamos en el destino (si los hubo) para no
+        # dejar basura tras un fallo. El origen no se toca nunca.
+        prepared = context.get("prepared_target_disks") or []
+        ssh_dest = self._ssh_destination()
+        if not prepared or not ssh_dest:
+            return
+        for path in prepared:
+            self.backend.run(
+                ["ssh", "-o", "BatchMode=yes", ssh_dest, f"rm -f {shlex.quote(path)}"],
+                check=False,
+                timeout=30,
+            )
 
     # switchover (virsh migrate = pre-copy + pausa breve + reanudar) ----------- #
 

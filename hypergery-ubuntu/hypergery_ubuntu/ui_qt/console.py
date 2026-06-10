@@ -791,22 +791,24 @@ class IntegratedConsoleWidget(QWidget):
             self.socket.write(struct.pack(">BBxxI", 4, 0, key))
 
     def _start_boot_nudges(self) -> None:
-        """Programa unas pulsaciones de «espacio» espaciadas para cazar el
-        «Press any key to boot from CD» del instalador (la ventana es corta)."""
+        """Pulsa «espacio» repetidamente durante el arranque para cazar el
+        «Press any key to boot from CD». La consola se conecta nada más encender,
+        pero ese prompt no aparece hasta que OVMF termina de inicializar (varios
+        segundos) y solo dura ~5 s — por eso barremos una ventana AMPLIA cada
+        segundo. El espacio es inofensivo en la pantalla de idioma de Windows."""
         self.nudge_boot_on_connect = False  # solo una vez por conexión
-        self._boot_nudges_left = 4
+        self._boot_nudges_left = 25  # ~30 s de barrido (1.2 s + 24×1.2 s)
         QTimer.singleShot(1200, self._boot_nudge_tick)
 
     def _boot_nudge_tick(self) -> None:
         if self._boot_nudges_left <= 0 or not self.socket or self.state == "idle":
             return
-        # Espacio (keysym 0x20): arranca el CD en el prompt; inofensivo en la
-        # pantalla de idioma de Windows si ya pasó la ventana.
+        # Espacio (keysym 0x20): arranca el CD en el prompt; inofensivo después.
         self.socket.write(struct.pack(">BBxxI", 4, 1, 0x20))
         self.socket.write(struct.pack(">BBxxI", 4, 0, 0x20))
         self._boot_nudges_left -= 1
         if self._boot_nudges_left > 0:
-            QTimer.singleShot(1800, self._boot_nudge_tick)
+            QTimer.singleShot(1200, self._boot_nudge_tick)
 
     def send_pointer(self, event: QMouseEvent) -> None:
         if not self.socket or not self.framebuffer:
