@@ -54,6 +54,12 @@ UNSUPPORTED_SHARED_STORAGE_FSTYPES = frozenset(
 )
 
 
+def _cpu_vendor(capabilities_xml: str) -> str:
+    """Vendor de la CPU del host a partir de `virsh capabilities` ("" si n/d)."""
+    match = re.search(r"<vendor>([^<]+)</vendor>", capabilities_xml or "")
+    return match.group(1).strip() if match else ""
+
+
 def disk_filesystem_type(path: str, mounts_path: str = "/proc/mounts") -> str:
     """Tipo de filesystem del punto de montaje que contiene ``path``.
 
@@ -281,13 +287,22 @@ class LiveMigrator:
 
         report("Comprobando compatibilidad de CPU", fraction=0.7)
         cpu_xml = ET.tostring(root.find("./cpu"), encoding="unicode") if root.find("./cpu") is not None else ""
-        if cpu_xml and "host-passthrough" in cpu_xml:
-            warnings.append(
-                "Esta VM usa la CPU real del equipo (host-passthrough): la migración en vivo "
-                "SOLO funcionará entre equipos con CPU del mismo fabricante. Si el origen es AMD "
-                "y el destino Intel (o al revés), fallará. Para migrar en caliente entre equipos "
-                "distintos, recrea la VM marcando «preparar para migración en vivo» (CPU compatible)."
-            )
+        if cpu_xml and ("host-passthrough" in cpu_xml or "host-model" in cpu_xml):
+            source_vendor = _cpu_vendor(self._virsh(["capabilities"], check=False).stdout)
+            target_vendor = _cpu_vendor(self._target_virsh(["capabilities"], check=False).stdout)
+            if source_vendor and target_vendor and source_vendor != target_vendor:
+                # Verificado en UAT: cross-vendor con CPU del host muere en el
+                # destino («TSC frequency mismatch», «Failed to set XSAVE»).
+                errors.append(
+                    f"Esta máquina usa la CPU real del equipo ({source_vendor}) y el destino es "
+                    f"{target_vendor}: la migración en vivo fallaría a mitad. Recrea la máquina "
+                    "marcando «Preparar para migración en vivo (CPU compatible)» y vuelve a intentarlo."
+                )
+            else:
+                warnings.append(
+                    "Esta VM usa la CPU real del equipo (host-passthrough): la migración en vivo "
+                    "solo funciona entre equipos con CPU del mismo fabricante."
+                )
 
         report("Decidiendo estrategia de almacenamiento", fraction=0.85)
         disk_paths = [

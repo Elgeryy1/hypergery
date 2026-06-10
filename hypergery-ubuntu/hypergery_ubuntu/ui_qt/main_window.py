@@ -4247,9 +4247,12 @@ class MainWindow(QMainWindow):
                 from .workers import BackendJob
 
                 sweep = BackendJob("boot keypress sweep", lambda: self.backend.boot_keypress_sweep(name))
-                self._boot_sweep_jobs = getattr(self, "_boot_sweep_jobs", [])
-                self._boot_sweep_jobs.append(sweep)
-                sweep.finished.connect(lambda job=sweep: self._boot_sweep_jobs.remove(job) if job in getattr(self, "_boot_sweep_jobs", []) else None)
+                # NUNCA soltar la última referencia dentro de `finished` (PySide
+                # destruiría el QThread aún vivo → crash). Se poda en el
+                # siguiente arranque: un QThread terminado en la lista es inocuo.
+                jobs = [job for job in getattr(self, "_boot_sweep_jobs", []) if not job.isFinished()]
+                jobs.append(sweep)
+                self._boot_sweep_jobs = jobs
                 sweep.start()
 
         self.run_operation(

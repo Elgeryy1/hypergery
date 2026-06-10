@@ -2121,6 +2121,11 @@ class LiveMigrationDialog(QDialog):
             self.result_view.setPlainText("\n".join(f"✗ {e}" for e in errors))
             self.package_button.setEnabled(False)
             return
+        # CD conectado: en el destino esa ISO no existe y la migración moriría a
+        # mitad. Ofrecer expulsarlo (tras instalar ya no hace falta).
+        if not self._offer_eject_cdrom():
+            self.package_button.setEnabled(False)
+            return
         # Comprueba que la carpeta del disco existe/se puede escribir en el
         # DESTINO; si no, ofrece crearla con sudo (contraseña transitoria).
         storage_note = self._ensure_live_target_storage(uri)
@@ -2178,6 +2183,46 @@ class LiveMigrationDialog(QDialog):
         # un trabajo por el Hub y es ESA máquina la que pide su contraseña en su
         # propia pantalla (la contraseña nunca viaja por la red).
         return self._request_target_authorization(dirs)
+
+    def _offer_eject_cdrom(self) -> bool:
+        """Si la VM tiene un CD con ISO conectada, ofrece expulsarlo (la ISO no
+        existirá en el destino y la migración fallaría a mitad). True = puede
+        continuar (no había CD, o se expulsó)."""
+        import xml.etree.ElementTree as _ET
+
+        try:
+            root = _ET.fromstring(self.vm.xml or "")
+        except _ET.ParseError:
+            return True
+        for disk in root.findall("./devices/disk[@device='cdrom']"):
+            source = disk.find("source")
+            target = disk.find("target")
+            if source is None or not source.attrib.get("file") or target is None:
+                continue
+            iso = source.attrib["file"]
+            dev = target.attrib.get("dev", "")
+            if not confirm(
+                self,
+                "CD conectado",
+                (
+                    f"La máquina tiene un CD conectado:\n{iso}\n\n"
+                    "Esa ISO no existirá en el equipo de destino y la migración fallaría a mitad.\n"
+                    "¿Expulsar el CD ahora? (Tras instalar el sistema ya no hace falta.)"
+                ),
+                yes_text="Expulsar y seguir",
+                no_text="Cancelar",
+            ):
+                self.error_label.setText("Migración cancelada: expulsa el CD para poder migrar en vivo.")
+                return False
+            result = self.backend.virsh(
+                ["change-media", self.vm.name, dev, "--eject", "--live", "--config"], check=False
+            )
+            if result.returncode != 0:
+                self.error_label.setText(
+                    f"No se pudo expulsar el CD ({dev}): {(result.stderr or result.stdout or '').strip()[:160]}"
+                )
+                return False
+        return True
 
     def _request_target_authorization(self, dirs: list[str]) -> str | None:
         import time as _time
