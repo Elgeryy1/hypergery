@@ -17,7 +17,13 @@ SRC_DIR="$PROJECT_ROOT/hypergery-ubuntu"
 PKG_DIR="$SRC_DIR/packaging"
 DIST_DIR="${HYPERGERY_DIST_DIR:-$PROJECT_ROOT/dist}"
 
-command -v dpkg-deb >/dev/null 2>&1 || { echo "ERROR: dpkg-deb no encontrado" >&2; exit 2; }
+command -v dpkg-deb >/dev/null 2>&1 || { echo "ERROR: dpkg-deb no encontrado (instala el paquete 'dpkg-dev' o usa un sistema Debian/Ubuntu)" >&2; exit 2; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 no encontrado en PATH" >&2; exit 2; }
+if [ ! -d "$SRC_DIR/hypergery_ubuntu" ]; then
+  echo "ERROR: no encuentro el código fuente en $SRC_DIR/hypergery_ubuntu" >&2
+  echo "Este script debe vivir en <raíz del repo>/scripts/build-deb.sh; ejecútalo desde la raíz: ./scripts/build-deb.sh" >&2
+  exit 2
+fi
 
 VERSION="$(PYTHONPATH="$SRC_DIR" python3 -c 'import hypergery_ubuntu; print(hypergery_ubuntu.__version__)')"
 # PEP 440 → versión Debian: 1.1.0.dev0 → 1.1.0~dev0 (las pre-releases ordenan antes).
@@ -98,4 +104,7 @@ chmod 0755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/postrm"
 mkdir -p "$DIST_DIR"
 OUT="$DIST_DIR/hypergery_${DEB_VERSION}_all.deb"
 dpkg-deb --build --root-owner-group "$STAGE" "$OUT" >/dev/null
+# stdout = solo la ruta del .deb (contrato usado por los tests); lo humano va a stderr.
 echo "$OUT"
+echo "OK: paquete generado. Para instalarlo:" >&2
+echo "  sudo apt install \"$OUT\"" >&2
