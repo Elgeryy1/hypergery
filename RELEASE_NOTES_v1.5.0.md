@@ -28,11 +28,19 @@ v1.4 y v1.5 en una sola release, más el hardening pre-release.
 - **Orquestación y telemetría (v1.4)**: telemetría por heartbeat, dashboard de
   salud, orchestrator que solo aplica con confirmación, API companion con
   acciones seguras (start/ACPI/snapshot).
-- **Live migration (v1.5)**: migración en caliente sobre `virsh migrate`
-  (solo `qemu+ssh://`/`qemu+tls://`; `qemu+tcp://` rechazado), preflight,
-  rollback con origen intacto, cancelación, journal persistente
-  anti double-active, downtime medido, CLI `v1 migrate-live --confirm`,
-  canal de progreso con long-poll.
+- **Migración mediada por el Hub (flujo oficial v1.5 — "NAS Hub coordinated
+  migration")**: `Origen → Hub Docker del NAS → Destino`. El Hub crea y
+  autoriza el job, guarda el paquete en su staging (checksums sha256,
+  límites, anti-traversal), encola el comando al agente del destino,
+  registra cada fase y audita todo; el origen nunca se libera hasta
+  confirmar el destino. Para VMs encendidas: teleport save/restore con
+  safe-resume. Arquitectura: `docs/architecture/HUB_MEDIATED_MIGRATION.md`.
+- **Live migration directa (modo avanzado/experimental)**: migración en
+  caliente host-a-host sobre `virsh migrate` (solo `qemu+ssh`/`qemu+tls`;
+  `qemu+tcp` rechazado; CIFS/SMB rechazado para shared storage), preflight,
+  rollback, cancelación, journal anti double-active, downtime medido
+  (145 ms en UAT real). **No es el flujo principal**: las migraciones
+  normales pasan por el Hub.
 - **Hardening pre-v1.5**: cierre de consola sin congelar la UI (HG-BUG-0014),
   Centro de control humanizado con «Salud del sistema» y «Operaciones»
   (HG-BUG-0022), `v1/api.py` modularizado fase 1 (HG-BUG-0030), launchers del
@@ -48,8 +56,11 @@ v1.4 y v1.5 en una sola release, más el hardening pre-release.
 - **GPU passthrough (v1.7)**: queda en su rama; pendiente de U14 (2ª GPU).
 - **v2.0 research**: solo investigación, nunca fue feature.
 
-## Condición de publicación
+## Condición de publicación (replanteada 2026-06-10)
 
-`v1.5.0` final **solo** se taggea y publica cuando U10 (live migration con
-storage compartido), U11 (block migration) y U12 (cancelación) pasen en los
-dos equipos físicos. Plan exacto: `docs/qa/V1_5_UAT_PLAN.md`.
+`v1.5.0` final se taggea cuando el **flujo oficial mediado por el Hub** pase
+su UAT (`docs/qa/V1_5_HUB_MIGRATION_UAT_PLAN.md`; HM2/teleport ya tiene UAT
+real previo en verde). El modo avanzado directo ya tiene **U11 y U12 PASS**
+en hardware real (downtime 145 ms); **U10** (shared storage, requiere NFS)
+queda como validación del modo avanzado, **ya no como release blocker** —
+ver `docs/qa/V1_5_UAT_RESULT.md`.

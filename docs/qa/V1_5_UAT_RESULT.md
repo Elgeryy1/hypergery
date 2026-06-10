@@ -151,8 +151,12 @@ preflight, canal, RAM al 100%, rollback, journal — quedó validado hoy).
   demás: NAS de datos, staging, backups). El preflight del producto ahora lo
   rechaza con error humano (guard + tests en esta rama); block migration sobre
   CIFS no se ve afectada.
-- **La RC sigue válida** (`release/v1.5.0-rc`). **El gate U10 no se relaja:
-  NO se hace tag ni release de v1.5.0 hasta repetir U10 con NFS y obtener
-  PASS.** Procedimiento: `docs/setup/NFS_SHARED_STORAGE_FOR_LIVE_MIGRATION.md`
+- **La RC sigue válida** (`release/v1.5.0-rc`).
+- **Replanteamiento de arquitectura (Gerard, 2026-06-10, posterior):** el
+  flujo oficial de v1.5 pasa a ser la **migración mediada por el Hub**
+  (`docs/architecture/HUB_MEDIATED_MIGRATION.md`); la live migration directa
+  queda como modo avanzado/experimental. El gate de release es ahora el UAT
+  del flujo Hub (`V1_5_HUB_MIGRATION_UAT_PLAN.md`); U10-con-NFS valida el
+  modo avanzado cuando haya export NFS, sin bloquear la release. Procedimiento: `docs/setup/NFS_SHARED_STORAGE_FOR_LIVE_MIGRATION.md`
   (todo lo demás — CPU portable, /etc/hosts, shared_filesystems, cache=none —
   ya está preparado y validado).

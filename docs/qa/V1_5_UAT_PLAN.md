@@ -1,6 +1,9 @@
-# Plan UAT v1.5 — live migration física (U10–U12)
+# Plan UAT v1.5 — live migration directa (U10–U12) · MODO AVANZADO
 
-- **Bloquea:** el tag/release de v1.5.0. La RC existe; publicar no, hasta 3/3 PASS.
+> **Replanteamiento 2026-06-10:** la live migration directa host-a-host es
+> **modo avanzado/experimental**; el flujo oficial es la migración mediada por
+> el Hub (`docs/qa/V1_5_HUB_MIGRATION_UAT_PLAN.md`, que es el gate de release).
+> Estado: **U11 PASS · U12 PASS · U10 pendiente de NFS** (ya NO bloquea release).
 - **Equipos:** PC (origen) y portátil (destino), ambos con la RC instalada o
   el venv actualizado, conectados por la LAN privada.
 - **Regla de oro:** SOLO VMs `hgtest-*`. Jamás una VM real. Limpieza al acabar.

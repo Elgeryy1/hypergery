@@ -59,6 +59,14 @@ class ProfilePage(QWizardPage):
         super().__init__()
         self.setTitle("¿Cómo vas a usar HyperGery?")
         layout = QVBoxLayout(self)
+        layout.addWidget(
+            _info_label(
+                "Para usar VARIOS equipos, el Hub (en Docker, idealmente en tu NAS) es "
+                "obligatorio: es el centro de todo — los agentes de cada equipo se "
+                "emparejan con él y las migraciones normales pasan siempre por el Hub, "
+                "nunca de equipo a equipo por libre."
+            )
+        )
         self.group = QButtonGroup(self)
         self.buttons: dict[str, QRadioButton] = {}
         for key, label in firstrun.SETUP_PROFILES.items():
@@ -141,6 +149,8 @@ class HubPage(QWizardPage):
             )
         elif profile == "nas-docker":
             self.context_label.setText(
+                "El Hub del NAS será el CENTRO de tu instalación: crea y autoriza los jobs, "
+                "guarda los paquetes de migración y coordina los agentes de tus equipos.\n"
                 "Genera la carpeta exportable, cópiala al NAS/equipo dedicado y sigue su "
                 "README_SETUP.md. Después pega aquí la URL y el token y prueba la conexión."
             )
@@ -279,7 +289,10 @@ class SecurityPage(QWizardPage):
             _info_label(
                 "• El Hub y el API exigen token SIEMPRE; el token se guarda con permisos 0600.\n"
                 "• Nada se expone a Internet: fuera de tu LAN, usa VPN (WireGuard/Tailscale) o TLS.\n"
-                "• Las migraciones solo viajan por qemu+ssh o qemu+tls (qemu+tcp está prohibido).\n"
+                "• Las migraciones normales pasan SIEMPRE por el Hub (job autorizado, checksums,\n"
+                "  auditoría; el origen no se libera hasta confirmar el destino).\n"
+                "• La migración directa entre hosts es un modo avanzado y solo viaja por\n"
+                "  qemu+ssh o qemu+tls (qemu+tcp está prohibido).\n"
                 "• Los invitados tienen permisos limitados y nunca acciones destructivas.\n"
                 "• Todo lo destructivo (borrar, apagar a la fuerza, migrar) pide confirmación.\n\n"
                 "Política completa: docs/security/CONNECTIVITY_POLICY.md"
