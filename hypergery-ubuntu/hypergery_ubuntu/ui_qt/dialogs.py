@@ -1476,16 +1476,20 @@ def hub_target_candidates(hosts: list[dict], source_host_id: str, source_hostnam
 
 
 def live_uri_for_host(host: dict) -> str:
-    """Deriva una URI qemu+ssh del registro de un host del Hub (B3).
+    """Construye la URI qemu+ssh de un host del Hub SIN que el usuario la teclee.
 
-    Usa agent_url/address y, si está, un usuario sugerido. Devuelve "" si no hay
-    suficiente para proponer una URI (la UI deja editar a mano)."""
-    address = str(host.get("address") or host.get("agent_url") or "").strip()
+    El agente reporta su usuario SSH (ssh_user) y su IP (ssh_address); si faltan,
+    cae al hostname (host_id) — el origen ya resuelve el hostname por /etc/hosts.
+    Así la live migration no pide «lo de qemu»: sale rellena del Hub."""
+    address = str(host.get("ssh_address") or host.get("address") or host.get("agent_url") or "").strip()
     # Quita esquema/puerto si vinieran de un agent_url http://host:port.
     for prefix in ("http://", "https://"):
         if address.startswith(prefix):
             address = address[len(prefix):]
     address = address.split("/")[0].split(":")[0]
+    if not address:
+        # Sin IP reportada: usa el hostname/host_id (resoluble por /etc/hosts).
+        address = str(host.get("hostname") or host.get("host_id") or "").strip()
     if not address:
         return ""
     user = str(host.get("ssh_user") or host.get("user") or "").strip()
@@ -1527,7 +1531,9 @@ class LiveMigrationDialog(QDialog):
         self.transfer_mode.addItem("Migración en vivo — VM ENCENDIDA, modo avanzado (libvirt directo)", "live")
         # B3: URI del destino para la migración en vivo (qemu+ssh/qemu+tls).
         self.live_uri = QLineEdit("")
-        self.live_uri.setPlaceholderText("qemu+ssh://usuario@equipo/system")
+        self.live_uri.setPlaceholderText("Se rellena solo al elegir el equipo de destino")
+        self._live_uri_manual = False
+        self.live_uri.textEdited.connect(lambda _t: setattr(self, "_live_uri_manual", True))
         self.nas_path = QLineEdit(app_config["nas_staging_path"].value)
         self.include_iso = QCheckBox("Incluir la ISO conectada")
         self.include_iso.setChecked(True)
@@ -1616,6 +1622,7 @@ class LiveMigrationDialog(QDialog):
             widget.toggled.connect(self.invalidate_preflight)
         self.target_host.currentIndexChanged.connect(self.invalidate_preflight)
         self.target_host.currentIndexChanged.connect(self._render_target_summary)
+        self.target_host.currentIndexChanged.connect(lambda _i: self._autofill_live_uri())
         self.transfer_mode.currentIndexChanged.connect(self._on_transfer_mode_changed)
         # VM encendida → modo «migración en vivo» por defecto; apagada → «Hub».
         if "running" in (self.vm.state or "").lower():
@@ -1634,11 +1641,25 @@ class LiveMigrationDialog(QDialog):
             self.nas_browse_button.setEnabled(mode == "nas")
         if hasattr(self, "live_uri"):
             self.live_uri.setEnabled(mode == "live")
-            if mode == "live" and not self.live_uri.text():
-                target = self._selected_target()
-                if target:
-                    self.live_uri.setText(live_uri_for_host(target))
+            self._autofill_live_uri()
         self.invalidate_preflight()
+
+    def _autofill_live_uri(self) -> None:
+        """Rellena SOLO el destino en vivo desde el host elegido en el Hub, para
+        que el usuario no tenga que saber de qemu+ssh. Si el usuario lo editó a
+        mano, respeta su texto."""
+        if not hasattr(self, "live_uri"):
+            return
+        if getattr(self, "_live_uri_manual", False):
+            return
+        if str(self.transfer_mode.currentData() or "") != "live":
+            return
+        target = self._selected_target()
+        if target:
+            uri = live_uri_for_host(target)
+            if uri:
+                # setText no dispara textEdited, así que no se marca como manual.
+                self.live_uri.setText(uri)
 
     # ---------- pages ----------
 

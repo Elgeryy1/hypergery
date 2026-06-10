@@ -102,6 +102,26 @@ def read_cpu_model() -> str:
     return ""
 
 
+def _current_username() -> str:
+    """Usuario del sistema bajo el que corre el agente (= usuario SSH del host)."""
+    import getpass
+
+    try:
+        return getpass.getuser()
+    except Exception:
+        return os.environ.get("USER", "")
+
+
+def _primary_ip() -> str:
+    """IP local principal (la que usa la ruta por defecto), best effort."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.168.1.150", 80))  # no envía nada; solo elige la ruta
+            return sock.getsockname()[0]
+    except OSError:
+        return ""
+
+
 def vm_interfaces_from_xml(xml: str) -> tuple[list[str], list[str]]:
     """Extract (networks, MAC addresses) from a libvirt domain XML, best effort."""
     networks: list[str] = []
@@ -205,6 +225,10 @@ class HyperGeryAgent:
             "hypergery_version": __version__,
             "active_vms": active_vms,
             "notes": "",
+            # Para que la live migration construya la URI qemu+ssh sin que el
+            # usuario la teclee (el agente corre como el usuario SSH del equipo).
+            "ssh_user": _current_username(),
+            "ssh_address": _primary_ip(),
         }
 
     def vm_inventory_payload(self) -> dict[str, Any]:

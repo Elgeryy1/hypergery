@@ -37,6 +37,19 @@ class LiveUriHelperTests(unittest.TestCase):
     def test_empty_when_no_address(self):
         self.assertEqual(live_uri_for_host({}), "")
 
+    def test_built_from_agent_reported_ssh_user_and_ip(self):
+        # El agente reporta ssh_user/ssh_address; el URI sale solo, sin teclear.
+        self.assertEqual(
+            live_uri_for_host({"ssh_user": "gery", "ssh_address": "192.168.1.73", "hostname": "lenovo"}),
+            "qemu+ssh://gery@192.168.1.73/system",
+        )
+
+    def test_falls_back_to_hostname_when_no_ip(self):
+        self.assertEqual(
+            live_uri_for_host({"ssh_user": "gery", "hostname": "lenovo", "host_id": "lenovo"}),
+            "qemu+ssh://gery@lenovo/system",
+        )
+
 
 class _Vm:
     @staticmethod

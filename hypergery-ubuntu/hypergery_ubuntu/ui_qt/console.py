@@ -176,11 +176,15 @@ class VncScreen(QWidget):
             self.console.release_input()
             event.accept()
             return
-        if self.console.input_captured:
+        # El teclado llega al guest si la pantalla tiene el foco, sin obligar a
+        # capturar el ratón con un clic. Así el «Press any key» del instalador de
+        # Windows funciona en cuanto abres la consola (no hace falta saber que
+        # primero hay que hacer clic dentro).
+        if self.console.input_captured or self.hasFocus():
             self.console.send_key(event, True)
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
-        if self.console.input_captured:
+        if self.console.input_captured or self.hasFocus():
             self.console.send_key(event, False)
 
 
@@ -513,7 +517,13 @@ class IntegratedConsoleWidget(QWidget):
         socket.errorOccurred.connect(self.on_socket_error)
         socket.disconnected.connect(lambda: self.update_controls(True))
         self.mode_stack.setCurrentWidget(self.scroll_area)
-        self.set_status(f"Conectada. Negociando con el servidor VNC… Tecla para soltar: {HOST_KEY_NAME}")
+        # Da el foco del teclado a la pantalla para que el «Press any key» del
+        # instalador funcione sin tener que hacer clic dentro primero.
+        self.screen.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.set_status(
+            f"Conectada. Si arranca un instalador, pulsa una tecla cuando veas «Press any key». "
+            f"Tecla para soltar el ratón: {HOST_KEY_NAME}"
+        )
         self.update_controls(True)
         # The server speaks first in RFB, but if any bytes are already buffered,
         # process them now so the handshake is not stalled waiting for readyRead.

@@ -139,6 +139,10 @@ class RegistryStore:
             self._ensure_column(conn, "hosts", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "hosts", "updated_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "hosts", "telemetry_json", "TEXT NOT NULL DEFAULT ''")
+            # Para construir la URI qemu+ssh de live migration sin que el usuario
+            # la teclee: el agente reporta su usuario SSH y su IP.
+            self._ensure_column(conn, "hosts", "ssh_user", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "hosts", "ssh_address", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS host_vms (
@@ -251,6 +255,8 @@ class RegistryStore:
             "created_at": timestamp,
             "updated_at": timestamp,
             "telemetry_json": _json_dump(payload.get("telemetry") or {}),
+            "ssh_user": str(payload.get("ssh_user") or ""),
+            "ssh_address": str(payload.get("ssh_address") or ""),
         }
         with closing(self.connect()) as conn:
             existing = conn.execute("SELECT created_at FROM hosts WHERE host_id = ?", (host_id,)).fetchone()
@@ -262,12 +268,12 @@ class RegistryStore:
                     host_id, name, hostname, status, last_seen, cpu_model,
                     ram_total_mib, ram_free_mib, disk_free_mib, kvm_ok,
                     libvirt_ok, hypergery_version, active_vms, notes,
-                    created_at, updated_at, telemetry_json
+                    created_at, updated_at, telemetry_json, ssh_user, ssh_address
                 ) VALUES (
                     :host_id, :name, :hostname, :status, :last_seen, :cpu_model,
                     :ram_total_mib, :ram_free_mib, :disk_free_mib, :kvm_ok,
                     :libvirt_ok, :hypergery_version, :active_vms, :notes,
-                    :created_at, :updated_at, :telemetry_json
+                    :created_at, :updated_at, :telemetry_json, :ssh_user, :ssh_address
                 )
                 ON CONFLICT(host_id) DO UPDATE SET
                     name=excluded.name,
@@ -284,7 +290,9 @@ class RegistryStore:
                     active_vms=excluded.active_vms,
                     notes=excluded.notes,
                     updated_at=excluded.updated_at,
-                    telemetry_json=excluded.telemetry_json
+                    telemetry_json=excluded.telemetry_json,
+                    ssh_user=excluded.ssh_user,
+                    ssh_address=excluded.ssh_address
                 """,
                 host,
             )
