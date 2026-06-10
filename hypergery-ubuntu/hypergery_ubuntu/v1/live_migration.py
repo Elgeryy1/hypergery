@@ -348,6 +348,11 @@ class LiveMigrator:
         prepared = []
         for path in disk_paths:
             virtual_bytes = self._disk_virtual_bytes(path)
+            if virtual_bytes <= 0:
+                raise HyperGeryError(
+                    f"No se pudo leer el tamaño del disco de origen ({path}); no se crea un "
+                    "destino con tamaño incorrecto. Comprueba que el disco existe y reintenta."
+                )
             directory = str(Path(path).parent)
             script = (
                 f"mkdir -p {shlex.quote(directory)} && "
@@ -376,7 +381,10 @@ class LiveMigrator:
         return rest.split("/", 1)[0]  # user@host[:port]
 
     def _disk_virtual_bytes(self, path: str) -> int:
-        result = self.backend.run(["qemu-img", "info", "--output=json", path], check=False, timeout=30)
+        # -U (force share): el disco está bloqueado por el qemu de la VM
+        # ENCENDIDA; sin -U, info falla y crearíamos un destino de tamaño 0
+        # («Source and target image have different sizes»).
+        result = self.backend.run(["qemu-img", "info", "-U", "--output=json", path], check=False, timeout=30)
         if result.returncode == 0:
             try:
                 return int(json.loads(result.stdout).get("virtual-size") or 0)

@@ -79,8 +79,12 @@ class ScriptedHost:
         return result
 
     def run(self, cmd, *, check=True, timeout=120):
-        # cmd = ["virsh", "--connect", URI, *args]
-        result = self._dispatch(["T", *cmd[3:]])
+        if cmd[:2] == ["virsh", "--connect"]:
+            # cmd = ["virsh", "--connect", URI, *args] → virsh del destino.
+            result = self._dispatch(["T", *cmd[3:]])
+        else:
+            # Comandos locales/ssh de la preparación (qemu-img, ssh mkdir…).
+            result = self._dispatch(["R", cmd[0]])
         if check and result.returncode != 0:
             raise HyperGeryError(result.stderr)
         return result
@@ -103,6 +107,9 @@ def _happy_host(*, extra_devices: str = "", migrate_result: CommandResult | None
             ("T", "dominfo", "web01"): _fail("Domain not found"),
             ("T", "nodememstats"): _ok("total  : 16000000 KiB\nfree   : 8000000 KiB\n"),
             ("T", "domstate", "web01"): _ok("running\n"),
+            # Preparación del destino en block migration (qemu-img info -U + ssh mkdir/create).
+            ("R", "qemu-img"): _ok('{"virtual-size": 1073741824}'),
+            ("R", "ssh"): _ok(),
         }
     )
     # Después del switchover el origen ya no está running.

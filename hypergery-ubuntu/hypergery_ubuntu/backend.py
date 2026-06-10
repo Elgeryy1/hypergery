@@ -834,6 +834,10 @@ class HyperGeryBackend:
             # cross-vendor (el invitado no ve features específicas de un fabricante).
             cpu_el = ET.SubElement(domain, "cpu", {"mode": "custom", "match": "exact", "check": "partial"})
             ET.SubElement(cpu_el, "model", {"fallback": "allow"}).text = "qemu64"
+            # qemu64 incluye svm (AMD); sin esto, migrar AMD→Intel falla con
+            # «la CPU huésped no coincide: ausencia de características: svm»
+            # (verificado en el UAT físico).
+            ET.SubElement(cpu_el, "feature", {"policy": "disable", "name": "svm"})
         else:
             ET.SubElement(domain, "cpu", {"mode": "host-passthrough", "check": "none"})
         ET.SubElement(domain, "clock", {"offset": "utc"})
