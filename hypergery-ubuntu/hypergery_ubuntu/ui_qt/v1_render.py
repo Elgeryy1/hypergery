@@ -739,7 +739,111 @@ def _render_logs(data: dict[str, Any]) -> QWidget:
 # Dispatcher                                                                    #
 # --------------------------------------------------------------------------- #
 
+_OPERATION_STATUS_ES = {
+    "running": ("EN CURSO", "info"),
+    "done": ("TERMINADA", "ok"),
+    "completed": ("TERMINADA", "ok"),
+    "failed": ("FALLÓ", "danger"),
+    "cancelled": ("CANCELADA", "warn"),
+}
+
+
+def _render_dashboard(data: dict[str, Any]) -> QWidget:
+    """HG-BUG-0022: el /dashboard de v1.4 como tarjetas, no como JSON."""
+    hosts = _as_list(data.get("hosts"))
+    by_state = _as_dict(data.get("vms_by_state"))
+    battery = _as_dict(data.get("battery"))
+    widget, layout = _container()
+    layout.addWidget(_title_label("Salud del sistema"))
+
+    online = sum(1 for host in hosts if str(_as_dict(host).get("status")) == "online")
+    cards = [
+        _stat_card(str(data.get("vms_total", 0)), "máquinas en total"),
+        _stat_card(
+            f"{online}/{len(hosts)}" if hosts else "0",
+            "equipos conectados",
+            tone="ok" if hosts and online == len(hosts) else "warn" if hosts else "neutral",
+        ),
+    ]
+    if battery.get("available"):
+        percent = battery.get("percent")
+        cards.append(
+            _stat_card(
+                f"{percent}%" if percent is not None else "—",
+                "batería (cargando)" if battery.get("charging") else "batería",
+                tone="warn" if battery.get("tier") in {"low", "critical"} else "neutral",
+            )
+        )
+    layout.addWidget(_stat_row(cards))
+
+    for alert_widget in _alert_rows(_as_list(data.get("alerts"))):
+        layout.addWidget(alert_widget)
+
+    if by_state:
+        rows = [
+            [humanize.humanize_vm_status(state, style="table"), str(count)]
+            for state, count in sorted(by_state.items())
+        ]
+        layout.addWidget(_table(["Estado", "Máquinas"], rows))
+
+    if hosts:
+        host_rows: list[list[Any]] = []
+        for host in hosts:
+            item = _as_dict(host)
+            status = str(item.get("status") or "unknown")
+            chip = _chip(
+                "CONECTADO" if status == "online" else "SIN SEÑAL",
+                tone="ok" if status == "online" else "warn",
+            )
+            ram_free = item.get("ram_free_mib") or 0
+            ram_total = item.get("ram_total_mib") or 0
+            host_rows.append(
+                [
+                    _text(item.get("name") or item.get("id")),
+                    chip,
+                    f"{ram_free}/{ram_total} MiB libres" if ram_total else "—",
+                    _text(item.get("last_seen"), "nunca"),
+                ]
+            )
+        layout.addWidget(_table(["Equipo", "Estado", "Memoria", "Visto por última vez"], host_rows))
+    else:
+        layout.addWidget(_empty("Sin equipos registrados todavía: este equipo trabaja solo."))
+    return _scrollable(widget)
+
+
+def _render_progress(data: dict[str, Any]) -> QWidget:
+    """HG-BUG-0022: el /progress de v1.5 como lista legible, no como JSON."""
+    operations = _as_list(data.get("operations"))
+    widget, layout = _container()
+    layout.addWidget(_title_label("Operaciones en marcha y recientes"))
+
+    if not operations:
+        layout.addWidget(_empty("No hay operaciones en marcha ni recientes."))
+        return _scrollable(widget)
+
+    rows: list[list[Any]] = []
+    for operation in operations:
+        item = _as_dict(operation)
+        status = str(item.get("status") or "running")
+        status_text, tone = _OPERATION_STATUS_ES.get(status, (status.upper(), "neutral"))
+        percent = item.get("percent")
+        detail = _text(item.get("error") or item.get("message") or item.get("phase"), "")
+        rows.append(
+            [
+                _text(item.get("kind")),
+                _chip(status_text, tone=tone),
+                f"{percent:.0f}%" if isinstance(percent, (int, float)) else "—",
+                detail,
+                _text(item.get("updated_at"), "—"),
+            ]
+        )
+    layout.addWidget(_table(["Operación", "Estado", "Progreso", "Detalle", "Actualizada"], rows))
+    return _scrollable(widget)
+
+
 _BUILDERS: dict[str, Callable[[dict[str, Any]], QWidget]] = {
+    "Dashboard": _render_dashboard,
+    "Progress": _render_progress,
     "Telemetry": _render_telemetry,
     "Orchestrator": _render_orchestrator,
     "Battery": _render_battery,

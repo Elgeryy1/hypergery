@@ -277,3 +277,20 @@ ninguno. **No queda ningún hallazgo ALTO ni MEDIO abierto.**
 
 Gates finales: compileall OK · pytest **857 passed, 9 skipped** · suite real
 libvirt **8/8** · host limpio · agente headless importa sin PySide6.
+
+## Actualización 2026-06-10 — rama `hardening/pre-v1.5-bugfix-security`
+
+Pasada de bugfix + hardening previa a v1.5.0-rc. Cambios de estado:
+
+| ID | Estado anterior | Estado nuevo |
+|----|-----------------|--------------|
+| HG-BUG-0014 | Abierto | **ARREGLADO** — cancel de consola no bloqueante: el connect en vuelo se drena en segundo plano (`_draining_threads`), descriptores tardíos se descartan, sin `thread.wait()` en la UI y sin "QThread destroyed". Test: `test_cancel_does_not_block_ui_while_connect_hangs`. |
+| HG-BUG-0022 | Abierto | **ARREGLADO** — el Centro de control gana «Salud del sistema» (/dashboard v1.4) y «Operaciones» (/progress v1.5) renderizadas como tarjetas/tablas vía `v1_render`; el JSON queda solo tras «Ver detalles técnicos». Tests: `test_dashboard_and_progress_are_humanized_not_raw_json` + parametrizados. |
+| HG-BUG-0030 | EN COLA | **FASE 1 HECHA** — `ApiContext` extraído a `v1/api_context.py` (api.py 580→436 líneas) con re-export que mantiene la API pública. Fase 2 (handlers HTTP a `api_handlers/`) queda planificada para después de v1.5, antes de que v1.6 añada endpoints. |
+| HG-BUG-0020 | Cerrado sin tocar | **CERRADO con mejora** — `install-agent-user-service.sh` ahora respeta `HYPERGERY_HUB_URL` también para el default; documentado en `docs/HUB_SECURITY.md` que la IP es el NAS privado de Gerard, no un valor universal. Test: `test_hub_default_is_parametrized_not_hardcoded`. |
+
+Además: política de conectividad (`docs/security/CONNECTIVITY_POLICY.md`),
+threat model (`docs/security/V1_5_THREAT_MODEL.md`) y readiness
+(`docs/security/V1_5_SECURITY_READINESS.md`). Gates: compileall OK,
+pytest = **871 passed, 8 skipped**. bandit: no disponible en el venv (no se
+instaló nada por red).

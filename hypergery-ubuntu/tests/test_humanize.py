@@ -24,6 +24,8 @@ from hypergery_ubuntu.ui_qt.humanize import (
 class HumanizeTitlesTest(unittest.TestCase):
     def test_all_v1_keys_have_spanish_titles(self):
         expected_keys = {
+            "Dashboard",
+            "Progress",
             "Telemetry",
             "Orchestrator",
             "Battery",

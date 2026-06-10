@@ -21,6 +21,8 @@ INFO = "ℹ️"
 IDEA = "💡"
 
 V1_TAB_TITLES = {
+    "Dashboard": "Salud del sistema",
+    "Progress": "Operaciones",
     "Telemetry": "Mi equipo",
     "Orchestrator": "Sugerencias",
     "Battery": "Batería",

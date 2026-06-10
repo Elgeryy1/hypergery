@@ -8,9 +8,12 @@ set -euo pipefail
 #   ./scripts/install-agent-user-service.sh [--hub-url URL] [--uninstall]
 #
 # Defaults:
-#   Hub URL:  http://192.168.1.150:8765 (the Hub on the NAS). The agent's own
-#             config precedence still applies: HYPERGERY_HUB_URL env >
-#             ~/.config/hypergery/agent.json > this default.
+#   Hub URL:  --hub-url > HYPERGERY_HUB_URL env > http://192.168.1.150:8765.
+#             The default is the Hub on Gerard's own NAS (private LAN), NOT a
+#             universal value: on any other deployment pass --hub-url or set
+#             HYPERGERY_HUB_URL. The agent's own config precedence still
+#             applies: HYPERGERY_HUB_URL env > ~/.config/hypergery/agent.json
+#             > this default.
 #   Python:   ~/.venvs/hypergery/bin/python (override with HYPERGERY_VENV).
 #
 # Notes:
@@ -23,13 +26,13 @@ set -euo pipefail
 
 venv_dir="${HYPERGERY_VENV:-$HOME/.venvs/hypergery}"
 python_bin="${HYPERGERY_PYTHON:-$venv_dir/bin/python}"
-hub_url="http://192.168.1.150:8765"
+hub_url="${HYPERGERY_HUB_URL:-http://192.168.1.150:8765}"
 unit_dir="$HOME/.config/systemd/user"
 unit_file="$unit_dir/hypergery-agent.service"
 uninstall=0
 
 usage() {
-  sed -n '4,23p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '4,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do

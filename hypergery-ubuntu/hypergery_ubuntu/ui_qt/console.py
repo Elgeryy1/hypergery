@@ -196,6 +196,9 @@ class IntegratedConsoleWidget(QWidget):
         self.socket: QTcpSocket | None = None
         self.connect_thread: QThread | None = None
         self.connect_worker: VncConnectWorker | None = None
+        # Cancelled connect threads draining in the background (HG-BUG-0014):
+        # kept referenced until finished so Qt never destroys a running QThread.
+        self._draining_threads: set[QThread] = set()
         self.connecting = False
         self.buffer = bytearray()
         self.state = "idle"
@@ -450,24 +453,46 @@ class IntegratedConsoleWidget(QWidget):
         self.connect_worker = None
 
     def _stop_connect_worker(self) -> None:
+        """Cancela el connect en vuelo SIN bloquear la UI (HG-BUG-0014).
+
+        El connect bloqueante sigue corriendo en su hilo (acotado por el
+        timeout de 10 s), pero se le retira el control de la UI: sus señales
+        de resultado se desconectan, salvo ``connected``, que se recablea a
+        ``_discard_descriptor`` para que un socket tardío se cierre en vez de
+        filtrarse. El hilo queda referenciado en ``_draining_threads`` hasta
+        que termina, evitando el crash «QThread destroyed while thread is
+        still running» sin ningún ``wait()`` síncrono.
+        """
         thread = self.connect_thread
         if thread is None:
             self.connecting = False
             return
-        # Detach our slots so a late result cannot drive the UI after we bailed,
-        # then wait for the blocking connect (bounded by the 10 s timeout) to end.
         worker = self.connect_worker
+        self.connecting = False
+        self.connect_thread = None
+        self.connect_worker = None
         if worker is not None:
             for signal in (worker.connected, worker.failed, worker.timed_out):
                 try:
                     signal.disconnect()
                 except (RuntimeError, TypeError):
                     pass
+            worker.connected.connect(self._discard_descriptor)
+            # El wrapper Python del worker debe sobrevivir hasta que el hilo
+            # termine: si se recolecta, PySide destruye el QObject con señales
+            # aún en vuelo (segfault). El hilo (referenciado abajo) lo ancla.
+            thread._hg_draining_worker = worker
+        # Este hilo cancelado ya no debe tocar el estado del próximo intento.
+        try:
+            thread.finished.disconnect(self._on_connect_thread_finished)
+        except (RuntimeError, TypeError):
+            pass
+        # Sin padre Qt: si este widget muere antes que el hilo, Qt no destruye
+        # un QThread en marcha. La referencia Python lo mantiene vivo.
+        thread.setParent(None)
+        self._draining_threads.add(thread)
+        thread.finished.connect(lambda t=thread: self._draining_threads.discard(t))
         thread.quit()
-        thread.wait()
-        self.connecting = False
-        self.connect_thread = None
-        self.connect_worker = None
 
     def _on_worker_connected(self, descriptor: int) -> None:
         if not self.connecting:
