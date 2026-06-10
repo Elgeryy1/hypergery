@@ -178,7 +178,18 @@ class HyperGeryAgent:
             except Exception:
                 libvirt_ok = False
         kvm = Path("/dev/kvm")
+        # v1.4: muestra de telemetría en cada heartbeat (nunca rompe el
+        # heartbeat si la telemetría falla).
+        telemetry: dict[str, Any] = {}
+        try:
+            from .v1.settings import V1Settings
+            from .v1.telemetry import TelemetryService
+
+            telemetry = TelemetryService(settings=V1Settings(), host_id=self.config.host_id).sample_local().to_dict()
+        except Exception:
+            telemetry = {}
         return {
+            "telemetry": telemetry,
             "host_id": self.config.host_id,
             "name": self.config.name,
             "hostname": socket.gethostname(),

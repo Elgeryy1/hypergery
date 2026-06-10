@@ -82,6 +82,10 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     orch_plan = orch_sub.add_parser("plan", help="Generate an explainable placement plan (never executes).")
     orch_plan.add_argument("--lab", default="")
     orch_plan.add_argument("--local-only", action="store_true")
+    orch_apply = orch_sub.add_parser("apply", help="Recompute the plan for ONE VM and apply it (requires --confirm).")
+    orch_apply.add_argument("vm_id")
+    orch_apply.add_argument("--local-only", action="store_true")
+    orch_apply.add_argument("--confirm", action="store_true")
 
     teleport = v1_sub.add_parser("teleport", help="Teleport engine (dry-run / loopback).")
     teleport_sub = teleport.add_subparsers(dest="teleport_command", required=True)
@@ -220,6 +224,33 @@ def v1_action(args: argparse.Namespace) -> int:
             lab_id=args.lab or None,
         )
         return _print_json({"plans": [plan.to_dict() for plan in plans]})
+    if args.v1_command == "orchestrator" and args.orchestrator_command == "apply":
+        from .orchestrator import apply_plan
+        from .teleport import TeleportEngine
+
+        registry = HostRegistry(settings=settings, telemetry=telemetry, hub_client=_hub_client())
+        hosts = registry.list_hosts()
+        backend = _local_backend()
+        vms = []
+        if backend is not None:
+            try:
+                from .providers import LocalProvider
+
+                vms = LocalProvider(backend).list_vms()
+            except Exception:
+                vms = []
+        plans = OrchestratorService(settings=settings).plan(
+            hosts=hosts,
+            vms=vms,
+            battery=BatteryService(settings=settings).read(),
+            local_host_id=hosts[0].id if hosts else None,
+            allow_remote=not args.local_only,
+        )
+        plan = next((p for p in plans if p.vm_id == args.vm_id), None)
+        if plan is None:
+            raise HyperGeryError(f"No plan found for VM: {args.vm_id}")
+        engine = TeleportEngine(backend, settings=settings, hub_client=_hub_client()) if backend is not None else None
+        return _print_json(apply_plan(plan, teleport_engine=engine, confirm=args.confirm))
     if args.v1_command == "teleport":
         backend = _local_backend()
         if backend is None:
