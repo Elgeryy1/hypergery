@@ -18,6 +18,9 @@ ALLOWED_COMMAND_TYPES = {
     "receive_vm_package",
     "import_vm_package",
     "migration_status",
+    # v1.5: preparar carpetas de discos para live migration; la autorización
+    # (sudo) se pide GRÁFICAMENTE en el equipo receptor, nunca por la red.
+    "prepare_storage",
     # v0.8 remote VM power control. Deliberately excluded: delete, undefine,
     # delete-disks, XML edits, arbitrary shell — nothing destructive on disks.
     "vm_start",

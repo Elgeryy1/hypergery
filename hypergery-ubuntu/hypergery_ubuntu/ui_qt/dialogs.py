@@ -2174,45 +2174,72 @@ class LiveMigrationDialog(QDialog):
         )
         if result.returncode == 0:
             return "Carpetas de destino: listas."
-        # Hace falta sudo en el destino: pedir contraseña (transitoria).
-        password, accepted = QInputDialog.getText(
-            self,
-            "Permiso en el equipo de destino",
-            (
-                f"El equipo de destino ({ssh_dest}) necesita crear estas carpetas para recibir la máquina:\n\n"
-                + "\n".join(f"  {d}" for d in dirs)
-                + "\n\nIntroduce la contraseña de sudo de ese equipo (se usa UNA vez, no se guarda):"
-            ),
-            QLineEdit.EchoMode.Password,
-        )
-        if not accepted or not password:
-            self.error_label.setText("Preparación del destino cancelada: la carpeta del disco no existe allí.")
+        # Hace falta permiso de administrador EN EL EQUIPO RECEPTOR: se encola
+        # un trabajo por el Hub y es ESA máquina la que pide su contraseña en su
+        # propia pantalla (la contraseña nunca viaja por la red).
+        return self._request_target_authorization(dirs)
+
+    def _request_target_authorization(self, dirs: list[str]) -> str | None:
+        import time as _time
+
+        from ..registry import RegistryClient
+
+        target_id = str(self.target_host.currentData() or "")
+        if not target_id:
+            self.error_label.setText("Elige el equipo de destino en el Hub para poder prepararlo.")
             return None
-        chown = f" && chown {_shlex.quote(target_user)}: \"$d\"" if target_user else ""
-        script = f"sudo -S -p '' sh -c 'for d in {quoted}; do mkdir -p \"$d\"{chown}; done'"
         try:
-            result = _subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", ssh_dest, script],
-                input=password + "\n", capture_output=True, text=True, timeout=60,
+            client = RegistryClient(self.registry_url.text().strip())
+            command = client.create_command(
+                target_id,
+                "prepare_storage",
+                {
+                    "dirs": dirs,
+                    "vm_name": self.vm.name,
+                    "source_host_id": self.source_host_id.text().strip(),
+                },
             )
-        finally:
-            password = ""  # transitoria: fuera de memoria cuanto antes
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip().splitlines()
-            self.error_label.setText(
-                "No se pudieron crear las carpetas en el destino (¿contraseña incorrecta?): "
-                + (detail[-1] if detail else "error desconocido")
-            )
+        except HyperGeryError as exc:
+            self.error_label.setText(f"No se pudo pedir la preparación al equipo de destino: {exc}")
             return None
-        # Re-sondea sin sudo: ahora deben ser escribibles por el usuario.
-        recheck = _subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", ssh_dest, probe],
-            capture_output=True, text=True, timeout=30,
+        command_id = str(command.get("command_id") or "")
+        waiting = QMessageBox(self)
+        waiting.setWindowTitle("Autorización en el equipo de destino")
+        waiting.setText(
+            "El equipo de destino necesita crear las carpetas de la máquina.\n\n"
+            "➡ Ve al OTRO equipo: le está apareciendo una ventana pidiendo SU contraseña.\n"
+            "Cuando la escribas allí, esto continuará solo."
         )
-        if recheck.returncode != 0:
-            self.error_label.setText("Las carpetas se crearon pero siguen sin ser escribibles en el destino.")
+        waiting.setStandardButtons(QMessageBox.StandardButton.Cancel)
+        waiting.show()
+        QApplication.processEvents()
+        deadline = _time.monotonic() + 200  # el receptor tiene hasta 3 min para autorizar
+        status, error_detail = "pending", ""
+        while _time.monotonic() < deadline:
+            QApplication.processEvents()
+            if waiting.clickedButton() is not None:
+                status = "cancelled"
+                break
+            try:
+                record = client.command(command_id)
+            except HyperGeryError:
+                record = {}
+            status = str(record.get("status") or "pending")
+            if status in {"done", "failed"}:
+                error_detail = str((record.get("result") or {}).get("error") or "")
+                break
+            _time.sleep(1.0)
+        waiting.close()
+        if status == "done":
+            return "Carpetas de destino: autorizadas y creadas en el equipo receptor."
+        if status == "cancelled":
+            self.error_label.setText("Cancelado: el destino no quedó preparado.")
             return None
-        return "Carpetas de destino: creadas con permiso de administrador (una vez)."
+        self.error_label.setText(
+            error_detail
+            or "El equipo de destino no autorizó la operación a tiempo (¿hay alguien delante de su pantalla?)."
+        )
+        return None
 
     def _format_preflight(self, result: dict) -> str:
         errors = result.get("errors", [])

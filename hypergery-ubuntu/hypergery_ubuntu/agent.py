@@ -102,6 +102,21 @@ def read_cpu_model() -> str:
     return ""
 
 
+def _prepare_storage_dirs(dirs: list[str]) -> list[str]:
+    """Intenta crear/verificar las carpetas SIN privilegios. Devuelve las que
+    siguen sin ser escribibles."""
+    failed: list[str] = []
+    for directory in dirs:
+        try:
+            os.makedirs(directory, exist_ok=True)
+            writable = os.access(directory, os.W_OK)
+        except OSError:
+            writable = False
+        if not writable:
+            failed.append(directory)
+    return failed
+
+
 def _current_username() -> str:
     """Usuario del sistema bajo el que corre el agente (= usuario SSH del host)."""
     import getpass
@@ -283,6 +298,8 @@ class HyperGeryAgent:
             raise HyperGeryError(f"Unsupported command_type: {command_type}")
         if command_type == "ping":
             return "done", {"pong": True, "host_id": self.config.host_id}
+        if command_type == "prepare_storage":
+            return self.prepare_storage(payload)
         if command_type == "preflight":
             if payload.get("vm_name"):
                 from .migration import migration_preflight
@@ -441,6 +458,68 @@ class HyperGeryAgent:
                 "package": match,
             }
         return "failed", {"error": f"Unhandled command_type: {command_type}"}
+
+    def prepare_storage(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Prepara carpetas de discos para recibir una migración en vivo.
+
+        Primero sin privilegios. Si hace falta root, la AUTORIZACIÓN se pide en
+        ESTA máquina (la que recibe): sudo -A con un askpass gráfico (zenity) en
+        la pantalla del usuario local. La contraseña la teclea el usuario del
+        equipo receptor y la consume sudo LOCALMENTE — nunca viaja por la red ni
+        se guarda."""
+        import subprocess
+        import tempfile as _tempfile
+
+        dirs = [str(d) for d in (payload.get("dirs") or []) if str(d).startswith("/")]
+        if not dirs:
+            return "failed", {"error": "prepare_storage requiere una lista 'dirs' de rutas absolutas."}
+        failed = _prepare_storage_dirs(dirs)
+        if not failed:
+            return "done", {"dirs": dirs, "privileged": False}
+
+        if not shutil.which("zenity") or not shutil.which("sudo"):
+            return "failed", {
+                "error": "Faltan carpetas que requieren permisos y este equipo no puede pedir "
+                f"autorización gráfica (zenity/sudo no disponibles): {', '.join(failed)}"
+            }
+        source = str(payload.get("source_host_id") or "otro equipo")
+        vm_name = str(payload.get("vm_name") or "una máquina virtual")
+        text = (
+            f"{source} quiere enviarte {vm_name} (migración en vivo).\\n"
+            f"HyperGery necesita crear: {', '.join(failed)}\\n"
+            "Introduce tu contraseña para autorizarlo (solo esta vez)."
+        )
+        askpass = _tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False, encoding="utf-8")
+        try:
+            askpass.write(
+                "#!/bin/sh\nexec zenity --password --title='HyperGery — autorizar migración' "
+                f"--text=\"{text}\"\n"
+            )
+            askpass.close()
+            os.chmod(askpass.name, 0o700)
+            user = _current_username()
+            quoted = " ".join("'" + d.replace("'", "'\\''") + "'" for d in failed)
+            script = f"mkdir -p {quoted} && chown {user}: {quoted}"
+            env = dict(os.environ)
+            env.setdefault("DISPLAY", ":0")
+            env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+            env["SUDO_ASKPASS"] = askpass.name
+            result = subprocess.run(
+                ["sudo", "-A", "sh", "-c", script],
+                env=env, capture_output=True, text=True, timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            return "failed", {"error": "Nadie autorizó la operación en el equipo receptor (tiempo agotado)."}
+        finally:
+            Path(askpass.name).unlink(missing_ok=True)
+        if result.returncode != 0:
+            return "failed", {
+                "error": "El usuario del equipo receptor canceló o la contraseña no era válida."
+            }
+        still_failed = _prepare_storage_dirs(dirs)
+        if still_failed:
+            return "failed", {"error": f"Las carpetas siguen sin ser escribibles: {', '.join(still_failed)}"}
+        return "done", {"dirs": dirs, "privileged": True}
 
     def execute_vm_power_command(self, command_type: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         action, backend_method, allowed_states = VM_POWER_COMMANDS[command_type]
