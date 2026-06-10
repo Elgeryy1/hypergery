@@ -134,6 +134,10 @@ class BuildDebTests(unittest.TestCase):
             self.assertIn("Package: hypergery", field)
             self.assertIn("Architecture: all", field)
             self.assertIn("python3", field)
+            # B4: la UI usa PySide6.QtNetwork (consola VNC); el .deb debe pedirlo
+            # para que `hypergery --first-run` no falle con ModuleNotFoundError.
+            self.assertIn("qtnetwork", field.lower())
+            self.assertIn("qtgui", field.lower())
 
             contents = subprocess.run(
                 ["dpkg-deb", "-c", str(deb)], capture_output=True, text=True

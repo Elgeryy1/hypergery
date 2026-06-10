@@ -70,8 +70,8 @@ Section: admin
 Priority: optional
 Architecture: all
 Installed-Size: $INSTALLED_SIZE
-Depends: python3 (>= 3.10), python3-pyside6.qtwidgets | python3-pyside6
-Recommends: qemu-kvm, libvirt-daemon-system, libvirt-clients, virt-viewer, qemu-utils
+Depends: python3 (>= 3.10), python3-pyside6.qtwidgets | python3-pyside6, python3-pyside6.qtnetwork | python3-pyside6, python3-pyside6.qtgui | python3-pyside6, python3-pyside6.qtcore | python3-pyside6
+Recommends: qemu-kvm, libvirt-daemon-system, libvirt-clients, virt-viewer, qemu-utils, ovmf, swtpm, swtpm-tools
 Maintainer: HyperGery <gerard.alpo17@gmail.com>
 Homepage: https://github.com/Elgeryy1/hypergery
 Description: Personal KVM/QEMU/libvirt virtual machine manager

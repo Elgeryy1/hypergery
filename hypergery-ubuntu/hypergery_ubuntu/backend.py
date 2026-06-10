@@ -665,12 +665,25 @@ class HyperGeryBackend:
         network_mode: str,
         display_mode: str = "spice",
         lab_id: str = "default-lab",
+        profile: str = "",
     ) -> VmSummary:
+        from .vm_profiles import preflight_profile, profile_for, validate_iso
+
         name = validate_vm_name(name)
         lab_id = validate_lab_id(lab_id)
+        # B1/B2: perfil explícito (windows11, linux…) o derivado de os_type.
+        vm_profile = profile_for(profile or os_type)
         iso = Path(iso_path).expanduser().resolve()
         if not iso.is_file():
             raise HyperGeryError(f"ISO does not exist: {iso}")
+        iso_check = validate_iso(str(iso))
+        if not iso_check["ok"]:
+            raise HyperGeryError("ISO inválida: " + "; ".join(iso_check["errors"]))
+        # B1: dependencias de firmware/TPM ANTES de crear nada (no bypass).
+        pf = preflight_profile(vm_profile)
+        if not pf.ok:
+            hint = (" Ejecuta: " + " && ".join(pf.suggested_commands)) if pf.suggested_commands else ""
+            raise HyperGeryError("; ".join(pf.errors) + hint)
         if ram_mib < 256 or vcpus < 1 or disk_gb < 1:
             raise HyperGeryError("RAM, vCPU, and disk size must be positive values.")
         base_dir = Path(disk_dir).expanduser().resolve() if disk_dir else self.vms_dir / name
@@ -694,13 +707,14 @@ class HyperGeryBackend:
         xml = self.domain_xml(
             name=name,
             iso_path=str(iso),
-            os_type=os_type,
+            os_type=vm_profile.os_type,
             ram_mib=ram_mib,
             vcpus=vcpus,
             disk_path=str(disk_path),
             network_id=network_id,
             lab_id=lab_id,
             display_mode=display_mode,
+            profile_key=vm_profile.key,
         )
         self.define_domain_xml(xml)
         self.update_lab_for_vm(lab_id, name, str(disk_path), str(iso), network_id)
@@ -757,9 +771,13 @@ class HyperGeryBackend:
         network_id: str,
         lab_id: str,
         display_mode: str = "spice",
+        profile_key: str = "",
     ) -> str:
+        from .vm_profiles import profile_for, resolve_ovmf
+
         if display_mode not in {"spice", "vnc"}:
             raise HyperGeryError("Display mode must be spice or vnc.")
+        vm_profile = profile_for(profile_key or os_type)
         emulator = shutil.which("qemu-system-x86_64") or "/usr/bin/qemu-system-x86_64"
         domain = ET.Element("domain", {"type": "kvm"})
         ET.SubElement(domain, "name").text = name
@@ -771,6 +789,7 @@ class HyperGeryBackend:
         ET.SubElement(hg, f"{{{HG_NS}}}lab_id").text = lab_id
         ET.SubElement(hg, f"{{{HG_NS}}}created_at").text = now_iso()
         ET.SubElement(hg, f"{{{HG_NS}}}os_type").text = os_type
+        ET.SubElement(hg, f"{{{HG_NS}}}profile").text = vm_profile.key
         ET.SubElement(hg, f"{{{HG_NS}}}iso_path").text = iso_path
         ET.SubElement(hg, f"{{{HG_NS}}}disk_path").text = disk_path
         ET.SubElement(hg, f"{{{HG_NS}}}network_id").text = network_id
@@ -779,12 +798,31 @@ class HyperGeryBackend:
         ET.SubElement(domain, "currentMemory", {"unit": "MiB"}).text = str(ram_mib)
         ET.SubElement(domain, "vcpu", {"placement": "static"}).text = str(vcpus)
         os_el = ET.SubElement(domain, "os")
-        ET.SubElement(os_el, "type", {"arch": "x86_64", "machine": "q35"}).text = "hvm"
+        ET.SubElement(os_el, "type", {"arch": "x86_64", "machine": vm_profile.machine}).text = "hvm"
+        # B1: firmware UEFI (OVMF) + NVMRAM por VM cuando el perfil lo pide.
+        if vm_profile.firmware in {"uefi", "uefi-secure"}:
+            want_secure = vm_profile.firmware == "uefi-secure"
+            ovmf = resolve_ovmf(secure_boot=want_secure)
+            secure = ovmf.get("secure_boot") == "yes"
+            loader = ET.SubElement(
+                os_el,
+                "loader",
+                {"readonly": "yes", "type": "pflash", "secure": "yes" if secure else "no"},
+            )
+            if ovmf.get("code"):
+                loader.text = ovmf["code"]
+            nvram = ET.SubElement(os_el, "nvram")
+            nvram.text = str(Path(disk_path).with_suffix(".nvram"))
+            if ovmf.get("vars"):
+                nvram.attrib["template"] = ovmf["vars"]
         ET.SubElement(os_el, "boot", {"dev": "cdrom"})
         ET.SubElement(os_el, "boot", {"dev": "hd"})
         features = ET.SubElement(domain, "features")
         ET.SubElement(features, "acpi")
         ET.SubElement(features, "apic")
+        # Secure Boot requiere SMM activado en q35/OVMF.
+        if vm_profile.firmware == "uefi-secure" and resolve_ovmf(secure_boot=True).get("secure_boot") == "yes":
+            ET.SubElement(features, "smm", {"state": "on"})
         ET.SubElement(domain, "cpu", {"mode": "host-passthrough", "check": "none"})
         ET.SubElement(domain, "clock", {"offset": "utc"})
         on_poweroff = ET.SubElement(domain, "on_poweroff")
@@ -796,7 +834,8 @@ class HyperGeryBackend:
         disk = ET.SubElement(devices, "disk", {"type": "file", "device": "disk"})
         ET.SubElement(disk, "driver", {"name": "qemu", "type": "qcow2", "discard": "unmap"})
         ET.SubElement(disk, "source", {"file": disk_path})
-        ET.SubElement(disk, "target", {"dev": "vda", "bus": "virtio"})
+        disk_target_dev = "vda" if vm_profile.disk_bus == "virtio" else "sda"
+        ET.SubElement(disk, "target", {"dev": disk_target_dev, "bus": vm_profile.disk_bus})
         cdrom = ET.SubElement(devices, "disk", {"type": "file", "device": "cdrom"})
         ET.SubElement(cdrom, "driver", {"name": "qemu", "type": "raw"})
         ET.SubElement(cdrom, "source", {"file": iso_path})
@@ -813,6 +852,10 @@ class HyperGeryBackend:
             channel = ET.SubElement(devices, "channel", {"type": "spicevmc"})
             ET.SubElement(channel, "target", {"type": "virtio", "name": "com.redhat.spice.0"})
         ET.SubElement(devices, "memballoon", {"model": "virtio"})
+        # B1: vTPM 2.0 (swtpm) — requisito de Windows 11.
+        if vm_profile.tpm:
+            tpm = ET.SubElement(devices, "tpm", {"model": "tpm-crb"})
+            ET.SubElement(tpm, "backend", {"type": "emulator", "version": "2.0"})
         return ET.tostring(domain, encoding="unicode")
 
     def define_domain_xml(self, xml: str) -> None:

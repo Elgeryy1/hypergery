@@ -413,8 +413,12 @@ class IdentityPage(QWizardPage):
         self.iso_info_label = QLabel("")
         self.iso_info_label.setObjectName("mutedLabel")
         self.iso_info_label.setWordWrap(True)
+        # B1/B2: el SO se elige como PERFIL (firmware/TPM correctos por sistema).
+        from .. import vm_profiles as _vp
+
         self.os_type = QComboBox()
-        self.os_type.addItems(["Linux", "Windows", "Otro"])
+        for _key in ("linux", "linux-uefi", "windows11", "windows-legacy", "other"):
+            self.os_type.addItem(_vp.PROFILES[_key].label, _key)
 
         iso_row = QHBoxLayout()
         iso_row.addWidget(self.iso_edit, 1)
@@ -433,6 +437,7 @@ class IdentityPage(QWizardPage):
         self.registerField("name*", self.name_edit)
         self.registerField("iso*", self.iso_edit)
         self.registerField("os_type", self.os_type, "currentText", self.os_type.currentTextChanged)
+        self.os_type.currentIndexChanged.connect(lambda _i: self._refresh_iso_info())
         self.name_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
         self.iso_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
         self.iso_edit.textChanged.connect(lambda _text: self._refresh_iso_info())
@@ -466,9 +471,22 @@ class IdentityPage(QWizardPage):
             info = f"Tamaño: {size_text}"
             if message:
                 info += f" · {message}"
-            self.iso_info_label.setText(info)
+            self.iso_info_label.setText(info + self._profile_dependency_note())
         else:
             self.iso_info_label.setText(message)
+
+    def _profile_dependency_note(self) -> str:
+        """B1: avisa en la propia UI si el perfil elegido (p. ej. Windows 11)
+        necesita ovmf/swtpm que no están instalados, con el comando para
+        instalarlos. No bloquea aquí; el preflight de create_vm es el guard real."""
+        from .. import vm_profiles as _vp
+
+        key = str(self.os_type.currentData() or _vp.DEFAULT_PROFILE)
+        pf = _vp.preflight_profile(_vp.PROFILES.get(key, _vp.PROFILES[_vp.DEFAULT_PROFILE]))
+        if pf.ok:
+            return ""
+        cmd = " && ".join(pf.suggested_commands)
+        return f"\n⚠️ {' '.join(pf.errors)}" + (f"\nInstala: {cmd}" if cmd else "")
 
     def isComplete(self) -> bool:
         return bool(self.name_edit.text().strip() and self.iso_edit.text().strip())
@@ -649,10 +667,14 @@ class VMWizard(QWizard):
                 self.integration_page.display.setCurrentIndex(idx)
 
     def values(self) -> dict:
+        from .. import vm_profiles as _vp
+
+        profile_key = str(self.identity_page.os_type.currentData() or _vp.DEFAULT_PROFILE)
         return {
             "name": self.identity_page.name_edit.text().strip(),
             "iso_path": self.identity_page.iso_edit.text().strip(),
-            "os_type": self.identity_page.os_type.currentText(),
+            "os_type": _vp.PROFILES.get(profile_key, _vp.PROFILES[_vp.DEFAULT_PROFILE]).os_type,
+            "profile": profile_key,
             "ram_mib": self.resources_page.ram.value(),
             "vcpus": self.resources_page.vcpus.value(),
             "disk_gb": self.resources_page.disk.value(),
@@ -1113,6 +1135,24 @@ class DeleteConfirmationDialog(QDialog):
         return self.delete_disk.isChecked()
 
 
+def live_uri_for_host(host: dict) -> str:
+    """Deriva una URI qemu+ssh del registro de un host del Hub (B3).
+
+    Usa agent_url/address y, si está, un usuario sugerido. Devuelve "" si no hay
+    suficiente para proponer una URI (la UI deja editar a mano)."""
+    address = str(host.get("address") or host.get("agent_url") or "").strip()
+    # Quita esquema/puerto si vinieran de un agent_url http://host:port.
+    for prefix in ("http://", "https://"):
+        if address.startswith(prefix):
+            address = address[len(prefix):]
+    address = address.split("/")[0].split(":")[0]
+    if not address:
+        return ""
+    user = str(host.get("ssh_user") or host.get("user") or "").strip()
+    prefix = f"{user}@" if user else ""
+    return f"qemu+ssh://{prefix}{address}/system"
+
+
 class LiveMigrationDialog(QDialog):
     """NAS Clone Migration wizard: stepper + stacked pages over the existing v0.6 flow."""
 
@@ -1142,8 +1182,12 @@ class LiveMigrationDialog(QDialog):
         self.target_host = QComboBox()
         self.target_name = QLineEdit(f"{vm.name}-migrated")
         self.transfer_mode = QComboBox()
-        self.transfer_mode.addItem("Por el Hub — se sube al Hub, no hace falta NAS compartido", "hub")
+        self.transfer_mode.addItem("Por el Hub — se sube al Hub, no hace falta NAS compartido (oficial)", "hub")
         self.transfer_mode.addItem("Por carpeta NAS compartida — visible en ambos equipos", "nas")
+        self.transfer_mode.addItem("Migración en vivo — VM ENCENDIDA, modo avanzado (libvirt directo)", "live")
+        # B3: URI del destino para la migración en vivo (qemu+ssh/qemu+tls).
+        self.live_uri = QLineEdit("")
+        self.live_uri.setPlaceholderText("qemu+ssh://usuario@equipo/system")
         self.nas_path = QLineEdit(app_config["nas_staging_path"].value)
         self.include_iso = QCheckBox("Incluir la ISO conectada")
         self.include_iso.setChecked(True)
@@ -1238,10 +1282,16 @@ class LiveMigrationDialog(QDialog):
         self.refresh_hosts()
 
     def _on_transfer_mode_changed(self, *_args) -> None:
-        nas_selected = str(self.transfer_mode.currentData() or "") == "nas"
-        self.nas_path.setEnabled(nas_selected)
+        mode = str(self.transfer_mode.currentData() or "")
+        self.nas_path.setEnabled(mode == "nas")
         if hasattr(self, "nas_browse_button"):
-            self.nas_browse_button.setEnabled(nas_selected)
+            self.nas_browse_button.setEnabled(mode == "nas")
+        if hasattr(self, "live_uri"):
+            self.live_uri.setEnabled(mode == "live")
+            if mode == "live" and not self.live_uri.text():
+                target = self._selected_target()
+                if target:
+                    self.live_uri.setText(live_uri_for_host(target))
         self.invalidate_preflight()
 
     # ---------- pages ----------
@@ -1331,6 +1381,7 @@ class LiveMigrationDialog(QDialog):
         form.addRow("Nombre en el destino", self.target_name)
         form.addRow("Forma de envío", self.transfer_mode)
         form.addRow("Carpeta del NAS", path_row)
+        form.addRow("Destino en vivo (URI)", self.live_uri)
         form.addRow("", self.include_iso)
         form.addRow("", self.include_snapshots)
         form.addRow("", self.allow_paused)
@@ -1561,6 +1612,7 @@ class LiveMigrationDialog(QDialog):
             "target_vm_name": self.target_name.text().strip(),
             "transfer": str(self.transfer_mode.currentData() or "nas"),
             "nas_path": self.nas_path.text().strip(),
+            "live_uri": self.live_uri.text().strip() if hasattr(self, "live_uri") else "",
             "include_iso": self.include_iso.isChecked(),
             "include_snapshots": self.include_snapshots.isChecked(),
             "allow_paused": self.allow_paused.isChecked(),
@@ -1589,6 +1641,9 @@ class LiveMigrationDialog(QDialog):
         if values["target_host_id"] == values["source_host_id"]:
             self.error_label.setText("El destino debe ser distinto del origen.")
             self.package_button.setEnabled(False)
+            return
+        if values["transfer"] == "live":
+            self._run_live_preflight(values)
             return
         target = self._selected_target()
         if not target or target.get("status") != "online":
@@ -1623,6 +1678,36 @@ class LiveMigrationDialog(QDialog):
         self.preflight_result = result
         self.result_view.setPlainText(self._format_preflight(result))
         self.package_button.setEnabled(bool(result.get("ok")))
+
+    def _run_live_preflight(self, values: dict) -> None:
+        """B3 modo B: comprobación ligera antes de la live migration. La VM
+        debe estar ENCENDIDA y la URI ser segura (qemu+ssh/qemu+tls). El
+        preflight profundo lo hace el propio LiveMigrator al arrancar."""
+        from ..v1.live_migration import SECURE_URI_SCHEMES
+
+        uri = values.get("live_uri", "")
+        errors = []
+        if "running" not in (self.vm.state or "").lower():
+            errors.append("La migración en vivo necesita la VM ENCENDIDA (este modo NO la apaga).")
+        if not uri:
+            errors.append("Indica la URI del destino (qemu+ssh://usuario@equipo/system).")
+        elif not uri.startswith(SECURE_URI_SCHEMES):
+            errors.append("Solo se permiten URIs seguras: qemu+ssh:// o qemu+tls:// (qemu+tcp está prohibido).")
+        if errors:
+            self.preflight_result = {"ok": False, "errors": errors, "warnings": [], "assets": []}
+            self.error_label.setText(" ".join(errors))
+            self.result_view.setPlainText("\n".join(f"✗ {e}" for e in errors))
+            self.package_button.setEnabled(False)
+            return
+        self.preflight_result = {"ok": True, "errors": [], "warnings": [], "assets": [], "live": True}
+        self.result_view.setPlainText(
+            "Modo: MIGRACIÓN EN VIVO (avanzado, libvirt directo).\n"
+            f"VM: {self.vm.name} (encendida)\n"
+            f"Destino: {uri}\n"
+            "La VM sigue encendida durante el traslado; el downtime real se mide al terminar. "
+            "Si falla, el origen queda intacto y corriendo (rollback)."
+        )
+        self.package_button.setEnabled(True)
 
     def _format_preflight(self, result: dict) -> str:
         errors = result.get("errors", [])
@@ -1686,6 +1771,9 @@ class LiveMigrationDialog(QDialog):
         self.package_button.setEnabled(False)
         self._set_step(4)
         self.migration_id_label.setText("Empezando el traslado…")
+        if values["transfer"] == "live":
+            self._start_live_migration(values)
+            return
         if values["transfer"] == "hub":
             progress_intro = (
                 f"Empaquetando {values['vm_name']} y subiéndolo por el Hub hacia {values['target_host_id']}.\n"
@@ -1747,6 +1835,73 @@ class LiveMigrationDialog(QDialog):
         job.succeeded.connect(succeeded)
         job.failed.connect(failed)
         job.start()
+
+    def _start_live_migration(self, values: dict) -> None:
+        """B3 modo B: ejecuta la live migration directa (VM encendida) con
+        LiveMigrator. El origen no se toca si falla (rollback del motor)."""
+        uri = values.get("live_uri", "")
+        self.progress_log.setPlainText(
+            f"Migración EN VIVO de {self.vm.name} → {uri}.\n"
+            "La VM sigue encendida; preflight → transferencia → conmutación → activación.\n"
+            "Si algo falla, el origen queda corriendo e intacto."
+        )
+        self._render_progress_states("preflight")
+
+        def do_live() -> dict:
+            from ..v1.live_migration import LiveMigrationPlan, LiveMigrator
+
+            plan = LiveMigrationPlan(
+                vm_name=self.vm.name,
+                target_uri=uri,
+                shared_storage=None,  # autodetecta; el guard CIFS actúa en preflight
+            )
+            return LiveMigrator(self.backend, plan).run()
+
+        from .workers import BackendJob
+
+        job = BackendJob("live migration", do_live)
+        self._jobs.append(job)
+
+        def succeeded() -> None:
+            self.last_result = job.result or {}
+            self._show_live_result(self.last_result)
+
+        def failed() -> None:
+            self.last_status = {"status": "failed", "error": job.error_message}
+            self.progress_log.append(f"\nLa migración en vivo no ha podido empezar: {job.error_message}")
+            self._render_progress_states("failed")
+            self._show_result_failure(job.error_message)
+
+        job.succeeded.connect(succeeded)
+        job.failed.connect(failed)
+        job.start()
+
+    def _show_live_result(self, result: dict) -> None:
+        ok = bool(result.get("ok"))
+        downtime = result.get("measured_downtime_ms")
+        self._render_progress_states("done" if ok else "failed")
+        if ok:
+            self.result_title.setText("Migración en vivo completada")
+            self.result_body.setText(
+                f"Máquina: {self.vm.name}\n"
+                f"Destino: {self.live_uri.text().strip()}\n"
+                f"Downtime medido: {downtime if downtime is not None else '—'} ms\n"
+                "El destino quedó ENCENDIDO; el origen ya no corre (nunca activa en dos equipos)."
+            )
+            self.result_callout.setText("Migración en caliente correcta · journal sin entradas pendientes.")
+            self.result_callout.setObjectName("calloutOk")
+        else:
+            self.result_title.setText("La migración en vivo ha fallado")
+            self.result_body.setText(
+                f"Estado: {result.get('status', 'failed')}\n"
+                f"Error: {result.get('error', '')}\n"
+                f"Fases revertidas: {', '.join(result.get('rolled_back_phases') or []) or 'ninguna'}"
+            )
+            self.result_callout.setText("El origen quedó corriendo e intacto (rollback). Revisa el error y reinténtalo.")
+            self.result_callout.setObjectName("calloutDanger")
+        self.result_callout.style().unpolish(self.result_callout)
+        self.result_callout.style().polish(self.result_callout)
+        self._set_step(5)
 
     def _render_progress_states(self, current: str) -> None:
         while self.progress_states_layout.count():
