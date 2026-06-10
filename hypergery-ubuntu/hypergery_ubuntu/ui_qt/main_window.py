@@ -1200,7 +1200,7 @@ class MainWindow(QMainWindow):
     # Control Center (v0.9/v1 services)                                   #
     # ------------------------------------------------------------------ #
 
-    V1_TAB_KEYS = ("Telemetry", "Orchestrator", "Battery", "NAS", "Network", "Guests", "External Nodes", "Logs")
+    V1_TAB_KEYS = ("Dashboard", "Telemetry", "Orchestrator", "Battery", "NAS", "Network", "Guests", "External Nodes", "Progress", "Logs")
 
     def _build_control_center_page(self) -> QWidget:
         page = QWidget()
@@ -1298,6 +1298,32 @@ class MainWindow(QMainWindow):
 
             return RegistryClient(url)
 
+        if key == "Dashboard":
+            # HG-BUG-0022: misma fuente estructurada que el endpoint /dashboard
+            # de v1.4, renderizada como tarjetas por v1_render.
+            from ..v1.api import ApiContext
+            from ..v1.nas import NasService
+            from ..v1.providers import LocalProvider
+
+            def local_vms():
+                try:
+                    return LocalProvider(self.backend).list_vms()
+                except Exception:
+                    return []
+
+            context = ApiContext(
+                settings=settings,
+                nas=NasService(settings=settings, lab_store=self.lab_store()),
+                lab_store=self.lab_store(),
+                local_vms=local_vms,
+                hub_client=hub_client(),
+                backend=self.backend,
+            )
+            return context.dashboard()
+        if key == "Progress":
+            from ..v1.progress import get_progress_channel
+
+            return {"operations": get_progress_channel().list()}
         if key == "Telemetry":
             from ..v1.telemetry import TelemetryService, evaluate_alerts
 

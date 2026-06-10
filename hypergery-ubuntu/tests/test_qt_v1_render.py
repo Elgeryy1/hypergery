@@ -145,6 +145,59 @@ REALISTIC = {
             }
         ]
     },
+    "Dashboard": {
+        "hosts": [
+            {
+                "id": "home-pc",
+                "name": "PC de casa",
+                "status": "online",
+                "ram_total_mib": 32768,
+                "ram_free_mib": 20480,
+                "last_seen": "2026-06-10T10:00:00+00:00",
+                "tags": ["hub"],
+            },
+            {
+                "id": "laptop-1",
+                "name": "Portátil",
+                "status": "offline",
+                "ram_total_mib": 16384,
+                "ram_free_mib": 0,
+                "last_seen": "2026-06-09T22:00:00+00:00",
+                "tags": [],
+            },
+        ],
+        "local_telemetry": {"cpu_percent": 12.0, "ram_free_mib": 20480},
+        "alerts": [
+            {"severity": "warning", "kind": "host_offline", "message": "Portátil sin señal."}
+        ],
+        "vms_total": 5,
+        "vms_by_state": {"running": 2, "shut off": 3},
+        "battery": {"available": True, "percent": 64, "charging": False, "tier": "normal"},
+    },
+    "Progress": {
+        "operations": [
+            {
+                "operation_id": "op-1",
+                "kind": "live_migration",
+                "status": "running",
+                "phase": "pre-copy",
+                "percent": 41.5,
+                "message": "Copiando memoria…",
+                "error": "",
+                "updated_at": "2026-06-10T10:00:05+00:00",
+            },
+            {
+                "operation_id": "op-2",
+                "kind": "backup_verify",
+                "status": "failed",
+                "phase": "boot",
+                "percent": 80.0,
+                "message": "",
+                "error": "La VM temporal no arrancó.",
+                "updated_at": "2026-06-10T09:55:00+00:00",
+            },
+        ]
+    },
     "Logs": {
         "events": [
             {
@@ -231,3 +284,14 @@ def test_api_envelope_unwrapped(qt_app):
     envelope = {"ok": True, "data": REALISTIC["Battery"], "error": None}
     widget = v1_render.build_v1_widget("Battery", envelope)
     assert isinstance(widget, QWidget)
+
+
+def test_dashboard_and_progress_are_humanized_not_raw_json(qt_app):
+    """HG-BUG-0022: las secciones nuevas renderizan tarjetas/tablas, nunca el
+    QTextEdit del fallback JSON."""
+    from PySide6.QtWidgets import QTextEdit
+
+    for section in ("Dashboard", "Progress"):
+        widget = v1_render.build_v1_widget(section, REALISTIC[section])
+        assert isinstance(widget, QWidget)
+        assert not widget.findChildren(QTextEdit), f"{section} cayó al fallback JSON"

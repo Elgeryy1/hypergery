@@ -230,6 +230,53 @@ class ConsoleConnectUiTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_cancel_does_not_block_ui_while_connect_hangs(self):
+        """HG-BUG-0014: cancelar con el connect colgado debe volver al instante
+        (antes: hasta 10 s de UI congelada en thread.wait())."""
+        import threading
+
+        from hypergery_ubuntu.ui_qt import console as console_mod
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def hanging_connect(host, port, timeout):
+            started.set()
+            release.wait(5.0)
+            raise OSError("connect aborted by test")
+
+        original = console_mod.blocking_vnc_connect
+        console_mod.blocking_vnc_connect = hanging_connect
+        try:
+            window, _backend = self._make_vnc_window()
+            try:
+                window.console.connect_console()
+                self.assertTrue(started.wait(2.0), "worker never started")
+
+                begin = time.monotonic()
+                window.console.disconnect_console()
+                elapsed = time.monotonic() - begin
+
+                self.assertLess(elapsed, 0.5, "cancel must not block the UI thread")
+                self.assertFalse(window.console.connecting)
+                self.assertIsNone(window.console.connect_thread)
+                # The cancelled thread keeps draining in the background…
+                self.assertEqual(len(window.console._draining_threads), 1)
+
+                # …and once the blocking connect returns, it cleans itself up.
+                release.set()
+                deadline = time.monotonic() + 5.0
+                while window.console._draining_threads and time.monotonic() < deadline:
+                    _drain_events()
+                self.assertEqual(
+                    len(window.console._draining_threads), 0, "drained thread not reaped"
+                )
+            finally:
+                release.set()
+                window.close()
+        finally:
+            console_mod.blocking_vnc_connect = original
+
 
 if __name__ == "__main__":
     unittest.main()

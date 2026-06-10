@@ -79,3 +79,13 @@ NAT/cortafuegos.
    un `pair_uri`). El token es un secreto: compártelo solo por un canal seguro.
 2. En el otro extremo, exporta `HYPERGERY_HUB_URL` y `HYPERGERY_HUB_TOKEN`, o
    guarda `hub_url`/`hub_token` en `~/.config/hypergery/config.json`.
+
+## Nota sobre la IP `192.168.1.150` (HG-BUG-0020)
+
+La dirección `192.168.1.150` que aparece en scripts, tests y documentación es
+el Hub del **NAS privado de Gerard** en su LAN doméstica — un valor por defecto
+local, **no** un valor universal ni un secreto (es una dirección RFC 1918 sin
+valor fuera de esa red). Los launchers la usan solo como *default*
+parametrizable: `start-second-host.sh` acepta el URL por argumento o por
+`HYPERGERY_HUB_URL`, e `install-agent-user-service.sh` acepta `--hub-url` o
+`HYPERGERY_HUB_URL`. En cualquier otro despliegue, configura tu propio URL.

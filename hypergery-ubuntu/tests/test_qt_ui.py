@@ -1912,6 +1912,7 @@ class QtControlCenterTests(unittest.TestCase):
             self.assertEqual(
                 tabs,
                 [
+                    "Salud del sistema",
                     "Mi equipo",
                     "Sugerencias",
                     "Batería",
@@ -1919,6 +1920,7 @@ class QtControlCenterTests(unittest.TestCase):
                     "Redes",
                     "Usuarios",
                     "Equipos externos",
+                    "Operaciones",
                     "Historial",
                 ],
             )
