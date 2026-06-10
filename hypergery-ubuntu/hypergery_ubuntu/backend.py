@@ -944,7 +944,16 @@ class HyperGeryBackend:
         return f"{value} B"
 
     def start_vm(self, name: str) -> None:
-        self.virsh(["start", validate_vm_name(name)])
+        name = validate_vm_name(name)
+        # HG-BUG-0028: no arrancar una VM con una migración en vuelo sin
+        # confirmar (podría estar ya corriendo en el destino → doble-activa).
+        try:
+            from .migration_journal import MigrationJournal
+        except Exception:  # pragma: no cover - defensivo ante import parcial
+            MigrationJournal = None  # type: ignore[assignment]
+        if MigrationJournal is not None:
+            MigrationJournal().assert_startable(name)
+        self.virsh(["start", name])
         logging.info("started vm: %s", name)
 
     def save_vm(self, name: str, state_path: str | Path) -> Path:
