@@ -74,13 +74,31 @@ incompatible).
 
 ## Test D — PC y portátil online en el Hub (desde la UI)
 
-1. Arranca el agente en cada equipo (en el portátil, su servicio/agent).
+> **Prerrequisito imprescindible (causa nº1 de "no se ven entre ellos"):** el
+> **agente debe estar corriendo en LAS DOS máquinas**. El .deb instala el
+> binario `hypergery-agent` pero **no lo arranca solo**. Sin agente reportando,
+> el Hub tiene 0 equipos y la migración no ofrece destinos — aunque el .deb sea
+> correcto.
+
+1. Arranca el agente **de forma persistente** en cada equipo (sobrevive a
+   cierres de sesión/reinicios):
+   ```bash
+   # en el PC y en el portátil:
+   ./scripts/install-agent-user-service.sh --hub-url http://192.168.1.150:8765
+   ```
+   O, para una prueba rápida no persistente:
+   `setsid nohup hypergery-agent run >/tmp/hg-agent.log 2>&1 < /dev/null &`
 2. En la UI, **Centro de control → «Salud del sistema»** (o la pestaña de
    equipos): **PC y portátil aparecen CONECTADOS**, con RAM/última señal.
    - **Esperar:** ambos online. **No** hace falta que «se vean» entre sí: lo
      único que importa es que ambos estén emparejados con el MISMO Hub.
+   - Diagnóstico secundario: `hypergery-cli hub vms --hub-url http://192.168.1.150:8765`
+     debe listar ambos equipos.
 
 **PASS si:** ambos equipos salen «conectados» en la UI.
+**Si solo sale uno (o ninguno):** ese agente no está corriendo o no apunta al
+mismo Hub/token — el propio asistente de migración te lo dirá
+(«El Hub solo conoce este equipo. Arranca el agente en el OTRO equipo…»).
 
 ---
 
