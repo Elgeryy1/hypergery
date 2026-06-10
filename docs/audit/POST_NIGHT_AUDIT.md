@@ -26,6 +26,14 @@
 - **Veredicto de merge: SÍ, mergear `audit/post-night-bugs`.** Sin bloqueantes.
   Ya no queda ningún ALTO ni MEDIO abierto.
 
+> **Actualización 2026-06-10 (post-noche):** U1 packaging **PASS completo** en
+> UAT real con sudo (rama `fix/v1.1-packaging-uat`, ver
+> `docs/qa/V1_1_UAT_RESULT.md`). pytest hoy en esta rama: **858 passed,
+> 8 skipped**. Matiz al veredicto de merge: «mergear» sigue significando solo
+> features con UAT cumplido — v1.5 live/v1.6 Android/v1.7 GPU quedan congeladas
+> hasta U10–U14; cobertura completa por versión en
+> `docs/qa/POST_NIGHT_VERSION_COVERAGE_AUDIT.md`.
+
 ## Tabla de hallazgos
 
 | ID | Severidad | Módulo | Estado |

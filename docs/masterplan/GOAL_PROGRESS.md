@@ -35,6 +35,7 @@
 - `scripts/build-deb.sh` construye `dist/hypergery_1.1.0~dev0_all.deb` (verificado: dpkg-deb info/contents OK; artefacto generado en `dist/`).
 - Gates: compileall OK; pytest = 677 passed, 1 skipped (10 tests nuevos en test_app_identity.py, incluye build real del .deb).
 - **U1 parcial → cola UAT humano:** no hay sudo sin contraseña, instalación/desinstalación real del .deb pendiente de Gerard: `sudo apt install ./dist/hypergery_1.1.0~dev0_all.deb`, comprobar menú/icono/`hypergery --version`, `sudo apt remove hypergery`, verificar que ~/.config/hypergery y datos sobreviven.
+- **ACTUALIZACIÓN 2026-06-10: U1 PASS completo.** El primer intento falló por cwd (script/dist viven en la raíz del repo) y un venv editable anterior al entry point `hypergery-agent`; arreglado en la rama `fix/v1.1-packaging-uat` (wrapper + tests de packaging). Resultado real en `docs/qa/V1_1_UAT_RESULT.md` y causa raíz en `docs/qa/V1_1_PACKAGING_UAT_FIX.md` (ambos en esa rama).
 
 ## M2 — v1.1 JobManager + closeEvent + throttle preview (HECHO)
 
@@ -194,7 +195,7 @@
 
 ## Cola de UAT para ti (nada de esto bloquea; orden sugerido)
 
-1. **U1** instalar `dist/hypergery_1.1.0~dev0_all.deb` (sudo) y comprobar menú/icono/--version; desinstalar y ver que los datos sobreviven.
+1. ~~**U1** instalar `dist/hypergery_1.1.0~dev0_all.deb` (sudo) y comprobar menú/icono/--version; desinstalar y ver que los datos sobreviven.~~ **PASS 2026-06-10** (`docs/qa/V1_1_UAT_RESULT.md`, rama `fix/v1.1-packaging-uat`).
 2. **Activar el CI Android**: `git mv android/ci/android.yml .github/workflows/android.yml` (mi token git no tiene scope workflow) → el APK sale como artefacto.
 3. **U10-U12** live migration PC↔portátil (comandos exactos en la sección M10).
 4. **U13** app Android por WireGuard/Tailscale (pasos en android/README.md).
