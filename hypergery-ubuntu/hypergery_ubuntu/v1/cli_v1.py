@@ -9,7 +9,7 @@ from .errors import HyperGeryError
 from .hosts import HostRegistry
 from .labsx import validate_lab
 from .nas import NasService
-from .networks import network_from_lab, validate_networks
+from .networks import networks_from_labs, validate_networks
 from .orchestrator import OrchestratorService
 from .rbac import UserStore
 from .settings import V1Settings
@@ -230,7 +230,7 @@ def v1_action(args: argparse.Namespace) -> int:
             )
     if args.v1_command == "network" and args.network_command == "validate":
         store = _lab_store()
-        networks = [network_from_lab(lab) for lab in store.list_labs()]
+        networks = networks_from_labs(store.list_labs())
         result = validate_networks(networks)
         _print_json({"networks": [network.to_dict() for network in networks], **result})
         return 0 if result["ok"] else 1

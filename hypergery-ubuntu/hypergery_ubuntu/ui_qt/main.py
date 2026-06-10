@@ -29,13 +29,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    from .. import APP_NAME, __version__
+    from .icons import app_icon
     from .main_window import MainWindow
 
     configure_qt_application()
     app = QApplication(argv if argv is not None else sys.argv)
     app.setStyle("Fusion")
-    app.setApplicationName("HyperGery")
-    app.setOrganizationName("HyperGery")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(__version__)
+    app.setOrganizationName(APP_NAME)
+    app.setDesktopFileName("hypergery")
+    app.setWindowIcon(app_icon())
     try:
         window = MainWindow()
     except Exception as exc:

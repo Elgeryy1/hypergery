@@ -494,6 +494,7 @@ def print_json(data: object) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hypergery-agent")
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     run_p = sub.add_parser("run")
     run_p.add_argument("--config", default="")

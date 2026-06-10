@@ -220,6 +220,36 @@ def validate_vm_name(name: str) -> str:
     return clean
 
 
+# Espacio de octetos de las redes HyperGery (192.168.X.0/24): 20-199 sin el
+# 122 (libvirt default) más 200-239. HG-BUG-0012: con hash directo dos labs
+# podían colisionar en el mismo octeto; allocate_network_octet sondea el
+# espacio hasta encontrar uno libre.
+HG_NETWORK_OCTETS: tuple[int, ...] = tuple(o for o in range(20, 200) if o != 122) + tuple(range(200, 240))
+
+
+def derive_network_octet(lab_id: str, network_mode: str) -> int:
+    """Octeto base (determinista por hash) de la red de un lab."""
+    digest = hashlib.sha256(f"{validate_lab_id(lab_id)}:{network_mode}".encode()).hexdigest()
+    octet = 20 + (int(digest[:2], 16) % 180)
+    if octet == 122:
+        octet = 200 + (int(digest[2:4], 16) % 40)
+    return octet
+
+
+def allocate_network_octet(lab_id: str, network_mode: str, used_octets: set[int] | frozenset[int]) -> int:
+    """Primer octeto libre empezando por el derivado del hash (HG-BUG-0012)."""
+    base = derive_network_octet(lab_id, network_mode)
+    if base not in used_octets:
+        return base
+    order = HG_NETWORK_OCTETS
+    start = order.index(base)
+    for step in range(1, len(order)):
+        candidate = order[(start + step) % len(order)]
+        if candidate not in used_octets:
+            return candidate
+    raise HyperGeryError(f"No free HyperGery network octet left (all {len(order)} in use).")
+
+
 def validate_lab_id(lab_id: str) -> str:
     clean = lab_id.strip() or "default-lab"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,48}", clean):
@@ -475,16 +505,12 @@ class HyperGeryBackend:
         return bridge
 
     def network_ip_address(self, lab_id: str, network_mode: str) -> str:
-        digest = hashlib.sha256(f"{validate_lab_id(lab_id)}:{network_mode}".encode()).hexdigest()
-        octet = 20 + (int(digest[:2], 16) % 180)
-        if octet == 122:
-            octet = 200 + (int(digest[2:4], 16) % 40)
-        return f"192.168.{octet}.1"
+        return f"192.168.{derive_network_octet(lab_id, network_mode)}.1"
 
-    def network_xml(self, lab_id: str, network_mode: str) -> str:
+    def network_xml(self, lab_id: str, network_mode: str, ip_address: str | None = None) -> str:
         name = self.network_name(lab_id, network_mode)
         bridge = self.bridge_name(lab_id, network_mode)
-        ip_address = self.network_ip_address(lab_id, network_mode)
+        ip_address = ip_address or self.network_ip_address(lab_id, network_mode)
         octet = ip_address.split(".")[2]
         forward = "<forward mode='nat'/>" if network_mode == "nat" else ""
         return f"""<network>
@@ -530,7 +556,43 @@ class HyperGeryBackend:
             self.virsh(["net-destroy", name])
         self.virsh(["net-undefine", name])
 
-    def reconcile_existing_network(self, name: str, expected_bridge: str, expected_ip: str) -> None:
+    @staticmethod
+    def _octet_from_ip(ip_address: str) -> int | None:
+        match = re.fullmatch(r"192\.168\.(\d{1,3})\.1", ip_address or "")
+        if not match:
+            return None
+        octet = int(match.group(1))
+        return octet if octet in HG_NETWORK_OCTETS else None
+
+    def list_hypergery_network_octets(self) -> dict[str, int]:
+        """Octeto de cada red hg-net-* definida en libvirt (para HG-BUG-0012)."""
+        listing = self.virsh(["net-list", "--all", "--name"], check=False)
+        if listing.returncode != 0:
+            return {}
+        octets: dict[str, int] = {}
+        for raw in listing.stdout.splitlines():
+            name = raw.strip()
+            if not self.is_hypergery_network_name(name):
+                continue
+            dump = self.virsh(["net-dumpxml", name], check=False)
+            if dump.returncode != 0:
+                continue
+            try:
+                octet = self._octet_from_ip(self.network_ip_from_xml(dump.stdout))
+            except HyperGeryError:
+                continue
+            if octet is not None:
+                octets[name] = octet
+        return octets
+
+    def reconcile_existing_network(
+        self,
+        name: str,
+        expected_bridge: str,
+        expected_ip: str,
+        *,
+        used_octets: set[int] | frozenset[int] = frozenset(),
+    ) -> None:
         dump = self.virsh(["net-dumpxml", name], check=False)
         if dump.returncode != 0:
             return
@@ -538,7 +600,12 @@ class HyperGeryBackend:
         ip_address = self.network_ip_from_xml(dump.stdout)
         invalid_bridge = bridge == "virbr0" or len(bridge) > 15 or not bridge.startswith("hgbr")
         wrong_bridge = bridge and bridge != expected_bridge
-        wrong_ip = ip_address and ip_address != expected_ip
+        # HG-BUG-0012: una IP existente se conserva si está dentro del espacio
+        # HyperGery y no choca con otra red del host (puede venir de una
+        # reasignación anti-colisión); solo IPs inválidas o en conflicto
+        # fuerzan el reciclado.
+        octet = self._octet_from_ip(ip_address) if ip_address else None
+        wrong_ip = bool(ip_address) and ip_address != expected_ip and (octet is None or octet in used_octets)
         if invalid_bridge or wrong_bridge or wrong_ip:
             reason = (
                 f"bridge {bridge or '<missing>'} / ip {ip_address or '<missing>'} "
@@ -551,23 +618,36 @@ class HyperGeryBackend:
             raise HyperGeryError("Network mode must be nat or isolated.")
         name = self.network_name(lab_id, network_mode)
         expected_bridge = self.bridge_name(lab_id, network_mode)
-        expected_ip = self.network_ip_address(lab_id, network_mode)
+        # HG-BUG-0012: evitar colisión de octeto con las demás redes del host.
+        used_octets = {octet for other, octet in self.list_hypergery_network_octets().items() if other != name}
+        expected_ip = f"192.168.{allocate_network_octet(lab_id, network_mode, used_octets)}.1"
         info = self.virsh(["net-info", name], check=False)
         if info.returncode == 0:
-            self.reconcile_existing_network(name, expected_bridge, expected_ip)
+            self.reconcile_existing_network(name, expected_bridge, expected_ip, used_octets=used_octets)
             info = self.virsh(["net-info", name], check=False)
         if info.returncode != 0:
-            xml = self.network_xml(lab_id, network_mode)
+            xml = self.network_xml(lab_id, network_mode, expected_ip)
             with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-8") as tmp:
                 tmp.write(xml)
                 xml_path = tmp.name
             try:
-                self.virsh(["net-define", xml_path])
+                # HG-BUG-0016 (TOCTOU): otro proceso pudo definir la red entre
+                # el net-info y este net-define; el fallo es benigno si la red
+                # ya existe.
+                define = self.virsh(["net-define", xml_path], check=False)
+                if define.returncode != 0 and self.virsh(["net-info", name], check=False).returncode != 0:
+                    raise HyperGeryError(f"Cannot define network {name}: {define.stderr.strip() or define.stdout.strip()}")
             finally:
                 Path(xml_path).unlink(missing_ok=True)
         active = self.virsh(["net-info", name], check=False)
         if not re.search(r"^Active:\s+yes$", active.stdout, re.MULTILINE):
-            self.virsh(["net-start", name])
+            # HG-BUG-0016 (TOCTOU): "already active" por una carrera benigna
+            # con otro proceso no es un error; cualquier otro fallo sí.
+            start = self.virsh(["net-start", name], check=False)
+            if start.returncode != 0:
+                recheck = self.virsh(["net-info", name], check=False)
+                if not re.search(r"^Active:\s+yes$", recheck.stdout, re.MULTILINE):
+                    raise HyperGeryError(f"Cannot start network {name}: {start.stderr.strip() or start.stdout.strip()}")
         self.virsh(["net-autostart", name], check=False)
         logging.info("network ready: %s", name)
         return name

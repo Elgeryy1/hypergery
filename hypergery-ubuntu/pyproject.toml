@@ -1,6 +1,6 @@
 [project]
 name = "hypergery-ubuntu"
-version = "1.0.1"
+dynamic = ["version"]
 description = "HyperGery desktop VM manager for Ubuntu KVM/QEMU/libvirt"
 requires-python = ">=3.10"
 dependencies = [
@@ -18,3 +18,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["hypergery_ubuntu*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "hypergery_ubuntu.__version__"}
+
+[tool.pytest.ini_options]
+markers = [
+  "needsRealLibvirt: smoke tests against the real libvirt/QEMU host (only hgtest-* VMs; run with HYPERGERY_REAL_LIBVIRT=1)",
+]

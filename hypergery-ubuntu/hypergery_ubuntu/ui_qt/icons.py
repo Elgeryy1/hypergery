@@ -80,3 +80,24 @@ def lab_icon(size: int = 18) -> QIcon:
     painter.drawRoundedRect(1, 3, (size - 3) // 2, 4, 1, 1)
     painter.end()
     return QIcon(pixmap)
+
+
+@lru_cache(maxsize=8)
+def app_icon(size: int = 64) -> QIcon:
+    """Icono de la aplicación: cuadrado azul HyperGery con las iniciales HG."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(QColor("#2a82da")))
+    painter.setPen(Qt.PenStyle.NoPen)
+    radius = max(4, size // 5)
+    painter.drawRoundedRect(0, 0, size - 1, size - 1, radius, radius)
+    painter.setPen(QPen(QColor("#ffffff")))
+    font = QFont()
+    font.setBold(True)
+    font.setPointSizeF(max(8.0, size * 0.42))
+    painter.setFont(font)
+    painter.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, "HG")
+    painter.end()
+    return QIcon(pixmap)

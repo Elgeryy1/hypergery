@@ -33,11 +33,34 @@ class Network:
         return asdict(self)
 
 
-def network_from_lab(lab: dict[str, Any]) -> Network:
-    """Build the logical per-lab network from an existing lab manifest."""
+def network_from_lab(lab: dict[str, Any], *, used_octets: set[int] | None = None) -> Network:
+    """Build the logical per-lab network from an existing lab manifest.
+
+    HG-BUG-0009: la mayoría de labs no tienen ``subnet`` en el manifiesto;
+    la red REAL de libvirt deriva su subred del hash del lab
+    (``backend.derive_network_octet``). Sin esta derivación el tab de Redes
+    inventaba errores ("missing CIDR", conflictos duplicados) que no
+    correspondían a las redes reales que sí funcionan.
+    """
     lab_id = str(lab.get("lab_id") or "")
-    mode = "internal" if str(lab.get("network_mode") or "nat") == "isolated" else "nat"
+    lab_mode = str(lab.get("network_mode") or "nat")
+    mode = "internal" if lab_mode == "isolated" else "nat"
     subnet = str(lab.get("subnet") or "")
+    derived = False
+    if not subnet and lab_id:
+        from ..backend import HyperGeryError, allocate_network_octet, derive_network_octet
+
+        real_mode = "isolated" if lab_mode == "isolated" else "nat"
+        try:
+            if used_octets is None:
+                octet = derive_network_octet(lab_id, real_mode)
+            else:
+                octet = allocate_network_octet(lab_id, real_mode, used_octets)
+                used_octets.add(octet)
+            subnet = f"192.168.{octet}.0/24"
+            derived = True
+        except HyperGeryError:
+            subnet = ""
     gateway = ""
     if subnet:
         try:
@@ -53,7 +76,44 @@ def network_from_lab(lab: dict[str, Any]) -> Network:
         gateway=gateway,
         dhcp_enabled=True,
         isolated=mode == "internal",
+        notes="subred derivada de la red real libvirt" if derived else "",
     )
+
+
+def _hg_octet_from_cidr(cidr: str) -> int | None:
+    from ..backend import HG_NETWORK_OCTETS
+
+    try:
+        network = ipaddress.ip_network(cidr, strict=True)
+    except ValueError:
+        return None
+    parts = str(network.network_address).split(".")
+    if parts[:2] != ["192", "168"]:
+        return None
+    octet = int(parts[2])
+    return octet if octet in HG_NETWORK_OCTETS else None
+
+
+def networks_from_labs(labs: Iterable[dict[str, Any]]) -> list[Network]:
+    """Networks de todos los labs con subredes derivadas sin colisiones.
+
+    Replica la asignación anti-colisión de ``ensure_network`` (HG-BUG-0012)
+    sobre el modelo lógico: dos labs cuyo hash cae en el mismo octeto reciben
+    subredes distintas en lugar de provocar un falso conflicto. Las subredes
+    explícitas del manifiesto reservan su octeto primero.
+    """
+    labs = list(labs)
+    used_octets: set[int] = set()
+    explicit = [lab for lab in labs if lab.get("subnet")]
+    networks: dict[int, Network] = {id(lab): network_from_lab(lab) for lab in explicit}
+    for network in networks.values():
+        octet = _hg_octet_from_cidr(network.cidr)
+        if octet is not None:
+            used_octets.add(octet)
+    for lab in labs:
+        if id(lab) not in networks:
+            networks[id(lab)] = network_from_lab(lab, used_octets=used_octets)
+    return [networks[id(lab)] for lab in labs]
 
 
 def _parse_cidr(network: Network, errors: list[str]) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:

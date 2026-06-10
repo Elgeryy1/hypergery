@@ -82,13 +82,7 @@ The separate VM console window lives in `hypergery_ubuntu/ui_qt/console.py`.
 
 Backend console discovery is handled by `HyperGeryBackend.get_console_display(vm_name)`, which uses `virsh domdisplay` plus domain XML fallback and returns normalized local URIs such as `vnc://127.0.0.1:5901`.
 
-The old Tkinter UI remains temporarily available in:
-
-```text
-hypergery_ubuntu/app_tk.py
-```
-
-`app_tk.py` is legacy migration fallback only. It is not the primary UI from v0.2.0 onward.
+The old Tkinter UI (`app_tk.py`) was removed in v1.1; PySide6 is the only UI.
 
 ## Backend
 

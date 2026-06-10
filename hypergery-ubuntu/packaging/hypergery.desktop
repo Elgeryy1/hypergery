@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=HyperGery
+GenericName=Virtual Machine Manager
+Comment=Ubuntu KVM/QEMU/libvirt virtual machine manager
+Comment[es]=Gestor de máquinas virtuales KVM/QEMU/libvirt para Ubuntu
+TryExec=hypergery
+Exec=hypergery
+Icon=hypergery
+Terminal=false
+Categories=System;Emulator;
+Keywords=vm;kvm;qemu;libvirt;virtualization;
+StartupNotify=true
+StartupWMClass=hypergery
