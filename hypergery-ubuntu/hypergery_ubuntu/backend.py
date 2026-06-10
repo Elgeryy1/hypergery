@@ -1013,6 +1013,25 @@ class HyperGeryBackend:
         self.virsh(["start", name])
         logging.info("started vm: %s", name)
 
+    def press_boot_key(self, name: str) -> None:
+        """Pulsa «espacio» en el guest vía libvirt (independiente del display).
+
+        Caza el «Press any key to boot from CD» del instalador de Windows sin
+        necesitar la consola VNC conectada (funciona también con SPICE)."""
+        self.virsh(["send-key", validate_vm_name(name), "KEY_SPACE"], check=False, timeout=10)
+
+    def boot_keypress_sweep(self, name: str, *, presses: int = 14, interval_seconds: float = 1.2) -> None:
+        """Barrido de pulsaciones durante el arranque (~1.5–18 s tras start).
+
+        El prompt del CD aparece a los ~6–10 s (tras la init de OVMF) y dura
+        ~5 s; el instalador no pinta UI hasta pasados ~25 s, así que este rango
+        lo caza sin provocar clics fantasma en pantallas posteriores. Pensado
+        para ejecutarse en un worker (bloquea ~17 s)."""
+        time.sleep(1.5)
+        for _ in range(max(1, presses)):
+            self.press_boot_key(name)
+            time.sleep(interval_seconds)
+
     def save_vm(self, name: str, state_path: str | Path) -> Path:
         """Freeze a running VM and dump its full RAM+CPU state to a file.
 

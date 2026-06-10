@@ -843,6 +843,11 @@ class VBoxStyleVMCreator(QDialog):
         if os_key in {"windows11", "windows-legacy"}:
             self.use_efi.setChecked(True)
             self.use_efi.setEnabled(False)
+            # Con VNC la consola integrada muestra el instalador (SPICE
+            # requeriría visor externo y el usuario no vería nada).
+            vnc_idx = self.display.findText("vnc")
+            if vnc_idx >= 0:
+                self.display.setCurrentIndex(vnc_idx)
         elif os_key == "other":
             self.use_efi.setChecked(False)
             self.use_efi.setEnabled(False)
@@ -2116,15 +2121,98 @@ class LiveMigrationDialog(QDialog):
             self.result_view.setPlainText("\n".join(f"✗ {e}" for e in errors))
             self.package_button.setEnabled(False)
             return
+        # Comprueba que la carpeta del disco existe/se puede escribir en el
+        # DESTINO; si no, ofrece crearla con sudo (contraseña transitoria).
+        storage_note = self._ensure_live_target_storage(uri)
+        if storage_note is None:
+            self.package_button.setEnabled(False)
+            return
         self.preflight_result = {"ok": True, "errors": [], "warnings": [], "assets": [], "live": True}
         self.result_view.setPlainText(
             "Modo: MIGRACIÓN EN VIVO (avanzado, libvirt directo).\n"
             f"VM: {self.vm.name} (encendida)\n"
             f"Destino: {uri}\n"
-            "La VM sigue encendida durante el traslado; el downtime real se mide al terminar. "
+            + (storage_note + "\n" if storage_note else "")
+            + "La VM sigue encendida durante el traslado; el downtime real se mide al terminar. "
             "Si falla, el origen queda intacto y corriendo (rollback)."
         )
         self.package_button.setEnabled(True)
+
+    def _ensure_live_target_storage(self, uri: str) -> str | None:
+        """Asegura que las carpetas de los discos existen y son escribibles en
+        el destino. Si hace falta, pide la contraseña de sudo del destino UNA
+        vez (no se guarda, no se loguea; viaja por stdin de ssh). Devuelve una
+        nota informativa, o None si el usuario canceló / falló."""
+        import shlex as _shlex
+        import subprocess as _subprocess
+
+        if not uri.startswith("qemu+ssh://"):
+            return ""  # qemu+tls: no podemos preparar por SSH; lo validará el motor
+        ssh_dest = uri[len("qemu+ssh://"):].split("/", 1)[0]
+        target_user = ssh_dest.split("@", 1)[0] if "@" in ssh_dest else ""
+        # Carpetas de los discos de datos de la VM.
+        dirs: list[str] = []
+        try:
+            import xml.etree.ElementTree as _ET
+
+            root = _ET.fromstring(self.vm.xml or "")
+            for source in root.findall("./devices/disk[@device='disk']/source"):
+                path = source.attrib.get("file", "")
+                if path:
+                    parent = str(Path(path).parent)
+                    if parent not in dirs:
+                        dirs.append(parent)
+        except Exception:
+            return ""  # sin XML no podemos sondear; lo validará el motor
+        if not dirs:
+            return ""
+        quoted = " ".join(_shlex.quote(d) for d in dirs)
+        probe = f"for d in {quoted}; do mkdir -p \"$d\" 2>/dev/null && [ -w \"$d\" ] || exit 1; done"
+        result = _subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ssh_dest, probe],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return "Carpetas de destino: listas."
+        # Hace falta sudo en el destino: pedir contraseña (transitoria).
+        password, accepted = QInputDialog.getText(
+            self,
+            "Permiso en el equipo de destino",
+            (
+                f"El equipo de destino ({ssh_dest}) necesita crear estas carpetas para recibir la máquina:\n\n"
+                + "\n".join(f"  {d}" for d in dirs)
+                + "\n\nIntroduce la contraseña de sudo de ese equipo (se usa UNA vez, no se guarda):"
+            ),
+            QLineEdit.EchoMode.Password,
+        )
+        if not accepted or not password:
+            self.error_label.setText("Preparación del destino cancelada: la carpeta del disco no existe allí.")
+            return None
+        chown = f" && chown {_shlex.quote(target_user)}: \"$d\"" if target_user else ""
+        script = f"sudo -S -p '' sh -c 'for d in {quoted}; do mkdir -p \"$d\"{chown}; done'"
+        try:
+            result = _subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", ssh_dest, script],
+                input=password + "\n", capture_output=True, text=True, timeout=60,
+            )
+        finally:
+            password = ""  # transitoria: fuera de memoria cuanto antes
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            self.error_label.setText(
+                "No se pudieron crear las carpetas en el destino (¿contraseña incorrecta?): "
+                + (detail[-1] if detail else "error desconocido")
+            )
+            return None
+        # Re-sondea sin sudo: ahora deben ser escribibles por el usuario.
+        recheck = _subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", ssh_dest, probe],
+            capture_output=True, text=True, timeout=30,
+        )
+        if recheck.returncode != 0:
+            self.error_label.setText("Las carpetas se crearon pero siguen sin ser escribibles en el destino.")
+            return None
+        return "Carpetas de destino: creadas con permiso de administrador (una vez)."
 
     def _format_preflight(self, result: dict) -> str:
         errors = result.get("errors", [])

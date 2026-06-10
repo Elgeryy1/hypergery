@@ -4241,6 +4241,16 @@ class MainWindow(QMainWindow):
         def after_start(_result) -> None:
             if has_install_iso:
                 self.open_console(force_connect=True)
+                # «Press any key to boot from CD»: pulsa espacio por libvirt
+                # (send-key) durante la ventana de arranque — funciona con
+                # cualquier display (SPICE o VNC), sin depender de la consola.
+                from .workers import BackendJob
+
+                sweep = BackendJob("boot keypress sweep", lambda: self.backend.boot_keypress_sweep(name))
+                self._boot_sweep_jobs = getattr(self, "_boot_sweep_jobs", [])
+                self._boot_sweep_jobs.append(sweep)
+                sweep.finished.connect(lambda job=sweep: self._boot_sweep_jobs.remove(job) if job in getattr(self, "_boot_sweep_jobs", []) else None)
+                sweep.start()
 
         self.run_operation(
             f"Encendiendo {name}",
@@ -4292,9 +4302,8 @@ class MainWindow(QMainWindow):
         if not window.console.is_connected() and (
             force_connect or should_autoconnect_console(vm.graphics, vm.state)
         ):
-            # Instalación: la consola pulsará «espacio» sola al conectar para
-            # cazar el «Press any key to boot from CD».
-            window.console.nudge_boot_on_connect = bool(force_connect)
+            # (El «Press any key» del instalador lo cubre el barrido send-key
+            # de start_vm, que funciona con cualquier display.)
             window.console.connect_console()
 
     def open_external_console(self) -> None:
