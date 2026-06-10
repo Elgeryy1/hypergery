@@ -141,17 +141,18 @@ preflight, canal, RAM al 100%, rollback, journal — quedó validado hoy).
   `ubuntu-hub-e2e`, `ubuntu-migrated`, `ubuntu-test-v07`.
 - Journal de migración: vacío en el cierre.
 
-## Veredicto
+## Veredicto (decisión de Gerard, 2026-06-10)
 
 - **La live migration real de HyperGery v1.5 funciona**: U11 y U12 PASS en
   hardware físico cross-vendor (AMD→Intel), con downtime de **145 ms**,
   cancelación segura y journal anti double-active verificado en un fallo real.
-- **U10 queda FAIL por infraestructura** (CIFS no apto para locking de qemu).
-  Conforme a la regla «no tag/release hasta U10–U12 PASS»:
-  **NO se hace tag ni release de v1.5.0 todavía.**
-- Camino recomendado para cerrar U10: habilitar **NFS** en el QNAP para la
-  carpeta de VMs compartidas, montarlo en `/mnt/hypergery-nas` en ambos hosts
-  y repetir el procedimiento de este documento (15 min: todo lo demás ya está
-  preparado y validado). Alternativa de producto (decisión de Gerard):
-  declarar NFS como requisito documentado del modo shared-storage y
-  re-evaluar el gate de release con U11/U12 + U10-bloqueado-por-CIFS.
+- **U10 FAIL por infraestructura CIFS/SMB.** Decisión: **SMB/CIFS queda
+  declarado NO SOPORTADO para shared-storage live migration** (sí para todo lo
+  demás: NAS de datos, staging, backups). El preflight del producto ahora lo
+  rechaza con error humano (guard + tests en esta rama); block migration sobre
+  CIFS no se ve afectada.
+- **La RC sigue válida** (`release/v1.5.0-rc`). **El gate U10 no se relaja:
+  NO se hace tag ni release de v1.5.0 hasta repetir U10 con NFS y obtener
+  PASS.** Procedimiento: `docs/setup/NFS_SHARED_STORAGE_FOR_LIVE_MIGRATION.md`
+  (todo lo demás — CPU portable, /etc/hosts, shared_filesystems, cache=none —
+  ya está preparado y validado).

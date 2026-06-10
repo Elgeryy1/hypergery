@@ -320,3 +320,66 @@ class FailureAndRollbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SharedStorageFilesystemGuardTests(unittest.TestCase):
+    """U10 real (2026-06-10): el write-lock de QEMU no hace handoff fiable
+    sobre SMB → CIFS/SMB queda NO soportado para shared-storage (NFS sí;
+    block migration no se ve afectada)."""
+
+    def _migrator(self, host, **plan_kwargs) -> LiveMigrator:
+        plan = LiveMigrationPlan(vm_name="web01", target_uri=TARGET, **plan_kwargs)
+        return LiveMigrator(host, plan, channel=ProgressChannel())
+
+    def _run_with_fstype(self, fstype: str, **plan_kwargs):
+        from unittest.mock import patch
+
+        from hypergery_ubuntu.v1 import live_migration
+
+        host = _happy_host()
+        with patch.object(live_migration, "disk_filesystem_type", return_value=fstype):
+            return self._migrator(host, **plan_kwargs).run(), host
+
+    def test_cifs_shared_storage_is_rejected_with_human_error(self):
+        for fstype in ("cifs", "smb3", "fuse.smb"):
+            result, host = self._run_with_fstype(fstype, shared_storage=True)
+            self.assertFalse(result["ok"], fstype)
+            self.assertIn("CIFS/SMB no está soportado", result["error"])
+            self.assertIn("NFS", result["error"])
+            # El rechazo ocurre en preflight: nada mutante llegó a ejecutarse.
+            mutating = [c for c in host.calls if c[1] in {"migrate", "undefine", "destroy"}]
+            self.assertEqual(mutating, [])
+
+    def test_block_migration_on_cifs_is_still_allowed(self):
+        result, _host = self._run_with_fstype("cifs", shared_storage=False)
+        self.assertTrue(result["ok"], result.get("error"))
+
+    def test_nfs_and_local_filesystems_pass_the_guard(self):
+        for fstype in ("nfs", "nfs4", "ext4", "btrfs", ""):
+            result, _host = self._run_with_fstype(fstype, shared_storage=True)
+            self.assertTrue(result["ok"], f"{fstype}: {result.get('error')}")
+
+
+class DiskFilesystemTypeTests(unittest.TestCase):
+    def test_longest_prefix_match_wins(self):
+        import tempfile
+
+        from hypergery_ubuntu.v1.live_migration import disk_filesystem_type
+
+        with tempfile.NamedTemporaryFile("w", suffix=".mounts", delete=False) as handle:
+            handle.write(
+                "/dev/sda2 / ext4 rw 0 0\n"
+                "//nas/share /mnt/hypergery-nas cifs rw 0 0\n"
+                "nas:/vms /mnt/hypergery-nas/nfs nfs4 rw 0 0\n"
+            )
+            mounts = handle.name
+        self.assertEqual(disk_filesystem_type("/home/x/vm.qcow2", mounts), "ext4")
+        self.assertEqual(disk_filesystem_type("/mnt/hypergery-nas/vm.qcow2", mounts), "cifs")
+        self.assertEqual(disk_filesystem_type("/mnt/hypergery-nas/nfs/vm.qcow2", mounts), "nfs4")
+        # Prefijo de nombre parecido no cuenta como subruta.
+        self.assertEqual(disk_filesystem_type("/mnt/hypergery-nas-otra/vm.qcow2", mounts), "ext4")
+
+    def test_unreadable_mounts_returns_empty(self):
+        from hypergery_ubuntu.v1.live_migration import disk_filesystem_type
+
+        self.assertEqual(disk_filesystem_type("/x/y.qcow2", "/nonexistent-mounts"), "")

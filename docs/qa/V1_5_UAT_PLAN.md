@@ -19,6 +19,27 @@ hypergery-cli start hgtest-u10
 
 ## U10 — shared storage (disco visible en ambos hosts)
 
+> **Requisitos de storage (aprendidos en el UAT del 2026-06-10):**
+> - El disco debe estar en **NFS (recomendado nfs4)** o un FS compartido con
+>   locks fiables para QEMU/libvirt. **CIFS/SMB (smb2/smb3/fuse.smb) NO está
+>   soportado**: el handoff del write-lock de imágenes falla (durable handles)
+>   y el preflight del producto lo **rechaza** con error humano. Block
+>   migration (U11) sí funciona sobre cualquier FS local.
+> - **Preflight manual**: `stat -f -c %T <ruta-del-disco>` en el origen debe
+>   devolver `nfs`/`nfs4` (si devuelve `smb2`/`cifs`, U10 shared no procede).
+> - **Misma ruta absoluta en ambos hosts** (p. ej. `/mnt/hypergery-nas`).
+> - qemu (usuario `libvirt-qemu`) debe poder **leer y escribir** el disco en
+>   ambos hosts.
+> - Disco con `cache='none'` y, si libvirt no autodetecta el FS como
+>   compartido, `shared_filesystems = [ "/mnt/hypergery-nas" ]` en
+>   `/etc/libvirt/qemu.conf` + reinicio de libvirtd (verificar MainPID nuevo).
+> - Hosts cross-vendor (AMD↔Intel): CPU de la VM con modelo común
+>   (p. ej. `qemu64` + `<feature policy='disable' name='svm'/>`), nunca
+>   host-passthrough.
+> - El origen debe resolver el hostname del destino (entrada en `/etc/hosts`).
+>
+> Guía completa de montaje: `docs/setup/NFS_SHARED_STORAGE_FOR_LIVE_MIGRATION.md`.
+
 ```bash
 hypergery-cli v1 migrate-live --vm hgtest-u10 \
   --target qemu+ssh://gery@portatil/system --shared-storage --confirm

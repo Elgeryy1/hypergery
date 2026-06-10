@@ -42,6 +42,41 @@ SECURE_URI_SCHEMES = ("qemu+ssh://", "qemu+tls://")
 
 JOBINFO_POLL_SECONDS = 1.0
 
+# Filesystems donde el handoff del write-lock de imágenes de QEMU no es fiable
+# (verificado en el UAT U10 de 2026-06-10 sobre un QNAP: durable handles SMB
+# dejan al destino sin poder reanudar y al origen pausado). Para shared-storage
+# usa NFS o un cluster FS; block migration no se ve afectada.
+UNSUPPORTED_SHARED_STORAGE_FSTYPES = frozenset(
+    {"cifs", "smb", "smb2", "smb3", "smbfs", "fuse.smb", "fuse.smbnetfs", "fuse.cifs"}
+)
+
+
+def disk_filesystem_type(path: str, mounts_path: str = "/proc/mounts") -> str:
+    """Tipo de filesystem del punto de montaje que contiene ``path``.
+
+    Longest-prefix match sobre /proc/mounts (solo lectura). Devuelve "" si no
+    se puede determinar — el guard solo actúa sobre tipos positivamente
+    identificados como no soportados, nunca por desconocimiento.
+    """
+    try:
+        with open(mounts_path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return ""
+    target = str(path)
+    best_mount = ""
+    best_type = ""
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        mount_point = parts[1].replace("\\040", " ")
+        if target == mount_point or target.startswith(mount_point.rstrip("/") + "/"):
+            if len(mount_point) > len(best_mount):
+                best_mount = mount_point
+                best_type = parts[2]
+    return best_type
+
 
 @dataclass
 class LiveMigrationPlan:
@@ -250,14 +285,14 @@ class LiveMigrator:
             )
 
         report("Decidiendo estrategia de almacenamiento", fraction=0.85)
+        disk_paths = [
+            source.attrib.get("file", "")
+            for source in root.findall("./devices/disk/source")
+            if source.attrib.get("file")
+        ]
         shared = plan.shared_storage
         if shared is None:
             # Heurística: rutas bajo monturas de red típicas → shared.
-            disk_paths = [
-                source.attrib.get("file", "")
-                for source in root.findall("./devices/disk/source")
-                if source.attrib.get("file")
-            ]
             shared = bool(disk_paths) and all(
                 any(token in path for token in ("/mnt/", "/nfs", "/nas", "/share"))
                 for path in disk_paths
@@ -266,6 +301,18 @@ class LiveMigrator:
                 f"Storage strategy auto-detected as {'shared' if shared else 'block migration'} — "
                 "override with shared_storage=True/False if wrong."
             )
+        if shared:
+            # UAT U10 (2026-06-10): el handoff del write-lock de imágenes de
+            # QEMU no es fiable sobre SMB (durable handles) — el destino no
+            # puede reanudar y el origen queda pausado. NFS sí está soportado.
+            for path in disk_paths:
+                fstype = disk_filesystem_type(path)
+                if fstype in UNSUPPORTED_SHARED_STORAGE_FSTYPES:
+                    raise HyperGeryError(
+                        f"El disco {path} está en un filesystem {fstype}: CIFS/SMB no está "
+                        "soportado para live migration shared-storage por el locking de "
+                        "imágenes de QEMU; usa NFS o block migration (--block-migration)."
+                    )
         context["shared_storage"] = shared
 
         estimate = estimate_downtime_ms(ram_mib, dirty_rate_mibps=64.0, bandwidth_mibps=float(plan.bandwidth_mibps or 1024))
