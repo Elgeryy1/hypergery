@@ -148,7 +148,11 @@ class MigrationEngineTests(unittest.TestCase):
         self.assertIn("switchover exploded", result.error)
         self.assertEqual(result.completed_phases, ["preflight", "transfer"])
         rollbacks = [name for kind, name in log if kind == "rollback"]
-        self.assertEqual(rollbacks, ["transfer", "preflight"], "rollback en orden inverso")
+        self.assertEqual(
+            rollbacks,
+            ["switchover", "transfer", "preflight"],
+            "la fase fallida se deshace primero y luego las completadas en orden inverso",
+        )
         self.assertEqual(engine.channel.get(result.operation_id)["status"], "failed")
 
     def test_rollback_errors_never_mask_the_original_failure(self):

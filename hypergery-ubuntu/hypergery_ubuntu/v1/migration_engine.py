@@ -120,11 +120,13 @@ class MigrationEngine:
         context["cancelled"] = self._cancel_requested.is_set
 
         done_weight = 0.0
+        active_phase: MigrationPhase | None = None
         try:
             for phase in self.phases:
                 if self._cancel_requested.is_set():
                     raise MigrationCancelled("Migration cancelled before phase " + phase.name)
                 base = 100.0 * done_weight / total_weight
+                active_phase = phase
 
                 def report(message: str = "", *, fraction: float = 0.0, metrics: dict[str, Any] | None = None, _phase=phase, _base=base) -> None:
                     span = 100.0 * _phase.weight / total_weight
@@ -139,6 +141,7 @@ class MigrationEngine:
                 context["report"] = report
                 report(f"Fase {phase.name} iniciada")
                 phase.run(context)
+                active_phase = None
                 completed.append(phase)
                 result.completed_phases.append(phase.name)
                 done_weight += phase.weight
@@ -164,7 +167,10 @@ class MigrationEngine:
                 operation_id=operation_id,
             )
             self.channel.update(operation_id, message=f"Rollback en curso ({result.status}): {exc}")
-            for phase in reversed(completed):
+            # La fase que falló se deshace primero (puede haber dejado estado
+            # parcial), y luego las completadas en orden inverso.
+            to_rollback = ([active_phase] if active_phase is not None else []) + list(reversed(completed))
+            for phase in to_rollback:
                 if phase.rollback is None:
                     continue
                 try:
