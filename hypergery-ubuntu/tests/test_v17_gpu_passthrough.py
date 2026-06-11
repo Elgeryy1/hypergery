@@ -266,5 +266,112 @@ class DomainXmlTests(unittest.TestCase):
         self.assertFalse(domain_uses_uefi("<domain><os/></domain>"))
 
 
+class ConnectedDisplayTests(unittest.TestCase):
+    """La GPU con el ÚNICO monitor conectado no se puede soltar (parada dura 2)."""
+
+    def _plug_monitor(self, fake: FakeSysfs, card: str, address: str, connector: str, status: str = "connected"):
+        card_dir = fake.root / "class/drm" / card
+        card_dir.mkdir(parents=True, exist_ok=True)
+        device_link = card_dir / "device"
+        if not device_link.is_symlink():
+            device_link.symlink_to(fake.root / "bus/pci/devices" / address)
+        conn = card_dir / f"{card}-{connector}"
+        conn.mkdir()
+        (conn / "status").write_text(status + "\n")
+
+    def test_detection_reports_connected_displays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            self._plug_monitor(fake, "card1", DGPU, "DP-4")
+            self._plug_monitor(fake, "card0", IGPU, "HDMI-A-1", status="disconnected")
+            by_address = {gpu["address"]: gpu for gpu in list_pci_gpus(fake.root)}
+            self.assertEqual(by_address[DGPU]["connected_displays"], ["DP-4"])
+            self.assertEqual(by_address[IGPU]["connected_displays"], [])
+
+    def test_gpu_with_only_connected_display_is_hard_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            self._plug_monitor(fake, "card1", DGPU, "DP-4")
+            result = preflight_gpu_passthrough(
+                DGPU, sysfs_root=fake.root, cmdline_path=Path(tmp) / "cmdline",
+                modules_path=Path(tmp) / "modules",
+            )
+            self.assertFalse(result["ok"])
+            self.assertTrue(any("only connected display" in error for error in result["errors"]))
+            binder = _ProbeAwareBinder(fake)
+            with self.assertRaises(HyperGeryError):
+                binder.bind_to_vfio(DGPU, confirm=True)
+
+    def test_gpu_passes_when_desktop_runs_on_the_other_gpu(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            self._plug_monitor(fake, "card0", IGPU, "HDMI-A-1")
+            result = preflight_gpu_passthrough(
+                DGPU, sysfs_root=fake.root, cmdline_path=Path(tmp) / "cmdline",
+                modules_path=Path(tmp) / "modules",
+            )
+            self.assertTrue(result["ok"])
+
+    def test_gpu_with_display_but_desktop_elsewhere_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            self._plug_monitor(fake, "card1", DGPU, "DP-4")
+            self._plug_monitor(fake, "card0", IGPU, "HDMI-A-1")
+            result = preflight_gpu_passthrough(
+                DGPU, sysfs_root=fake.root, cmdline_path=Path(tmp) / "cmdline",
+                modules_path=Path(tmp) / "modules",
+            )
+            self.assertTrue(result["ok"])
+            self.assertTrue(any("go dark" in warning for warning in result["warnings"]))
+
+
+class IommuGroupBindTests(unittest.TestCase):
+    """VFIO exige soltar el grupo IOMMU COMPLETO (GPU + audio HDMI + …)."""
+
+    def test_group_members_listed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            from hypergery_ubuntu.v1.gpu_passthrough import iommu_group_members
+
+            self.assertEqual(iommu_group_members(DGPU, fake.root), [DGPU, DGPU_AUDIO])
+
+    def test_bind_group_binds_every_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            binder = _ProbeAwareBinder(fake)
+            result = binder.bind_group_to_vfio(DGPU, confirm=True)
+            self.assertEqual(binder.current_driver(DGPU), "vfio-pci")
+            self.assertEqual(binder.current_driver(DGPU_AUDIO), "vfio-pci")
+            self.assertEqual(
+                {entry["address"] for entry in result["group_devices"]}, {DGPU, DGPU_AUDIO}
+            )
+
+    def test_bind_group_requires_confirm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            with self.assertRaises(HyperGeryError):
+                _ProbeAwareBinder(fake).bind_group_to_vfio(DGPU)
+
+    def test_unbind_group_restores_every_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            binder = _ProbeAwareBinder(fake)
+            binder.bind_group_to_vfio(DGPU, confirm=True)
+            binder.unbind_group_from_vfio(DGPU)
+            self.assertEqual(binder.current_driver(DGPU), "nouveau")
+            self.assertEqual(binder.current_driver(DGPU_AUDIO), "snd_hda_intel")
+
+    def test_attach_includes_every_slot_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _make_host(Path(tmp))
+            xml = attach_gpu_to_domain_xml(
+                "<domain><devices/></domain>", DGPU, vendor_id="0x10de", extra_addresses=(DGPU_AUDIO,)
+            )
+            root = ET.fromstring(xml)
+            sources = root.findall("./devices/hostdev/source/address")
+            slots = {(addr.get("slot"), addr.get("function")) for addr in sources}
+            self.assertEqual(slots, {("0x00", "0x0"), ("0x00", "0x1")})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -144,12 +144,16 @@ def add_v1_parser(sub: argparse._SubParsersAction) -> None:
     gpu_sub.add_parser("propose-host-changes", help="Print the GRUB/initramfs changes needed for VFIO. Never applies them.")
     gpu_pre = gpu_sub.add_parser("preflight", help="Check whether a GPU can be passed through (read-only).")
     gpu_pre.add_argument("address", help="PCI address, e.g. 0000:01:00.0")
-    gpu_bind = gpu_sub.add_parser("bind", help="Bind a GPU to vfio-pci (detaches it from the host; needs root).")
+    gpu_bind = gpu_sub.add_parser(
+        "bind", help="Bind a GPU and its whole IOMMU group to vfio-pci (detaches them from the host; needs root)."
+    )
     gpu_bind.add_argument("address")
     gpu_bind.add_argument("--confirm", action="store_true")
-    gpu_unbind = gpu_sub.add_parser("unbind", help="Return a vfio-pci device to the host.")
+    gpu_unbind = gpu_sub.add_parser("unbind", help="Return a vfio-pci device (and its IOMMU group) to the host.")
     gpu_unbind.add_argument("address")
-    gpu_unbind.add_argument("--driver", default="", help="Original driver to rebind (default: drivers_probe).")
+    gpu_unbind.add_argument(
+        "--driver", default="", help="Original driver to rebind (single device; default: whole group via drivers_probe)."
+    )
     gpu_attach = gpu_sub.add_parser("attach", help="Add the GPU <hostdev> to a SHUT OFF VM (requires --confirm).")
     gpu_attach.add_argument("--vm", required=True)
     gpu_attach.add_argument("--gpu", required=True, help="PCI address")
@@ -380,9 +384,11 @@ def v1_action(args: argparse.Namespace) -> int:
             _print_json(result)
             return 0 if result["ok"] else 1
         if args.gpu_command == "bind":
-            return _print_json(gpu_mod.VfioBinder().bind_to_vfio(args.address, confirm=args.confirm))
+            return _print_json(gpu_mod.VfioBinder().bind_group_to_vfio(args.address, confirm=args.confirm))
         if args.gpu_command == "unbind":
-            return _print_json(gpu_mod.VfioBinder().unbind_from_vfio(args.address, args.driver))
+            if args.driver:
+                return _print_json(gpu_mod.VfioBinder().unbind_from_vfio(args.address, args.driver))
+            return _print_json(gpu_mod.VfioBinder().unbind_group_from_vfio(args.address))
         if args.gpu_command == "attach":
             backend = _local_backend()
             if backend is None:

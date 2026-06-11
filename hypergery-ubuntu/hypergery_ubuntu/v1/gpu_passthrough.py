@@ -41,13 +41,34 @@ def _read(path: Path) -> str:
         return ""
 
 
+def connected_displays(sysfs_root: str | Path = "/sys") -> dict[str, list[str]]:
+    """Conectores DRM con monitor enchufado, por dirección PCI de su GPU."""
+    root = Path(sysfs_root)
+    drm = root / "class" / "drm"
+    displays: dict[str, list[str]] = {}
+    if not drm.is_dir():
+        return displays
+    for card in sorted(drm.iterdir()):
+        if not card.name.startswith("card") or "-" in card.name:
+            continue
+        device_link = card / "device"
+        if not device_link.exists():
+            continue
+        address = device_link.resolve().name
+        for connector in sorted(card.glob(card.name + "-*")):
+            if _read(connector / "status") == "connected":
+                displays.setdefault(address, []).append(connector.name.split("-", 1)[1])
+    return displays
+
+
 def list_pci_gpus(sysfs_root: str | Path = "/sys") -> list[dict[str, Any]]:
-    """GPUs (clase PCI 0x03xxxx) con driver, boot_vga y grupo IOMMU."""
+    """GPUs (clase PCI 0x03xxxx) con driver, boot_vga, grupo IOMMU y pantallas."""
     root = Path(sysfs_root)
     devices_dir = root / "bus" / "pci" / "devices"
     gpus: list[dict[str, Any]] = []
     if not devices_dir.is_dir():
         return gpus
+    displays = connected_displays(root)
     for device in sorted(devices_dir.iterdir()):
         if not _read(device / "class").startswith(PCI_CLASS_DISPLAY_PREFIX):
             continue
@@ -70,9 +91,23 @@ def list_pci_gpus(sysfs_root: str | Path = "/sys") -> list[dict[str, Any]]:
                 "boot_vga": _read(device / "boot_vga") == "1",
                 "iommu_group": group,
                 "iommu_group_devices": group_devices,
+                "connected_displays": displays.get(device.name, []),
             }
         )
     return gpus
+
+
+def iommu_group_members(address: str, sysfs_root: str | Path = "/sys") -> list[str]:
+    """Todos los dispositivos del grupo IOMMU de ``address`` (él incluido)."""
+    address = _validate_address(address)
+    root = Path(sysfs_root)
+    group_link = root / "bus" / "pci" / "devices" / address / "iommu_group"
+    if not group_link.is_symlink():
+        return [address]
+    group_dir = root / "kernel" / "iommu_groups" / group_link.resolve().name / "devices"
+    if not group_dir.is_dir():
+        return [address]
+    return sorted(entry.name for entry in group_dir.iterdir())
 
 
 def iommu_status(sysfs_root: str | Path = "/sys", cmdline_path: str | Path = "/proc/cmdline") -> dict[str, Any]:
@@ -164,6 +199,22 @@ def preflight_gpu_passthrough(
                 f"runs on another GPU ({', '.join(o['address'] for o in others)}) before binding."
             )
 
+    # PARADA DURA 2: si el ÚNICO monitor conectado cuelga de esta GPU, soltar
+    # su driver mataría la sesión gráfica aunque exista otra GPU instalada.
+    if gpu.get("connected_displays"):
+        others_with_display = [entry for entry in others if entry.get("connected_displays")]
+        if not others_with_display:
+            errors.append(
+                f"{gpu_address} drives the only connected display(s) "
+                f"({', '.join(gpu['connected_displays'])}). Move the monitor cable to another GPU "
+                "(e.g. the motherboard video output) and log in again before passing this GPU through."
+            )
+        else:
+            warnings.append(
+                f"{gpu_address} has a display connected ({', '.join(gpu['connected_displays'])}); "
+                "it will go dark when the GPU is detached from the host."
+            )
+
     # Grupo IOMMU limpio: solo funciones del mismo slot (GPU + su audio HDMI).
     if gpu["iommu_group"]:
         slot = gpu_address.rsplit(".", 1)[0]
@@ -217,6 +268,11 @@ def ensure_safe_to_detach(address: str, sysfs_root: str | Path = "/sys") -> None
         raise HyperGeryError(
             f"{address} is the host display GPU (driver {gpu['driver'] or '?'}, boot_vga={gpu['boot_vga']}) "
             "and there is no second GPU: detaching it would kill the host display. Refusing."
+        )
+    if gpu.get("connected_displays") and not any(entry.get("connected_displays") for entry in others):
+        raise HyperGeryError(
+            f"{address} drives the only connected display(s) ({', '.join(gpu['connected_displays'])}): "
+            "detaching it would kill the host display. Move the monitor to another GPU first. Refusing."
         )
 
 
@@ -280,6 +336,40 @@ class VfioBinder:
         log.info("hosts", f"{address} bound to vfio-pci (was: {original or 'none'})")
         return {"address": address, "driver": "vfio-pci", "previous_driver": original, "changed": True}
 
+    def bind_group_to_vfio(self, address: str, *, confirm: bool = False) -> dict[str, Any]:
+        """Bind a vfio-pci de TODO el grupo IOMMU de ``address``.
+
+        VFIO exige que ningún miembro del grupo conserve su driver de host
+        (qemu falla con «group is not viable» si, p. ej., la función de audio
+        HDMI sigue en snd_hda_intel). Si un miembro falla, se devuelven a su
+        driver original los ya bindeados.
+        """
+        address = _validate_address(address)
+        if not confirm:
+            raise HyperGeryError("Binding a GPU to vfio-pci requires confirm=True (it detaches it from the host).")
+        members = iommu_group_members(address, self.root)
+        done: list[dict[str, Any]] = []
+        log = get_logger()
+        try:
+            for member in members:
+                done.append(self.bind_to_vfio(member, confirm=True))
+        except HyperGeryError:
+            for entry in reversed(done):
+                if not entry.get("changed"):
+                    continue
+                try:
+                    self.unbind_from_vfio(entry["address"], entry.get("previous_driver", ""))
+                except HyperGeryError as rollback_exc:
+                    log.error("hosts", f"vfio group rollback failed for {entry['address']}: {rollback_exc}")
+            raise
+        return {"address": address, "group_devices": done}
+
+    def unbind_group_from_vfio(self, address: str) -> dict[str, Any]:
+        """Devuelve al host todo el grupo IOMMU (drivers_probe restaura el nativo)."""
+        address = _validate_address(address)
+        members = iommu_group_members(address, self.root)
+        return {"address": address, "group_devices": [self.unbind_from_vfio(member) for member in members]}
+
     def unbind_from_vfio(self, address: str, original_driver: str = "") -> dict[str, Any]:
         """Devuelve el dispositivo al host (driver original o drivers_probe)."""
         address = _validate_address(address)
@@ -309,14 +399,22 @@ def hostdev_xml(address: str) -> str:
     )
 
 
-def attach_gpu_to_domain_xml(domain_xml: str, address: str, *, vendor_id: str = "") -> str:
-    """Añade el <hostdev> al XML del dominio (+ ocultar hipervisor si NVIDIA)."""
+def attach_gpu_to_domain_xml(
+    domain_xml: str, address: str, *, vendor_id: str = "", extra_addresses: tuple[str, ...] = ()
+) -> str:
+    """Añade los <hostdev> al XML del dominio (+ ocultar hipervisor si NVIDIA).
+
+    ``extra_addresses``: resto de funciones del mismo slot (audio HDMI, USB…);
+    deben viajar con la GPU porque comparten grupo IOMMU.
+    """
     address = _validate_address(address)
     root = ET.fromstring(domain_xml)
     devices = root.find("./devices")
     if devices is None:
         devices = ET.SubElement(root, "devices")
     devices.append(ET.fromstring(hostdev_xml(address)))
+    for extra in extra_addresses:
+        devices.append(ET.fromstring(hostdev_xml(extra)))
 
     if vendor_id == NVIDIA_VENDOR:
         features = root.find("./features")
@@ -351,7 +449,14 @@ def attach_gpu_to_vm(backend: Any, vm_name: str, gpu_address: str, *, confirm: b
     vm = backend.get_vm(vm_name)
     if vm.state.lower() not in {"shut off", "shutoff"}:
         raise HyperGeryError("The VM must be shut off to attach a GPU.")
-    new_xml = attach_gpu_to_domain_xml(vm.xml, gpu_address, vendor_id=preflight["gpu"]["vendor_id"])
+    # El resto de funciones del slot (audio HDMI, USB-C…) comparten grupo
+    # IOMMU y deben pasarse junto a la GPU.
+    companions = tuple(
+        dev for dev in preflight["gpu"]["iommu_group_devices"] if dev != gpu_address
+    )
+    new_xml = attach_gpu_to_domain_xml(
+        vm.xml, gpu_address, vendor_id=preflight["gpu"]["vendor_id"], extra_addresses=companions
+    )
     import tempfile
 
     with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-8") as handle:
