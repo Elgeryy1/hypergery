@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -148,6 +149,16 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(APP_STYLESHEET)
         self._build_ui()
         QTimer.singleShot(0, self.refresh_all)
+        # Evacuación por batería: vigila el nivel cada minuto y, al entrar en
+        # «offload» descargando, ofrece pasar las VMs encendidas a otro equipo.
+        from .evacuation import EvacuationMonitor
+
+        self._evac_monitor = EvacuationMonitor()
+        self._evac_dialog_open = False
+        self._battery_mode = "recommend_only"
+        self._battery_timer = QTimer(self)
+        self._battery_timer.timeout.connect(self._battery_tick)
+        self._battery_timer.start(60_000)
 
     def _build_ui(self) -> None:
         # Botones "fantasma": set_busy/update_actions los referencian, pero las
@@ -353,7 +364,7 @@ class MainWindow(QMainWindow):
             "Licencia: ver fichero LICENSE.",
         )
 
-    def _update_battery_chip(self) -> None:
+    def _update_battery_chip(self) -> dict:
         try:
             from ..v1.battery import BatteryService
             from ..v1.settings import V1Settings
@@ -362,6 +373,7 @@ class MainWindow(QMainWindow):
                 settings = V1Settings.load()
             except Exception:
                 settings = V1Settings()
+            self._battery_mode = getattr(settings, "battery_mode", "recommend_only")
             state = BatteryService(settings=settings).read()
             data = state.to_dict() if hasattr(state, "to_dict") else {}
             percent = data.get("percent")
@@ -372,8 +384,122 @@ class MainWindow(QMainWindow):
             else:
                 tier_txt = f" · {tier}" if tier else ""
                 self.battery_chip.setText(f"🔋 {int(round(float(percent)))}%{tier_txt}")
+            return data
         except Exception:
             self.battery_chip.setText("🔋 —")
+            return {}
+
+    def _battery_tick(self) -> None:
+        state = self._update_battery_chip()
+        if not state or self._battery_mode == "disabled" or self._evac_dialog_open:
+            return
+        if self._evac_monitor.should_offer(state):
+            self.offer_battery_evacuation(state)
+
+    def offer_battery_evacuation(self, state: dict) -> None:
+        """🔋 nivel «offload» descargando: pregunta si pasar las VMs encendidas
+        a otro equipo (migración en vivo) y seguir usándolas en remoto."""
+        from .dialogs import hub_target_candidates, live_uri_for_host
+        from .evacuation import EvacuationDialog, vm_evacuation_blockers
+
+        try:
+            running = [vm for vm in self.backend.list_vms() if "running" in (vm.state or "").lower()]
+        except HyperGeryError:
+            return
+        if not running:
+            return
+        vm_rows = []
+        for vm in running:
+            xml = vm.xml or ""
+            if not xml:
+                try:
+                    xml = self.backend.get_vm(vm.name).xml
+                except HyperGeryError:
+                    xml = ""
+            vm_rows.append({"name": vm.name, "blockers": vm_evacuation_blockers(xml)})
+        try:
+            from ..registry import RegistryClient
+
+            hosts = RegistryClient(self.registry_url()).list_hosts()
+        except Exception as exc:
+            self.log_activity(f"Evacuación por batería no ofrecida: Hub no accesible ({exc})")
+            return
+        config = effective_config()
+        candidates = hub_target_candidates(hosts, config["host_id"].value, socket.gethostname())
+        self._evac_dialog_open = True
+        try:
+            dialog = EvacuationDialog(state.get("percent"), candidates, vm_rows, self)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            target = dialog.selected_target()
+            names = dialog.evacuable_names()
+        finally:
+            self._evac_dialog_open = False
+        if not accepted or target is None or not names:
+            return
+        uri = live_uri_for_host(target.get("host") or {})
+        if not uri:
+            self.show_error("El Hub no tiene usuario/IP SSH de ese equipo; abre «Mover a otro equipo» una vez.")
+            return
+        self._run_battery_evacuation(names, uri)
+
+    def _run_battery_evacuation(self, names: list[str], uri: str) -> None:
+        from .evacuation import evacuate_running_vms
+        from .workers import BackendJob
+
+        self.log_activity(f"Evacuación por batería: {len(names)} VM(s) → {uri}")
+        holder: dict = {}
+
+        def work() -> dict:
+            # progress emite por señal: llega al hilo de la UI encolado.
+            return evacuate_running_vms(self.backend, names, uri, progress=holder["job"].progress.emit)
+
+        job = BackendJob("battery evacuation", work)
+        holder["job"] = job
+        job.progress.connect(self.log_activity)
+        jobs = [j for j in getattr(self, "_evac_jobs", []) if not j.isFinished()]
+        jobs.append(job)
+        self._evac_jobs = jobs
+
+        def done() -> None:
+            self._show_evacuation_result(job.result or {})
+
+        def failed() -> None:
+            self.show_error(f"La evacuación no pudo ejecutarse: {job.error_message}")
+
+        job.succeeded.connect(done)
+        job.failed.connect(failed)
+        job.start()
+
+    def _show_evacuation_result(self, result: dict) -> None:
+        results = result.get("results") or []
+        migrated = result.get("migrated") or []
+        uri = result.get("target_uri", "")
+        lines = []
+        for entry in results:
+            if entry.get("ok"):
+                downtime = entry.get("downtime_ms")
+                lines.append(f"✅ {entry['vm_name']} — migrada (downtime {downtime if downtime is not None else '—'} ms)")
+            else:
+                lines.append(f"❌ {entry['vm_name']} — sigue AQUÍ intacta: {str(entry.get('error', ''))[:160]}")
+        summary = "\n".join(lines) or "No había máquinas que evacuar."
+        self.refresh_all()
+        if not migrated:
+            QMessageBox.warning(self, "Evacuación por batería", summary)
+            return
+        answer = QMessageBox.question(
+            self,
+            "Evacuación completada",
+            summary + "\n\n¿Abrir las consolas remotas de las máquinas migradas para seguir trabajando?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for name in migrated:
+            try:
+                self.backend.open_remote_console(name, uri)
+            except HyperGeryError as exc:
+                self.show_error(f"Consola remota de {name}: {exc}")
+                break
 
     def _build_vm_actions_bar(self) -> QWidget:
         bar = QWidget()

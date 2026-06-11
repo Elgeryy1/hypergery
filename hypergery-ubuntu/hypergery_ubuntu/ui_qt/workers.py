@@ -10,6 +10,9 @@ from PySide6.QtCore import QThread, Signal
 class BackendJob(QThread):
     succeeded = Signal()
     failed = Signal()
+    # Mensajes de avance desde el hilo del trabajo: emitir una señal es seguro
+    # (Qt la encola al hilo de la UI); tocar widgets desde aquí NO lo sería.
+    progress = Signal(str)
 
     def __init__(self, label: str, fn: Callable[[], Any]) -> None:
         super().__init__()

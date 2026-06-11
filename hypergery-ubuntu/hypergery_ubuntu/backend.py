@@ -1259,6 +1259,18 @@ class HyperGeryBackend:
             return
         raise HyperGeryError("No console viewer installed. Install virt-viewer or remote-viewer.")
 
+    def open_remote_console(self, name: str, uri: str) -> None:
+        """Consola de una VM que corre en OTRO equipo: virt-viewer tuneliza el
+        display por la propia conexión libvirt (solo URIs seguras)."""
+        name = validate_vm_name(name)
+        if not uri.startswith(("qemu+ssh://", "qemu+tls://")):
+            raise HyperGeryError("Remote console needs a secure libvirt URI (qemu+ssh:// or qemu+tls://).")
+        virt_viewer = shutil.which("virt-viewer")
+        if not virt_viewer:
+            raise HyperGeryError("No console viewer installed. Install virt-viewer.")
+        self.launch_viewer([virt_viewer, "--connect", uri, name])
+        logging.info("opened remote virt-viewer for vm: %s uri=%s", name, uri)
+
     def get_console_display(self, name: str) -> dict[str, object]:
         name = validate_vm_name(name)
         vm = self.get_vm(name)
