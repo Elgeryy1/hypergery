@@ -41,6 +41,25 @@ Tras esto el preflight pasará y la opción «GPU física…» de la UI mostrar�
    bloquearlo con mensaje claro.
 8. UI → Quitar GPU de la máquina → el XML pierde los `<hostdev>`.
 
+## INCIDENTE 2026-06-11 — congelón de vídeo en el primer intento
+
+Con el monitor ya en la iGPU, el primer arranque de `hgtest-gpu` **congeló el
+escritorio** del host. Causa raíz (journal del boot anterior, 17:01:33):
+
+```
+kernel: NVRM: Attempting to remove device 0000:01:00.0 with non-zero usage count!
+gnome-shell: Failed to lock front buffer on /dev/dri/card2
+```
+
+gnome-shell/mutter (Wayland) abre TODAS las GPUs como dispositivos KMS aunque
+no pinten en ellas — incluso en una sesión recién iniciada con el monitor en la
+iGPU (verificado: 1 MiB abierto tras reiniciar). El detach en caliente del
+driver nvidia con usage count > 0 cuelga el compositor. **Conclusión: en un
+host de escritorio GNOME, el detach en caliente NO es viable**; hay que dedicar
+la GPU con vfio-pci desde el arranque (sección siguiente). Recuperación del
+incidente: reinicio; la 2070 volvió sola a sus drivers (managed=yes no llegó a
+consumar el detach).
+
 ## Si el paso 4 falla con «device busy / module in use»
 
 gnome-shell (Wayland) abre TODOS los nodos DRM aunque el monitor esté en la
