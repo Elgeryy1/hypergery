@@ -72,6 +72,20 @@ class VBoxStyleCreatorTests(unittest.TestCase):
         d.migratable_cpu.setChecked(True)
         self.assertTrue(d.values()["migratable_cpu"])
 
+    def test_accel_3d_in_values_and_excludes_migratable(self):
+        d = self._dialog()
+        self.assertFalse(d.values()["accel_3d"])
+        d.migratable_cpu.setChecked(True)
+        d.accel_3d.setChecked(True)
+        # Acelerada O migrable en vivo: nunca ambas.
+        self.assertTrue(d.values()["accel_3d"])
+        self.assertFalse(d.values()["migratable_cpu"])
+        self.assertFalse(d.migratable_cpu.isEnabled())
+        self.assertIn("no puede migrarse", d.accel_info.text())
+        d.accel_3d.setChecked(False)
+        self.assertTrue(d.migratable_cpu.isEnabled())
+        self.assertEqual(d.accel_info.text(), "")
+
     def test_sections_are_collapsible(self):
         d = self._dialog()
         # En offscreen isVisible() siempre es False; isHidden() refleja el

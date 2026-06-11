@@ -126,6 +126,65 @@ class WindowsXmlTests(unittest.TestCase):
         self.assertEqual(root.find("./devices/disk[@device='disk']/target").attrib["bus"], "virtio")
 
 
+class Accel3dTests(unittest.TestCase):
+    """Aceleración 3D compartida (VirGL): virtio-gpu + accel3d + egl-headless."""
+
+    def _xml(self, accel: bool) -> ET.Element:
+        backend = _XmlBackend()
+        xml = backend.domain_xml(
+            name="hgtest-virgl",
+            iso_path="/isos/ubuntu.iso",
+            os_type="Linux",
+            ram_mib=2048,
+            vcpus=2,
+            disk_path="/tmp/hgtest-virgl.qcow2",
+            network_id="hg-net-default-lab",
+            lab_id="default-lab",
+            accel_3d=accel,
+        )
+        return ET.fromstring(xml)
+
+    def test_accel_3d_emits_virtio_video_with_virgl(self):
+        root = self._xml(True)
+        model = root.find("./devices/video/model")
+        self.assertEqual(model.attrib["type"], "virtio")
+        self.assertEqual(model.find("acceleration").attrib["accel3d"], "yes")
+        egl = [g for g in root.findall("./devices/graphics") if g.attrib.get("type") == "egl-headless"]
+        self.assertEqual(len(egl), 1)
+        self.assertEqual(
+            root.find(f"./metadata/{{{HG_NS}}}hypergery/{{{HG_NS}}}accel_3d").text, "true"
+        )
+
+    def test_default_keeps_qxl_and_no_egl(self):
+        root = self._xml(False)
+        self.assertEqual(root.find("./devices/video/model").attrib["type"], "qxl")
+        egl = [g for g in root.findall("./devices/graphics") if g.attrib.get("type") == "egl-headless"]
+        self.assertEqual(egl, [])
+
+    def test_pick_render_node_prefers_mesa_driver(self):
+        import tempfile
+        from pathlib import Path
+
+        from hypergery_ubuntu.backend import pick_render_node
+
+        with tempfile.TemporaryDirectory() as tmp:
+            by_path = Path(tmp) / "by-path"
+            by_path.mkdir()
+            sysfs = Path(tmp) / "devices"
+            for address, driver in (("0000:01:00.0", "nvidia"), ("0000:11:00.0", "amdgpu")):
+                node = by_path / f"pci-{address}-render"
+                node.write_text("")
+                driver_dir = Path(tmp) / "drivers" / driver
+                driver_dir.mkdir(parents=True, exist_ok=True)
+                device = sysfs / address
+                device.mkdir(parents=True)
+                (device / "driver").symlink_to(driver_dir)
+            picked = pick_render_node(by_path, sysfs)
+            # La NVIDIA va primero alfabéticamente, pero Mesa (amdgpu) gana:
+            # el EGL headless propietario no funciona para libvirt-qemu.
+            self.assertTrue(picked.endswith("pci-0000:11:00.0-render"))
+
+
 class MigratableCpuTests(unittest.TestCase):
     def _xml(self, migratable: bool) -> ET.Element:
         backend = _XmlBackend()

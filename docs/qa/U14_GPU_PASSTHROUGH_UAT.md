@@ -78,9 +78,35 @@ iGPU; a veces el driver nvidia no se deja soltar en caliente. Escalada:
   (grupo entero vía drivers_probe).
 - La VM es `hgtest-*`: se puede borrar sin miedo al acabar.
 
-## Resultado
+## DECISIÓN DE PRODUCTO 2026-06-11 (Gerard + jefe de proyecto Claude)
 
-_(pendiente de ejecutar — rellenar tras la prueba)_
+Tras el incidente, **la aceleración gráfica oficial de HyperGery es VirGL**
+(checkbox «Aceleración 3D» en el creador): la GPU del host se comparte con las
+VMs vía virtio-gpu, sin vfio, sin sudo, sin reiniciar y sin congelones — y
+funciona en cualquier equipo, también con una sola GPU. El passthrough
+completo (este U14) queda como **modo avanzado**: requiere dedicar la GPU con
+vfio-pci en el arranque (fichero en `/tmp/hypergery-vfio.conf` preparado, 3
+comandos sudo + reinicio, reversible) y se validará cuando Gerard decida
+dedicar la 2070. No bloquea nada.
+
+**VirGL verificado en real (2026-06-11):** `hgtest-virgl` (UEFI, Ubuntu live)
+arrancada con `virtio-vga-gl` + `egl-headless` sobre el nodo de render de la
+iGPU (`pci-0000:11:00.0-render`, amdgpu). Lecciones de la prueba real:
+
+- Sin `rendernode` explícito, qemu muere con `EGL_NOT_INITIALIZED`: libvirt no
+  concede ningún nodo DRM al cgroup si el XML no lo nombra. → `pick_render_node()`
+  elige la ruta by-path (estable) de una GPU con driver Mesa.
+- El EGL headless del driver NVIDIA propietario no sirve para libvirt-qemu
+  (necesita /dev/nvidia*): Mesa (amdgpu/i915) es el camino fiable.
+- Una VM con VirGL **no puede live-migrarse** (igual que con hostdev): el
+  preflight v1.5 ahora la bloquea con mensaje claro, y el checkbox de la UI
+  avisa y desactiva «CPU compatible» (acelerada O migrable, nunca ambas).
+- El detach de hostdevs desde el código nuevo (`detach_gpus_from_vm`) se
+  ejecutó en real sobre `hgtest-gpu`: las 4 funciones fuera, XML limpio. ✅
+
+## Resultado del passthrough completo
+
+_(pendiente — se ejecutará cuando se dedique la GPU; ver Decisión de producto)_
 
 | Paso | Resultado |
 |---|---|

@@ -168,6 +168,20 @@ class PreflightTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("passthrough", result["error"])
 
+    def test_virgl_3d_acceleration_blocks_live_migration(self):
+        host = _happy_host(
+            extra_devices="<video><model type='virtio'><acceleration accel3d='yes'/></model></video>"
+        )
+        result = self._migrator(host).run()
+        self.assertFalse(result["ok"])
+        self.assertIn("3D acceleration", result["error"])
+
+    def test_egl_headless_graphics_blocks_live_migration(self):
+        host = _happy_host(extra_devices="<graphics type='egl-headless'><gl/></graphics>")
+        result = self._migrator(host).run()
+        self.assertFalse(result["ok"])
+        self.assertIn("3D acceleration", result["error"])
+
     def test_unreachable_target_fails_preflight(self):
         host = _happy_host()
         host.script[("T", "version")] = _fail("ssh: connect refused")

@@ -804,8 +804,14 @@ class VBoxStyleVMCreator(QDialog):
         if idx >= 0:
             self.display.setCurrentIndex(idx)
         self.lab_id = QLineEdit(default_lab_id or "default-lab")
+        self.accel_3d = QCheckBox("Aceleración 3D (VirGL): la VM usa la GPU del equipo, compartida")
+        self.accel_3d.toggled.connect(self._sync_accel_info)
+        self.accel_info = QLabel("")
+        self.accel_info.setWordWrap(True)
         self.sec_more.add_row("Red", self.network)
         self.sec_more.add_row("Pantalla", self.display)
+        self.sec_more.add_row("Gráficos", self.accel_3d)
+        self.sec_more.add_row("", self.accel_info)
         self.sec_more.add_row("Laboratorio", self.lab_id)
         root.addWidget(self.sec_more)
 
@@ -859,6 +865,16 @@ class VBoxStyleVMCreator(QDialog):
         self.firmware_info.setText(profile.notes)
         self._sync_firmware_info()
 
+    def _sync_accel_info(self, checked: bool) -> None:
+        # Sin almuerzo gratis: acelerada O migrable en vivo, no ambas.
+        if checked and self.migratable_cpu.isChecked():
+            self.migratable_cpu.setChecked(False)
+        self.migratable_cpu.setEnabled(not checked)
+        self.accel_info.setText(
+            "⚠ Una máquina con aceleración 3D no puede migrarse en vivo a otro equipo "
+            "(sus gráficos viven en la GPU de este equipo)." if checked else ""
+        )
+
     def _sync_firmware_info(self, *_a) -> None:
         profile = self._vp.profile_for(self.resolved_profile())
         pf = self._vp.preflight_profile(profile)
@@ -903,6 +919,7 @@ class VBoxStyleVMCreator(QDialog):
             "display_mode": self.display.currentText(),
             "lab_id": self.lab_id.text().strip() or "default-lab",
             "migratable_cpu": self.migratable_cpu.isChecked(),
+            "accel_3d": self.accel_3d.isChecked(),
         }
 
     def _accept_if_valid(self) -> None:

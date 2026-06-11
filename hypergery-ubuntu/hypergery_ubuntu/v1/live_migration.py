@@ -244,6 +244,15 @@ class LiveMigrator:
                 f"{plan.vm_name} has a PCI/host device passthrough (<hostdev>) attached — "
                 "live migration is impossible with passthrough devices. Detach it first."
             )
+        # VirGL: el contexto OpenGL vive en el host de origen; qemu bloquea la
+        # migración con virgl activo. Mismo trato que el hostdev: error claro.
+        accel = root.findall("./devices/video/model/acceleration[@accel3d='yes']")
+        egl_headless = [g for g in root.findall("./devices/graphics") if g.attrib.get("type") == "egl-headless"]
+        if accel or egl_headless:
+            raise HyperGeryError(
+                f"{plan.vm_name} has 3D acceleration (VirGL) enabled — its OpenGL state lives on this "
+                "host's GPU and cannot move. Recreate the VM without «Aceleración 3D» to migrate it."
+            )
         cdroms = [
             disk for disk in root.findall("./devices/disk")
             if disk.attrib.get("device") == "cdrom" and disk.find("source") is not None

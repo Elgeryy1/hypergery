@@ -162,6 +162,32 @@ def parse_console_display(uri: str = "", xml: str = "") -> ConsoleDisplay:
     return ConsoleDisplay(display_type, host, port, display, normalized_uri)
 
 
+def pick_render_node(
+    by_path_dir: str | Path = "/dev/dri/by-path",
+    sysfs_devices: str | Path = "/sys/bus/pci/devices",
+) -> str:
+    """Nodo DRM de render para VirGL (ruta by-path, estable entre reinicios).
+
+    Prefiere una GPU con driver Mesa (amdgpu/i915/…): el EGL headless del
+    driver propietario NVIDIA no se inicializa para el usuario libvirt-qemu
+    (necesita /dev/nvidia*, que libvirt no concede). Además, sin rendernode
+    explícito libvirt no añade NINGÚN nodo al cgroup de qemu → EGL_NOT_INITIALIZED.
+    """
+    mesa_drivers = {"amdgpu", "i915", "radeon", "nouveau", "xe"}
+    candidates: list[tuple[str, str]] = []
+    base = Path(by_path_dir)
+    if base.is_dir():
+        for link in sorted(base.glob("pci-*-render")):
+            address = link.name[len("pci-"):-len("-render")]
+            driver_link = Path(sysfs_devices) / address / "driver"
+            driver = driver_link.resolve().name if driver_link.is_symlink() else ""
+            candidates.append((driver, str(link)))
+    for driver, node in candidates:
+        if driver in mesa_drivers:
+            return node
+    return candidates[0][1] if candidates else ""
+
+
 def normalize_graphics_audio_for_display(root: ET.Element, display_mode: str) -> None:
     if display_mode not in {"spice", "vnc"}:
         raise HyperGeryError("Display mode must be spice or vnc.")
@@ -667,6 +693,7 @@ class HyperGeryBackend:
         lab_id: str = "default-lab",
         profile: str = "",
         migratable_cpu: bool = False,
+        accel_3d: bool = False,
     ) -> VmSummary:
         from .vm_profiles import preflight_profile, profile_for, validate_iso
 
@@ -717,6 +744,7 @@ class HyperGeryBackend:
             display_mode=display_mode,
             profile_key=vm_profile.key,
             migratable_cpu=migratable_cpu,
+            accel_3d=accel_3d,
         )
         self.define_domain_xml(xml)
         self.update_lab_for_vm(lab_id, name, str(disk_path), str(iso), network_id)
@@ -775,6 +803,7 @@ class HyperGeryBackend:
         display_mode: str = "spice",
         profile_key: str = "",
         migratable_cpu: bool = False,
+        accel_3d: bool = False,
     ) -> str:
         from .vm_profiles import profile_for, resolve_ovmf
 
@@ -798,6 +827,7 @@ class HyperGeryBackend:
         ET.SubElement(hg, f"{{{HG_NS}}}disk_path").text = disk_path
         ET.SubElement(hg, f"{{{HG_NS}}}network_id").text = network_id
         ET.SubElement(hg, f"{{{HG_NS}}}display_mode").text = display_mode
+        ET.SubElement(hg, f"{{{HG_NS}}}accel_3d").text = "true" if accel_3d else "false"
         ET.SubElement(domain, "memory", {"unit": "MiB"}).text = str(ram_mib)
         ET.SubElement(domain, "currentMemory", {"unit": "MiB"}).text = str(ram_mib)
         ET.SubElement(domain, "vcpu", {"placement": "static"}).text = str(vcpus)
@@ -865,7 +895,19 @@ class HyperGeryBackend:
         ET.SubElement(devices, "input", {"type": "tablet", "bus": "usb"})
         ET.SubElement(devices, "graphics", {"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
         video = ET.SubElement(devices, "video")
-        ET.SubElement(video, "model", {"type": "qxl", "ram": "65536", "vram": "65536", "vgamem": "16384", "heads": "1"})
+        if accel_3d:
+            # Aceleración 3D compartida (VirGL): la VM recibe una GPU virtio y
+            # el host ejecuta su OpenGL — la GPU física se comparte, sin vfio.
+            # egl-headless renderiza en el host para que la consola SPICE/VNC
+            # normal muestre el contenido acelerado. Una VM así NO puede
+            # live-migrarse (el contexto GL vive en el host de origen).
+            model = ET.SubElement(video, "model", {"type": "virtio", "heads": "1"})
+            ET.SubElement(model, "acceleration", {"accel3d": "yes"})
+            egl = ET.SubElement(devices, "graphics", {"type": "egl-headless"})
+            render_node = pick_render_node()
+            ET.SubElement(egl, "gl", {"rendernode": render_node} if render_node else {})
+        else:
+            ET.SubElement(video, "model", {"type": "qxl", "ram": "65536", "vram": "65536", "vgamem": "16384", "heads": "1"})
         if display_mode == "spice":
             channel = ET.SubElement(devices, "channel", {"type": "spicevmc"})
             ET.SubElement(channel, "target", {"type": "virtio", "name": "com.redhat.spice.0"})
