@@ -59,6 +59,7 @@ from .dialogs import (
     EditLabTemplateDialog,
     EditVmTemplateDialog,
     FILE_DIALOG_OPTIONS,
+    GpuPassthroughDialog,
     InstantiateLabTemplateWizard,
     LiveMigrationDialog,
     NewLabDialog,
@@ -219,6 +220,7 @@ class MainWindow(QMainWindow):
         maquina.addAction(self.act_snapshots)
         maquina.addAction(self.act_clone)
         maquina.addAction(self.act_migrate)
+        maquina.addAction(self.act_gpu)
         maquina.addSeparator()
         maquina.addAction(self.act_delete)
 
@@ -260,6 +262,8 @@ class MainWindow(QMainWindow):
         self.act_clone.triggered.connect(self.clone_vm)
         self.act_migrate = QAction(self._std_icon("SP_ArrowForward"), "Mover a otro equipo", self)
         self.act_migrate.triggered.connect(self.live_migration_vm)
+        self.act_gpu = QAction(self._std_icon("SP_DesktopIcon"), "GPU física…", self)
+        self.act_gpu.triggered.connect(self.gpu_vm)
         self.act_delete = QAction(self._std_icon("SP_TrashIcon"), "Eliminar", self)
         self.act_delete.triggered.connect(self.delete_vm)
 
@@ -3341,6 +3345,7 @@ class MainWindow(QMainWindow):
         self.act_snapshots.setEnabled(has_vm)
         self.act_clone.setEnabled(has_vm and shut_off)
         self.act_migrate.setEnabled(has_vm)
+        self.act_gpu.setEnabled(has_vm and shut_off)
         self.act_delete.setEnabled(has_vm and shut_off)
         if hasattr(self, "detail_panel"):
             self.detail_panel.set_console_enabled(has_vm and running)
@@ -4349,6 +4354,45 @@ class MainWindow(QMainWindow):
                 f"command_id={dialog.last_result.get('command_id', '')} "
                 f"package={dialog.last_result.get('package_dir', '')}"
             )
+
+    def gpu_vm(self) -> None:
+        if self.selected_vm is None:
+            self.show_error("Selecciona una máquina primero.")
+            return
+        vm = self.selected_vm
+        try:
+            dialog = GpuPassthroughDialog(self.backend, vm, self)
+        except HyperGeryError as exc:
+            self.show_error(str(exc))
+            return
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        from ..v1 import gpu_passthrough as gpu_mod
+
+        if dialog.action == "attach":
+            row = dialog.selected_row()
+            if row is None:
+                return
+            address = row["address"]
+            self.run_operation(
+                f"Conectando GPU {address} a {vm.name}",
+                lambda: gpu_mod.attach_gpu_to_vm(self.backend, vm.name, address, confirm=True),
+                on_success=lambda result: self._show_gpu_attach_result(vm.name, result),
+            )
+        elif dialog.action == "detach":
+            self.run_operation(
+                f"Quitando GPU de {vm.name}",
+                lambda: gpu_mod.detach_gpus_from_vm(self.backend, vm.name, confirm=True),
+            )
+
+    def _show_gpu_attach_result(self, vm_name: str, result: dict) -> None:
+        warnings = [w for w in result.get("warnings", []) if w]
+        gpu = result.get("gpu") or {}
+        lines = [f"GPU {gpu.get('address', '')} conectada a {vm_name}."]
+        if warnings:
+            lines.append("")
+            lines.extend(f"• {warning}" for warning in warnings)
+        QMessageBox.information(self, "GPU conectada", "\n".join(lines))
 
     def delete_vm(self) -> None:
         if self.selected_vm is None:

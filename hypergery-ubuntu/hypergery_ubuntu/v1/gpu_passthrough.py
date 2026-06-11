@@ -478,6 +478,93 @@ def attach_gpu_to_vm(backend: Any, vm_name: str, gpu_address: str, *, confirm: b
     }
 
 
+def domain_hostdev_addresses(domain_xml: str) -> list[str]:
+    """Direcciones PCI de los <hostdev> ya conectados al dominio."""
+    try:
+        root = ET.fromstring(domain_xml)
+    except ET.ParseError:
+        return []
+    addresses: list[str] = []
+    for hostdev in root.findall("./devices/hostdev"):
+        if hostdev.get("type") != "pci":
+            continue
+        addr = hostdev.find("./source/address")
+        if addr is None:
+            continue
+        try:
+            addresses.append(
+                "{:04x}:{:02x}:{:02x}.{:x}".format(
+                    int(addr.get("domain", "0"), 16),
+                    int(addr.get("bus", "0"), 16),
+                    int(addr.get("slot", "0"), 16),
+                    int(addr.get("function", "0"), 16),
+                )
+            )
+        except ValueError:
+            continue
+    return addresses
+
+
+def detach_gpus_from_vm(backend: Any, vm_name: str, *, confirm: bool = False) -> dict[str, Any]:
+    """Quita TODOS los <hostdev> PCI de la VM (apagada) y la redefine."""
+    if not confirm:
+        raise HyperGeryError("Detaching GPUs requires confirm=True.")
+    vm = backend.get_vm(vm_name)
+    if vm.state.lower() not in {"shut off", "shutoff"}:
+        raise HyperGeryError("The VM must be shut off to detach a GPU.")
+    root = ET.fromstring(vm.xml)
+    devices = root.find("./devices")
+    removed: list[str] = []
+    if devices is not None:
+        for hostdev in list(devices.findall("hostdev")):
+            if hostdev.get("type") == "pci":
+                devices.remove(hostdev)
+        removed = [addr for addr in domain_hostdev_addresses(vm.xml)]
+    if not removed:
+        return {"vm_name": vm_name, "removed": []}
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-8") as handle:
+        handle.write(ET.tostring(root, encoding="unicode"))
+        xml_path = handle.name
+    try:
+        backend.virsh(["define", xml_path])
+    finally:
+        Path(xml_path).unlink(missing_ok=True)
+    return {"vm_name": vm_name, "removed": removed}
+
+
+_PCI_IDS_PATHS = ("/usr/share/misc/pci.ids", "/usr/share/hwdata/pci.ids")
+_VENDOR_FALLBACK = {"0x10de": "NVIDIA", "0x1002": "AMD/ATI", "0x8086": "Intel"}
+
+
+def pci_device_name(vendor_id: str, device_id: str) -> str:
+    """Nombre humano del dispositivo según pci.ids; fallback a vendor + ids."""
+    vendor_hex = vendor_id.removeprefix("0x").lower()
+    device_hex = device_id.removeprefix("0x").lower()
+    for ids_path in _PCI_IDS_PATHS:
+        try:
+            with open(ids_path, encoding="utf-8", errors="replace") as handle:
+                vendor_name = ""
+                for line in handle:
+                    if not line.strip() or line.startswith("#"):
+                        continue
+                    if not line.startswith("\t"):
+                        if vendor_name:
+                            break  # ya pasamos el bloque de nuestro vendor
+                        if line[:4].lower() == vendor_hex:
+                            vendor_name = line[4:].strip()
+                        continue
+                    if vendor_name and not line.startswith("\t\t") and line.strip()[:4].lower() == device_hex:
+                        return f"{vendor_name} {line.strip()[4:].strip()}"
+                if vendor_name:
+                    return f"{vendor_name} [{device_hex}]"
+        except OSError:
+            continue
+    vendor = _VENDOR_FALLBACK.get(vendor_id.lower(), vendor_id)
+    return f"{vendor} [{device_hex}]"
+
+
 def domain_uses_uefi(domain_xml: str) -> bool:
     try:
         root = ET.fromstring(domain_xml)

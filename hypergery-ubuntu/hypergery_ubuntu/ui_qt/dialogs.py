@@ -3630,3 +3630,169 @@ class CleanupPreviewDialog(QDialog):
         layout.addWidget(QLabel("Resumen de todos los recursos gestionados por HyperGery (solo lectura):"))
         layout.addWidget(text)
         layout.addLayout(btn_row)
+
+
+# --------------------------------------------------------------------------- #
+# GPU passthrough                                                              #
+# --------------------------------------------------------------------------- #
+
+def gpu_choice_rows(gpus: list[dict], preflights: dict[str, dict]) -> list[dict]:
+    """Filas para el selector de GPU: aptitud + motivo, sin tocar Qt (testable)."""
+    from ..v1 import gpu_passthrough as gpu_mod
+
+    rows: list[dict] = []
+    for gpu in gpus:
+        preflight = preflights.get(gpu["address"], {"ok": False, "errors": ["preflight no disponible"], "warnings": []})
+        name = gpu_mod.pci_device_name(gpu.get("vendor_id", ""), gpu.get("device_id", ""))
+        displays = gpu.get("connected_displays", [])
+        rows.append(
+            {
+                "address": gpu["address"],
+                "name": name,
+                "driver": gpu.get("driver", ""),
+                "group": gpu.get("iommu_group", ""),
+                "group_size": len(gpu.get("iommu_group_devices", [])),
+                "displays": displays,
+                "ok": bool(preflight.get("ok")),
+                "reason": "" if preflight.get("ok") else (preflight.get("errors") or ["no apta"])[0],
+                "warnings": list(preflight.get("warnings", [])),
+            }
+        )
+    return rows
+
+
+class GpuPassthroughDialog(QDialog):
+    """Conectar una GPU física a una VM apagada (o quitarla).
+
+    Solo edita el XML del dominio (<hostdev managed='yes'>): libvirt hace el
+    bind a vfio-pci al arrancar la VM y la devuelve al host al apagarla, así
+    que aquí no hace falta sudo. El preflight decide qué GPUs son aptas.
+    """
+
+    def __init__(self, backend: HyperGeryBackend, vm: VmSummary, parent=None, *, gpus=None, preflight_fn=None) -> None:
+        super().__init__(parent)
+        from ..v1 import gpu_passthrough as gpu_mod
+
+        self.backend = backend
+        self.vm = vm
+        self.action = ""  # "attach" | "detach" al aceptar
+        self.setWindowTitle(f"GPU física: {vm.name}")
+        self.setMinimumWidth(640)
+
+        if gpus is None:
+            gpus = gpu_mod.list_pci_gpus()
+        if preflight_fn is None:
+            preflight_fn = gpu_mod.preflight_gpu_passthrough
+        preflights = {}
+        for gpu in gpus:
+            try:
+                preflights[gpu["address"]] = preflight_fn(gpu["address"])
+            except HyperGeryError as exc:
+                preflights[gpu["address"]] = {"ok": False, "errors": [str(exc)], "warnings": []}
+        self.rows = gpu_choice_rows(gpus, preflights)
+
+        try:
+            self.attached = gpu_mod.domain_hostdev_addresses(backend.get_vm(vm.name).xml)
+        except HyperGeryError:
+            self.attached = []
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "La GPU elegida se entrega ENTERA a la máquina mientras esté encendida: "
+            "el equipo deja de poder usarla. Al apagar la máquina, vuelve al equipo. "
+            "Una máquina con GPU física no puede migrarse en vivo."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._shut_off = vm.state.lower() in {"shut off", "shutoff"}
+        if not self._shut_off:
+            state_warning = QLabel("⚠ La máquina debe estar APAGADA para conectar o quitar una GPU.")
+            state_warning.setObjectName("errorLabel")
+            state_warning.setWordWrap(True)
+            layout.addWidget(state_warning)
+
+        if self.attached:
+            attached_label = QLabel("Conectadas ahora: " + ", ".join(self.attached))
+            attached_label.setWordWrap(True)
+            layout.addWidget(attached_label)
+
+        self.gpu_list = QListWidget()
+        for row in self.rows:
+            mark = "✅" if row["ok"] else "⛔"
+            extras = f" · {row['group_size']} funciones (viajan juntas)" if row["group_size"] > 1 else ""
+            displays = f" · pantalla: {', '.join(row['displays'])}" if row["displays"] else ""
+            item = QListWidgetItem(f"{mark} {row['name']}\n     {row['address']} · driver {row['driver'] or '—'}{extras}{displays}")
+            item.setData(Qt.ItemDataRole.UserRole, row)
+            if not row["ok"]:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setToolTip(row["reason"])
+            self.gpu_list.addItem(item)
+        layout.addWidget(self.gpu_list)
+
+        self.detail_label = QLabel("")
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.detail_label)
+        self.gpu_list.currentItemChanged.connect(self._render_detail)
+
+        buttons = QDialogButtonBox()
+        self.attach_button = buttons.addButton("Conectar GPU", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.detach_button = buttons.addButton("Quitar GPU de la máquina", QDialogButtonBox.ButtonRole.DestructiveRole)
+        cancel = buttons.addButton("Cancelar", QDialogButtonBox.ButtonRole.RejectRole)
+        cancel.clicked.connect(self.reject)
+        self.attach_button.clicked.connect(self._accept_attach)
+        self.detach_button.clicked.connect(self._accept_detach)
+        self.detach_button.setVisible(bool(self.attached))
+        self.detach_button.setEnabled(self._shut_off and bool(self.attached))
+        self._sync_attach_enabled()
+        self.gpu_list.itemSelectionChanged.connect(self._sync_attach_enabled)
+        layout.addWidget(buttons)
+
+    # ------------------------------------------------------------------ #
+
+    def selected_row(self) -> dict | None:
+        item = self.gpu_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _sync_attach_enabled(self) -> None:
+        row = self.selected_row()
+        self.attach_button.setEnabled(bool(self._shut_off and row and row["ok"]))
+
+    def _render_detail(self, *_args) -> None:
+        row = self.selected_row()
+        if row is None:
+            self.detail_label.setText("")
+            return
+        if not row["ok"]:
+            self.detail_label.setText(f"⛔ {row['reason']}")
+        else:
+            self.detail_label.setText("\n".join(f"• {warning}" for warning in row["warnings"]))
+        self._sync_attach_enabled()
+
+    def _accept_attach(self) -> None:
+        row = self.selected_row()
+        if row is None or not row["ok"] or not self._shut_off:
+            return
+        if not confirm(
+            self,
+            "Conectar GPU física",
+            f"¿Conectar {row['name']} ({row['address']}) a {self.vm.name}?\n\n"
+            "Mientras la máquina esté encendida, el equipo no podrá usar esa GPU.",
+            no_text="Cancelar",
+        ):
+            return
+        self.action = "attach"
+        self.accept()
+
+    def _accept_detach(self) -> None:
+        if not self.attached or not self._shut_off:
+            return
+        if not confirm(
+            self,
+            "Quitar GPU",
+            f"¿Quitar de {self.vm.name} las GPU conectadas ({', '.join(self.attached)})?",
+            no_text="Cancelar",
+        ):
+            return
+        self.action = "detach"
+        self.accept()
