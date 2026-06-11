@@ -188,6 +188,43 @@ def pick_render_node(
     return candidates[0][1] if candidates else ""
 
 
+def normalize_render_node_for_host(root: ET.Element, render_node: str | None = None) -> bool:
+    """Adapta el rendernode de VirGL al equipo LOCAL. Devuelve True si cambió algo.
+
+    El XML de una VM con aceleración 3D lleva grabada la ruta del nodo de
+    render del equipo donde se creó (p. ej. pci-0000:11:00.0-render); al
+    importarla en otro equipo esa ruta no existe y qemu no arranca. Aquí se
+    reescribe al mejor nodo local; si el equipo no tiene ninguno utilizable,
+    se degrada con elegancia: virtio sin GL (la VM arranca, sin 3D).
+    """
+    devices = root.find("./devices")
+    if devices is None:
+        return False
+    egl_elements = [g for g in devices.findall("graphics") if g.attrib.get("type") == "egl-headless"]
+    if not egl_elements:
+        return False
+    local = pick_render_node() if render_node is None else render_node
+    changed = False
+    for egl in egl_elements:
+        if not local:
+            devices.remove(egl)
+            changed = True
+            continue
+        gl = egl.find("gl")
+        if gl is None:
+            gl = ET.SubElement(egl, "gl")
+            changed = True
+        if gl.attrib.get("rendernode") != local:
+            gl.set("rendernode", local)
+            changed = True
+    if not local:
+        for accel in devices.findall("./video/model/acceleration"):
+            if accel.attrib.get("accel3d") == "yes":
+                accel.set("accel3d", "no")
+                changed = True
+    return changed
+
+
 def normalize_graphics_audio_for_display(root: ET.Element, display_mode: str) -> None:
     if display_mode not in {"spice", "vnc"}:
         raise HyperGeryError("Display mode must be spice or vnc.")
@@ -919,6 +956,15 @@ class HyperGeryBackend:
         return ET.tostring(domain, encoding="unicode")
 
     def define_domain_xml(self, xml: str) -> None:
+        # VirGL viaja con la ruta del nodo de render del equipo de ORIGEN;
+        # al definir (crear, importar del Hub, restaurar…) se adapta al local.
+        if "egl-headless" in xml:
+            try:
+                root = ET.fromstring(xml)
+            except ET.ParseError:
+                root = None
+            if root is not None and normalize_render_node_for_host(root):
+                xml = ET.tostring(root, encoding="unicode")
         with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-8") as tmp:
             tmp.write(xml)
             xml_path = tmp.name

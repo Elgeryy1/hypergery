@@ -161,6 +161,41 @@ class Accel3dTests(unittest.TestCase):
         egl = [g for g in root.findall("./devices/graphics") if g.attrib.get("type") == "egl-headless"]
         self.assertEqual(egl, [])
 
+    def test_render_node_is_rewritten_for_the_local_host_on_import(self):
+        from hypergery_ubuntu.backend import normalize_render_node_for_host
+
+        # XML creado en el PC (nodo amdgpu del sobremesa), importado en otro
+        # equipo cuyo mejor nodo local es distinto.
+        root = self._xml(True)
+        changed = normalize_render_node_for_host(root, "/dev/dri/by-path/pci-0000:00:02.0-render")
+        self.assertTrue(changed)
+        gl = next(
+            g for g in root.findall("./devices/graphics") if g.attrib.get("type") == "egl-headless"
+        ).find("gl")
+        self.assertEqual(gl.attrib["rendernode"], "/dev/dri/by-path/pci-0000:00:02.0-render")
+        # Idempotente: segunda pasada sin cambios.
+        self.assertFalse(
+            normalize_render_node_for_host(root, "/dev/dri/by-path/pci-0000:00:02.0-render")
+        )
+
+    def test_render_node_degrades_gracefully_without_local_gpu(self):
+        from hypergery_ubuntu.backend import normalize_render_node_for_host
+
+        root = self._xml(True)
+        changed = normalize_render_node_for_host(root, "")
+        self.assertTrue(changed)
+        egl = [g for g in root.findall("./devices/graphics") if g.attrib.get("type") == "egl-headless"]
+        self.assertEqual(egl, [])
+        self.assertEqual(
+            root.find("./devices/video/model/acceleration").attrib["accel3d"], "no"
+        )
+
+    def test_normalize_render_node_is_noop_without_virgl(self):
+        from hypergery_ubuntu.backend import normalize_render_node_for_host
+
+        root = self._xml(False)
+        self.assertFalse(normalize_render_node_for_host(root, "/dev/dri/by-path/x-render"))
+
     def test_pick_render_node_prefers_mesa_driver(self):
         import tempfile
         from pathlib import Path
