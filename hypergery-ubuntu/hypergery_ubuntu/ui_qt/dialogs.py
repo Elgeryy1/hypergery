@@ -872,7 +872,8 @@ class VBoxStyleVMCreator(QDialog):
         self.migratable_cpu.setEnabled(not checked)
         self.accel_info.setText(
             "⚠ Una máquina con aceleración 3D no puede migrarse en vivo a otro equipo "
-            "(sus gráficos viven en la GPU de este equipo)." if checked else ""
+            "(sus gráficos viven en la GPU de este equipo). Si la necesitas en otro equipo, "
+            "apágala y muévela por el Hub." if checked else ""
         )
 
     def _sync_firmware_info(self, *_a) -> None:

@@ -66,7 +66,9 @@ class BlockerTests(unittest.TestCase):
             "<domain><devices><video><model type='virtio'>"
             "<acceleration accel3d='yes'/></model></video></devices></domain>"
         )
-        self.assertIn("aceleración 3D (VirGL)", vm_evacuation_blockers(xml))
+        blockers = vm_evacuation_blockers(xml)
+        self.assertTrue(any("aceleración 3D (VirGL)" in b for b in blockers))
+        self.assertTrue(any("apágala para moverla por el Hub" in b for b in blockers))
 
 
 class _FakeVm:
@@ -167,7 +169,7 @@ class DialogTests(unittest.TestCase):
         dialog = EvacuationDialog(28, CANDIDATES, vms)
         self.assertEqual(dialog.evacuable_names(), ["win11"])
         self.assertEqual(dialog.vm_list.count(), 2)
-        self.assertIn("se queda aquí", dialog.vm_list.item(1).text())
+        self.assertIn("no se migra en vivo", dialog.vm_list.item(1).text())
         target = dialog.selected_target()
         self.assertIsNotNone(target)
         self.assertEqual(target["host_id"], "portatil")

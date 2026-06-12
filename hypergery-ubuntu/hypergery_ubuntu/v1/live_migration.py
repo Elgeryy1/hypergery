@@ -251,7 +251,8 @@ class LiveMigrator:
         if accel or egl_headless:
             raise HyperGeryError(
                 f"{plan.vm_name} has 3D acceleration (VirGL) enabled — its OpenGL state lives on this "
-                "host's GPU and cannot move. Recreate the VM without «Aceleración 3D» to migrate it."
+                "host's GPU and cannot move while running. Shut the VM down and move it through the Hub "
+                "(offline) instead; live migration is not possible with «Aceleración 3D»."
             )
         cdroms = [
             disk for disk in root.findall("./devices/disk")

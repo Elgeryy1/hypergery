@@ -74,7 +74,7 @@ def vm_evacuation_blockers(xml: str) -> list[str]:
         g for g in root.findall("./devices/graphics") if g.attrib.get("type") == "egl-headless"
     ]
     if has_virgl:
-        blockers.append("aceleración 3D (VirGL)")
+        blockers.append("aceleración 3D (VirGL): apágala para moverla por el Hub")
     return blockers
 
 
@@ -190,7 +190,7 @@ class EvacuationDialog(QDialog):
         for vm in vms:
             blockers = vm.get("blockers") or []
             mark = "✅" if not blockers else "⛔"
-            suffix = "" if not blockers else f" — se queda aquí: {', '.join(blockers)}"
+            suffix = "" if not blockers else f" — no se migra en vivo: {', '.join(blockers)}"
             item = QListWidgetItem(f"{mark} {vm['name']}{suffix}")
             item.setData(Qt.ItemDataRole.UserRole, vm)
             if blockers:
