@@ -2115,5 +2115,28 @@ class QtControlCenterTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
 
+class QtConsoleKeysymTests(unittest.TestCase):
+    def test_ctrl_letter_sends_base_letter_keysym(self):
+        # Regresión: con Ctrl, event.text() es un carácter de control (Ctrl+C → \x03),
+        # así que la letra debe derivarse de la tecla, no del texto. Antes devolvía 0
+        # y Ctrl+C/Ctrl+D no llegaban al guest (no se podía salir de top, etc.).
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        from hypergery_ubuntu.ui_qt.console import _keysym
+
+        ctrl_c = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier, "\x03")
+        self.assertEqual(_keysym(ctrl_c), 0x63)  # 'c'
+        ctrl_d = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_D, Qt.KeyboardModifier.ControlModifier, "\x04")
+        self.assertEqual(_keysym(ctrl_d), 0x64)  # 'd'
+        ctrl_4 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_4, Qt.KeyboardModifier.ControlModifier, "")
+        self.assertEqual(_keysym(ctrl_4), 0x34)  # '4'
+        # Una letra normal (sin Ctrl) sigue saliendo de event.text().
+        plain_c = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.NoModifier, "c")
+        self.assertEqual(_keysym(plain_c), 0x63)
+        self.assertIsNotNone(app)
+
+
 if __name__ == "__main__":
     unittest.main()

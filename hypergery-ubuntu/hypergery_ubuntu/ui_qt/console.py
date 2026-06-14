@@ -83,6 +83,15 @@ def _keysym(event: QKeyEvent) -> int:
     text = event.text()
     if text and len(text) == 1 and 0x20 <= ord(text) <= 0x7E:
         return ord(text)
+    # Con un modificador (Ctrl/Alt) event.text() es un carácter de control
+    # (Ctrl+C → "\x03") o vacío, así que la rama imprimible de arriba no aplica:
+    # mapeamos la tecla base a su keysym imprimible para que el modificador + la
+    # letra/dígito lleguen juntos al guest (Ctrl+C, Ctrl+D, Ctrl+Z…).
+    key = int(event.key())
+    if 0x41 <= key <= 0x5A:  # Key_A..Key_Z → keysym minúscula 'a'..'z'
+        return key + 0x20
+    if 0x30 <= key <= 0x39:  # Key_0..Key_9 → '0'..'9' (ya son ASCII)
+        return key
     mapping = {
         Qt.Key.Key_Backspace: 0xFF08,
         Qt.Key.Key_Tab: 0xFF09,
