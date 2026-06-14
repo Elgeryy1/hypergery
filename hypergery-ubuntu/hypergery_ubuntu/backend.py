@@ -226,6 +226,46 @@ def normalize_render_node_for_host(root: ET.Element, render_node: str | None = N
     return changed
 
 
+def parse_localectl_layout(text: str) -> str:
+    """Primera layout X11 de la salida de ``localectl status`` ("" si no hay).
+
+    "X11 Layout: es,us" → "es"."""
+    for line in (text or "").splitlines():
+        if "X11 Layout:" in line:
+            value = line.split(":", 1)[1].strip()
+            return value.split(",")[0].strip()
+    return ""
+
+
+def host_vnc_keymap() -> str:
+    """Layout de teclado del host para el ``keymap`` del VNC (p. ej. "es").
+
+    Sin esto, QEMU asume teclado en-us y los caracteres con AltGr/Shift de otros
+    layouts (``| @ # ~ \\`` en español) llegan mal al guest. Vacío = no fijar.
+    Override: ``HYPERGERY_VNC_KEYMAP``.
+    """
+    override = os.environ.get("HYPERGERY_VNC_KEYMAP", "").strip()
+    if override:
+        return override
+    if shutil.which("localectl"):
+        try:
+            res = subprocess.run(["localectl", "status"], capture_output=True, text=True, timeout=5)
+            layout = parse_localectl_layout(res.stdout)
+            if layout:
+                return layout
+        except Exception:
+            pass
+    if shutil.which("setxkbmap"):
+        try:
+            res = subprocess.run(["setxkbmap", "-query"], capture_output=True, text=True, timeout=5)
+            for line in res.stdout.splitlines():
+                if line.strip().startswith("layout:"):
+                    return line.split(":", 1)[1].strip().split(",")[0].strip()
+        except Exception:
+            pass
+    return ""
+
+
 def normalize_graphics_audio_for_display(root: ET.Element, display_mode: str) -> None:
     if display_mode not in {"spice", "vnc"}:
         raise HyperGeryError("Display mode must be spice or vnc.")
@@ -238,6 +278,9 @@ def normalize_graphics_audio_for_display(root: ET.Element, display_mode: str) ->
         graphics = ET.SubElement(devices, "graphics")
     graphics.attrib.clear()
     graphics.attrib.update({"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
+    keymap = host_vnc_keymap()
+    if display_mode == "vnc" and keymap:
+        graphics.attrib["keymap"] = keymap
 
     spice_channels = [channel for channel in devices.findall("channel") if channel.attrib.get("type") == "spicevmc"]
     if display_mode == "spice":
@@ -931,7 +974,12 @@ class HyperGeryBackend:
         ET.SubElement(iface, "source", {"network": network_id})
         ET.SubElement(iface, "model", {"type": vm_profile.net_model})
         ET.SubElement(devices, "input", {"type": "tablet", "bus": "usb"})
-        ET.SubElement(devices, "graphics", {"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
+        graphics_attrs = {"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"}
+        keymap = host_vnc_keymap()
+        if display_mode == "vnc" and keymap:
+            # Sin keymap, los caracteres AltGr/Shift de teclados no-US (| @ # ~ \) no llegan.
+            graphics_attrs["keymap"] = keymap
+        ET.SubElement(devices, "graphics", graphics_attrs)
         video = ET.SubElement(devices, "video")
         if accel_3d:
             # Aceleración 3D compartida (VirGL): la VM recibe una GPU virtio y
