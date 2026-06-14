@@ -16,6 +16,32 @@ VNC_FAILED_MESSAGE = "No se pudo conectar a la consola"
 VNC_TIMEOUT_REASON = "Se agotó el tiempo de espera (10 s) al conectar con la consola."
 
 
+def vnc_port_from_display(display: str) -> int:
+    """Mapea el valor de ``virsh vncdisplay`` (":0", "127.0.0.1:1") a puerto TCP."""
+    text = (display or "").strip()
+    if ":" not in text:
+        raise ValueError(f"No es un display VNC: {display!r}")
+    index = text.rsplit(":", 1)[1].strip()
+    try:
+        number = int(index)
+    except ValueError as exc:
+        raise ValueError(f"No es un display VNC: {display!r}") from exc
+    return 5900 + number
+
+
+def ssh_target_from_libvirt_uri(uri: str) -> str:
+    """Extrae ``usuario@host`` (o ``host``) de una URI ``qemu+ssh://…/system``.
+
+    Solo qemu+ssh: el túnel de la consola integrada remota va por SSH."""
+    text = (uri or "").strip()
+    if not text.startswith("qemu+ssh://"):
+        raise ValueError("La consola integrada remota necesita una URI qemu+ssh://.")
+    authority = text[len("qemu+ssh://"):].split("/", 1)[0].strip()
+    if not authority:
+        raise ValueError("La URI qemu+ssh:// no tiene host.")
+    return authority
+
+
 def blocking_vnc_connect(host: str, port: int, timeout: float = VNC_CONNECT_TIMEOUT) -> int:
     """Open a TCP connection to the VNC server with a hard ``timeout``.
 

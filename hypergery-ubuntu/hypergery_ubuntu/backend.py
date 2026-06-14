@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -1270,6 +1271,67 @@ class HyperGeryBackend:
             raise HyperGeryError("No console viewer installed. Install virt-viewer.")
         self.launch_viewer([virt_viewer, "--connect", uri, name])
         logging.info("opened remote virt-viewer for vm: %s uri=%s", name, uri)
+
+    def open_remote_vnc_tunnel(self, name: str, uri: str) -> dict[str, object]:
+        """Prepara la consola INTEGRADA de una VM en OTRO equipo.
+
+        Averigua el puerto VNC del host remoto por ``qemu+ssh``, abre un túnel
+        SSH ``local→VNC`` y devuelve el endpoint local (``127.0.0.1:puerto``) más
+        el proceso ssh del túnel (la ventana de consola lo cierra al salir). El
+        VNC remoto escucha en 127.0.0.1 del otro equipo; el túnel lo hace local
+        para que la consola integrada lo pinte como si fuera una VM de aquí.
+        """
+        from .ui_qt.console_helpers import ssh_target_from_libvirt_uri, vnc_port_from_display
+
+        name = validate_vm_name(name)
+        ssh_target = ssh_target_from_libvirt_uri(uri)  # solo qemu+ssh
+        display = self.run(["virsh", "--connect", uri, "vncdisplay", name], check=False)
+        if display.returncode != 0 or not display.stdout.strip():
+            raise HyperGeryError(
+                f"No se pudo leer el display VNC remoto de {name}: "
+                f"{display.stderr.strip() or 'la VM puede no usar VNC o no estar encendida'}"
+            )
+        remote_port = vnc_port_from_display(display.stdout.strip())
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            local_port = probe.getsockname()[1]
+        ssh = shutil.which("ssh")
+        if not ssh:
+            raise HyperGeryError("ssh no está instalado; no se puede abrir la consola remota integrada.")
+        proc = subprocess.Popen(
+            [
+                ssh, "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+                "-o", "StrictHostKeyChecking=accept-new", "-N",
+                "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}", ssh_target,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=self.external_tool_env(),
+        )
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+                raise HyperGeryError(f"El túnel SSH para la consola remota falló: {err.strip() or 'ssh terminó'}")
+            try:
+                with socket.create_connection(("127.0.0.1", local_port), timeout=0.5):
+                    break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            proc.terminate()
+            raise HyperGeryError("El túnel SSH para la consola remota no respondió a tiempo.")
+        logging.info(
+            "opened remote VNC ssh tunnel for vm %s: 127.0.0.1:%s -> %s (remote :%s)",
+            name, local_port, ssh_target, remote_port,
+        )
+        return {
+            "type": "vnc",
+            "host": "127.0.0.1",
+            "port": local_port,
+            "uri": f"vnc://127.0.0.1:{local_port} (túnel SSH a {ssh_target})",
+            "process": proc,
+        }
 
     def get_console_display(self, name: str) -> dict[str, object]:
         name = validate_vm_name(name)

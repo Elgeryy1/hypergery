@@ -197,6 +197,10 @@ class IntegratedConsoleWidget(QWidget):
         self.vm_state = ""
         self.graphics = ""
         self.display: dict[str, object] | None = None
+        # Para una VM en otro equipo: el endpoint VNC ya tunelizado (127.0.0.1:
+        # puerto local) en vez de preguntar a la libvirt local. Lo fija
+        # VmConsoleWindow en modo remoto.
+        self.display_override: dict[str, object] | None = None
         self.socket: QTcpSocket | None = None
         self.connect_thread: QThread | None = None
         self.connect_worker: VncConnectWorker | None = None
@@ -416,12 +420,16 @@ class IntegratedConsoleWidget(QWidget):
             self.mode_stack.setCurrentWidget(self.spice_card)
             self.update_controls(False)
             return
-        try:
-            display = self.backend.get_console_display(self.vm_name)
-        except HyperGeryError as exc:
-            self.set_status(f"Consola integrada no disponible: {exc}")
-            self.screen.setText("Consola integrada no disponible.\nUsa «Abrir visor externo».")
-            return
+        if self.display_override is not None:
+            # VM remota: el VNC ya está tunelizado a 127.0.0.1:puerto local.
+            display = self.display_override
+        else:
+            try:
+                display = self.backend.get_console_display(self.vm_name)
+            except HyperGeryError as exc:
+                self.set_status(f"Consola integrada no disponible: {exc}")
+                self.screen.setText("Consola integrada no disponible.\nUsa «Abrir visor externo».")
+                return
         if display.get("type") != "vnc":
             self.set_status(SPICE_INTEGRATED_MESSAGE if display.get("type") == "spice" else "La consola integrada requiere VNC.")
             self.screen.setText(f"{SPICE_INTEGRATED_MESSAGE}\n\nUsa «Abrir visor externo».")
@@ -841,15 +849,22 @@ class IntegratedConsoleWidget(QWidget):
 
 
 class VmConsoleWindow(QMainWindow):
-    def __init__(self, backend, vm, parent=None, on_vm_changed: Callable[[str], None] | None = None) -> None:
+    def __init__(self, backend, vm, parent=None, on_vm_changed: Callable[[str], None] | None = None,
+                 remote_display: dict | None = None, remote_process=None) -> None:
         super().__init__(parent)
         self.backend = backend
         self.vm = vm
         self.on_vm_changed = on_vm_changed
-        self.setWindowTitle(f"Consola HyperGery - {getattr(vm, 'name', '')}")
+        # Modo remoto: proceso del túnel SSH al VNC del otro equipo (se cierra al
+        # cerrar la ventana) y el endpoint local ya tunelizado.
+        self._remote_process = remote_process
+        remote_suffix = " (remota)" if remote_display is not None else ""
+        self.setWindowTitle(f"Consola HyperGery - {getattr(vm, 'name', '')}{remote_suffix}")
         self.resize(1024, 768)
         self.setMinimumSize(1024, 768)
         self.console = IntegratedConsoleWidget(backend, self)
+        if remote_display is not None:
+            self.console.display_override = remote_display
         self.console.status_callback = self.set_console_status
         self.console.controls_callback = self.update_action_state
         self.console.vm_updated_callback = self.on_vm_changed
@@ -959,4 +974,12 @@ class VmConsoleWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.console.disconnect_console()
+        # Cierra el túnel SSH de la consola remota, si lo hay.
+        proc = getattr(self, "_remote_process", None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
         event.accept()

@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         self.remote_hosts: list[dict[str, Any]] = []
         self.remote_vms_inventory: list[dict[str, Any]] = []
         self.console_windows: dict[str, VmConsoleWindow] = {}
+        self._remote_console_windows: list[VmConsoleWindow] = []
         self.job_manager = JobManager(self)
         self._preview_target: str | None = None
         self._preview_inflight: set[str] = set()
@@ -1180,19 +1181,47 @@ class MainWindow(QMainWindow):
         vm_name = str(vm.get("vm_name") or vm.get("name") or "")
         from .dialogs import live_uri_for_host
 
-        # virt-viewer abre el display de la VM remota tunelizándolo por la propia
-        # conexión libvirt (qemu+ssh); el backend rechaza URIs no seguras.
         uri = live_uri_for_host(self._remote_host_record(host_id))
         if not uri:
             self.show_error(
                 f"No puedo abrir la consola de {vm_name}: el Hub no reporta una dirección SSH para «{host_id}»."
             )
             return
+
+        # Consola INTEGRADA de HyperGery contra la VM remota: el backend abre un
+        # túnel SSH al VNC del otro equipo y la consola conecta a 127.0.0.1:local.
+        def setup() -> dict[str, Any]:
+            try:
+                return self.backend.open_remote_vnc_tunnel(vm_name, uri)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def on_ready(result: dict[str, Any]) -> None:
+            error = str((result or {}).get("error") or "")
+            if error:
+                self.show_error(f"No se pudo abrir la consola de {vm_name}: {error}")
+                return
+            remote_display = {k: result[k] for k in ("type", "host", "port", "uri") if k in result}
+            vm_summary = VmSummary(name=vm_name, state="running", lab_id=str(vm.get("lab_id") or ""), graphics="vnc")
+            window = VmConsoleWindow(
+                self.backend, vm_summary, self,
+                remote_display=remote_display, remote_process=result.get("process"),
+            )
+            self._remote_console_windows.append(window)
+            window.destroyed.connect(
+                lambda _=None, w=window: w in self._remote_console_windows and self._remote_console_windows.remove(w)
+            )
+            window.show()
+            window.raise_()
+            window.activateWindow()
+            window.console.connect_console()
+
         self.run_operation(
-            f"Abriendo consola remota de {vm_name} en {host_id}",
-            lambda: self.backend.open_remote_console(vm_name, uri),
+            f"Abriendo consola de {vm_name} en {host_id}",
+            setup,
+            on_success=on_ready,
             refresh_after=False,
-            busy=False,
+            busy=True,
         )
 
     def _queue_remote_power_action(self, action: str) -> None:

@@ -884,15 +884,20 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    @patch("hypergery_ubuntu.ui_qt.main_window.VmConsoleWindow")
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
-    def test_remote_vm_console_opens_secure_uri_for_running_vm(self, backend_cls):
+    def test_remote_vm_console_opens_integrated_via_ssh_tunnel(self, backend_cls, console_window_cls):
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as tmp:
             backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            # El backend abre el túnel SSH al VNC remoto y devuelve el endpoint local.
+            backend_cls.return_value.open_remote_vnc_tunnel.return_value = {
+                "type": "vnc", "host": "127.0.0.1", "port": 5999,
+                "uri": "vnc://127.0.0.1:5999 (túnel SSH a gery@192.168.1.73)", "process": object(),
+            }
             window = MainWindow()
-            # El registro del host (del Hub) aporta usuario/IP SSH para el túnel.
             window.remote_hosts = [
                 {"host_id": "gery-lenovo", "ssh_address": "192.168.1.73", "ssh_user": "gery"}
             ]
@@ -913,13 +918,23 @@ class QtUiTests(unittest.TestCase):
             self.assertTrue(window.remote_vm_console_button.isEnabled())
             window.remote_vms_table.selectRow(1)
             self.assertFalse(window.remote_vm_console_button.isEnabled())
-            # Abrir la consola de la VM encendida lanza virt-viewer con la URI qemu+ssh segura.
+            # Abrir la consola integrada: monta el túnel sobre la URI qemu+ssh y abre la ventana propia.
             window.remote_vms_table.selectRow(0)
-            window.run_operation = lambda _desc, fn, **_kw: fn()
+
+            def fake_run(_desc, fn, on_success=None, **_kw):
+                result = fn()
+                if on_success:
+                    on_success(result)
+
+            window.run_operation = fake_run
             window._open_remote_console()
-            backend_cls.return_value.open_remote_console.assert_called_once_with(
+            backend_cls.return_value.open_remote_vnc_tunnel.assert_called_once_with(
                 "ubuntu-servicios", "qemu+ssh://gery@192.168.1.73/system"
             )
+            # Se abre la consola INTEGRADA de HyperGery (VmConsoleWindow), no un visor externo,
+            # apuntando al endpoint VNC ya tunelizado.
+            console_window_cls.assert_called_once()
+            self.assertEqual(console_window_cls.call_args.kwargs["remote_display"]["port"], 5999)
             dialog.close()
             window.close()
         self.assertIsNotNone(app)
