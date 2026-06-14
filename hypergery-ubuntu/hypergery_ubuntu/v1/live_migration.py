@@ -60,6 +60,20 @@ def _cpu_vendor(capabilities_xml: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def target_uri_host(uri: str) -> str:
+    """Host (sin usuario/esquema/puerto) de una URI libvirt remota.
+
+    ``qemu+ssh://user@192.168.1.44/system`` → ``192.168.1.44``. Se usa para fijar
+    ``--migrateuri tcp://<host>`` de modo que el canal de datos/NBD de la
+    migración (incl. block migration) use una dirección alcanzable, en vez del
+    hostname que el destino anuncia por sí mismo y que el origen puede no
+    resolver por DNS (error "address resolution failed for <hostname>").
+    """
+    text = (uri or "").split("://", 1)[-1]
+    authority = text.split("/", 1)[0]
+    return authority.split("@")[-1].split(":")[0].strip()
+
+
 def disk_filesystem_type(path: str, mounts_path: str = "/proc/mounts") -> str:
     """Tipo de filesystem del punto de montaje que contiene ``path``.
 
@@ -450,6 +464,12 @@ class LiveMigrator:
             args.extend(["--postcopy", "--postcopy-after-precopy"])
         if plan.bandwidth_mibps:
             args.extend(["--bandwidth", str(plan.bandwidth_mibps)])
+        # Fija la dirección del canal de datos a una IP/host alcanzable: sin esto,
+        # QEMU usa el hostname que anuncia el destino para el NBD de la block
+        # migration y el origen puede no resolverlo ("address resolution failed").
+        host = target_uri_host(plan.target_uri)
+        if host:
+            args.extend(["--migrateuri", f"tcp://{host}"])
         args.extend([plan.vm_name, plan.target_uri])
         return args
 

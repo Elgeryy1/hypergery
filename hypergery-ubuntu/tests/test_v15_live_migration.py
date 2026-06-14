@@ -11,6 +11,7 @@ from hypergery_ubuntu.v1.live_migration import (
     LiveMigrator,
     estimate_downtime_ms,
     parse_domjobinfo,
+    target_uri_host,
 )
 from hypergery_ubuntu.v1.progress import ProgressChannel
 
@@ -245,6 +246,19 @@ class HappyPathTests(unittest.TestCase):
         state = channel.get(result["operation_id"])
         self.assertEqual(state["status"], "done")
         self.assertEqual(state["percent"], 100.0)
+
+    def test_migrate_pins_data_channel_to_target_host(self):
+        # Regresión: sin --migrateuri, el NBD de la block migration usaba el
+        # hostname que anuncia el destino y el origen no lo resolvía
+        # ("address resolution failed for <hostname>").
+        self.assertEqual(target_uri_host("qemu+ssh://gerard@192.168.1.44/system"), "192.168.1.44")
+        self.assertEqual(target_uri_host("qemu+ssh://portatil:22/system"), "portatil")
+        host = _happy_host()
+        plan = LiveMigrationPlan(vm_name="web01", target_uri=TARGET, shared_storage=False)
+        LiveMigrator(host, plan, channel=ProgressChannel()).run()
+        migrate_call = next(c for c in host.calls if c[1] == "migrate")
+        self.assertIn("--migrateuri", migrate_call)
+        self.assertIn("tcp://portatil", migrate_call)
 
     def test_block_migration_flags(self):
         host = _happy_host()
