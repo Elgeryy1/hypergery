@@ -131,6 +131,33 @@
 - **U11** block migration (sin NAS): mismo comando con `--block-migration`. Esperado: discos copiados por el canal de migración, resto igual.
 - **U12** cancelar a mitad: lanzar U10/U11 y durante el pre-copy llamar `migrator.cancel()`/Ctrl-C (o `virsh domjobabort <vm>`): origen running e intacto, destino limpio, estado `cancelled` en /progress.
 
+### RESULTADO UAT real 2026-06-14 (PC AMD ↔ portátil Intel) — ver `docs/qa/REAL_MULTIHOST_UAT_2026-06-14.md`
+
+UAT sobre hardware físico (PC `gerard-MS-7E26` AMD Ryzen 7 7700X ↔ portátil
+`gery-Lenovo-ideapad-330S-14IKB` Intel i5-8250U), por SSH. Todo con VMs `hgtest-*`,
+limpieza verificada al cierre. **4 escenarios PASS:**
+
+1. **Aceleración 3D (VirGL)** — PASS en el portátil (host único): guest negoció
+   `[drm] features: +virgl`. Vía correcta para 3D sin GPU passthrough.
+2. **Live migration en caliente cross-vendor (U10/U11/U12)** — **PASS bidireccional
+   AMD↔Intel** con CPU de compatibilidad. Descubrimiento: con `host-passthrough`
+   HyperGery bloquea (correcto); con `qemu64` a secas falla por `svm`; con `qemu64`
+   **+ deshabilitar `svm`/`vmx`** migra y el guest sigue vivo (cpu_time avanza).
+   Block migration (`--copy-storage-all`) usado por falta de NAS común.
+3. **Migración offline (package/import)** — PASS PC→portátil; arranca en Intel con
+   la misma receta de CPU compat; origen intacto, UUID/MAC regenerados.
+4. **Control remoto vía Hub (App→Hub→Agente→libvirt)** — PASS: `vm_shutdown`
+   encolado desde el PC, ejecutado por el agente del portátil, VM `apagado` en ~2s.
+
+**Mejora pendiente (alta prioridad):** ofrecer un **perfil de CPU de compatibilidad**
+(`qemu64`/`x86-64-v2` + ocultar `svm`/`vmx`) que **habilite** la migración cross-vendor
+en vez del bloqueo duro actual de `v1/live_migration.py`. Convierte PC↔portátil en par
+plenamente migrable. Tradeoff: sin virtualización anidada en esas VMs.
+
+**A afinar antes de la "prueba a full":** registros del Hub stale (portátil con IP
+vieja .84 vs .73; agentes en `activating`); NAS no montado en el portátil (usar
+Hub-Transfer); HyperGery del portátil en 1.5.0rc0 sin VirGL (actualizar a la rama).
+
 ## M11 — v1.6 app Android nativa (HECHO: código + CI)
 
 - Rama `feat/v1.6-android-app` (encadenada sobre M10, pusheada).
