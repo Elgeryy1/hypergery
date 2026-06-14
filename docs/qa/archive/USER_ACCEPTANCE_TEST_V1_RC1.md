@@ -3,7 +3,7 @@
 **Objetivo**: validar la experiencia real de uso de HyperGery **v1.0-rc1** como
 usuario (Gerard), no como desarrollador. El smoke automático/asistido ya pasó
 (23 PASS · 0 FAIL · 1 BLOCKED · 1 SKIP — ver
-[V1_MANUAL_SMOKE_RESULT.md](V1_MANUAL_SMOKE_RESULT.md)); esto cubre lo que el
+[V1_MANUAL_SMOKE_RESULT.md](../../V1_MANUAL_SMOKE_RESULT.md)); esto cubre lo que el
 smoke no cubre: **la GUI con sesión interactiva (el SKIP del smoke), la
 usabilidad y la primera impresión**.
 

@@ -124,18 +124,18 @@ remains available for the general case.
 - **No true live-RAM migration**: `save_restore` preserves state but the VM is
   offline during transfer; MemDiff is an experimental block-delta estimator.
 - **No API/Hub authentication**: trusted LAN only; planned for v1.2
-  ([NEXT_STEPS_V12_SECURITY.md](../NEXT_STEPS_V12_SECURITY.md)).
+  ([NEXT_STEPS_V12_SECURITY.md](NEXT_STEPS_V12_SECURITY.md)).
 - **Control Center shows raw JSON**: rich per-module screens are planned for
-  v1.1 ([NEXT_STEPS_V11.md](../NEXT_STEPS_V11.md)).
+  v1.1 ([NEXT_STEPS_V11.md](NEXT_STEPS_V11.md)).
 - The orchestrator never executes its plans; battery modes only auto-execute
   data-safe actions.
-- Full list: [V1_KNOWN_BUGS.md](../V1_KNOWN_BUGS.md).
+- Full list: [V1_KNOWN_BUGS.md](V1_KNOWN_BUGS.md).
 
 ## 9. Pending validation
 
 Everything above is validated on real KVM on a single machine (including a
 real second-agent host→host teleport and a real state-preserving restore).
 The remaining manual step is the **smoke with two physical hosts**
-(laptop + home PC + NAS): see [V1_MANUAL_SMOKE.md](../V1_MANUAL_SMOKE.md).
+(laptop + home PC + NAS): see [V1_MANUAL_SMOKE.md](V1_MANUAL_SMOKE.md).
 No merge to `main`, tag, or release happens before that smoke and an explicit
 decision.

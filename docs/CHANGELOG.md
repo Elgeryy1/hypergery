@@ -30,7 +30,7 @@ features; no live-migration changes (still planned for v1.5).
 QA: `compileall` OK, focused suites **95 passed**, full suite **668 passed**
 (661 base + 7 new), 0 skipped. Real KVM-host UAT on `gerard-MS-7E26`
 **5/5 PASS** — see [RELEASE_NOTES_v1.0.1.md](RELEASE_NOTES_v1.0.1.md) and
-[docs/qa/V1_0_1_UAT_RESULT.md](docs/qa/V1_0_1_UAT_RESULT.md). Version metadata
+[docs/qa/V1_0_1_UAT_RESULT.md](qa/V1_0_1_UAT_RESULT.md). Version metadata
 bumped `1.0.0` → `1.0.1` (`pyproject.toml`, `hypergery_ubuntu/__init__.py`,
 `ui_qt/styles.py`).
 
@@ -48,7 +48,7 @@ Final QA: `compileall` OK, focused Qt suite **128 passed**, full suite
 **661 passed, 0 skipped** (Python 3.14.4 · PySide6 6.11.1 · pytest 9.0.3).
 Final UAT (visual + real two-host safe/verifiable migration) **PASS** — see
 [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md),
-[docs/qa/V1_FINAL_UAT_RESULT.md](docs/qa/V1_FINAL_UAT_RESULT.md) and the
+[docs/qa/V1_FINAL_UAT_RESULT.md](qa/V1_FINAL_UAT_RESULT.md) and the
 evidence in `docs/qa/evidence/v1-final/`.
 
 Version metadata bumped from `1.0.0rc1` to `1.0.0` (`pyproject.toml`,
@@ -56,7 +56,7 @@ Version metadata bumped from `1.0.0rc1` to `1.0.0` (`pyproject.toml`,
 to `1.0.0`. Known issues (non-blocking): Control Center → Networks
 DHCP/CIDR/Duplicate Gateway error; Hub/API without strong auth (trusted LAN
 only). Live migration is **out of scope for v1.0** and planned for v1.5
-([docs/roadmap/V1_5_LIVE_MIGRATION.md](docs/roadmap/V1_5_LIVE_MIGRATION.md)).
+([docs/roadmap/V1_5_LIVE_MIGRATION.md](roadmap/V1_5_LIVE_MIGRATION.md)).
 
 ## v1.0-rc1 - Release Candidate 1 (2026-06-06)
 

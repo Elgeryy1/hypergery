@@ -74,7 +74,7 @@ planificada para **v1.2** (no implementada aquí).
 - Focused: `pytest tests/test_v1_state_migration.py tests/test_migration.py tests/test_registry.py tests/test_cli.py -q` → **95 passed**
 - Suite completa: `pytest -q` → **668 passed** (661 base + 7 nuevos), 0 fallos, 0 skips
 - **UAT real 5/5 PASS** en host KVM `gerard-MS-7E26` (`qemu:///system`):
-  ver [docs/qa/V1_0_1_UAT_RESULT.md](docs/qa/V1_0_1_UAT_RESULT.md).
+  ver [docs/qa/V1_0_1_UAT_RESULT.md](qa/V1_0_1_UAT_RESULT.md).
   - `virsh save` → fallo de copia inducido → `virsh restore` → VM volvió a *ejecutando*.
   - Paquete parcial eliminado.
   - Disco truncado detectado por `Size mismatch`.
