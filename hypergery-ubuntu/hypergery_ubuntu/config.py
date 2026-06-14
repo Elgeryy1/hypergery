@@ -12,12 +12,15 @@ from .backend import HyperGeryError
 
 CONFIG_FIELDS = {
     "hub_url",
+    "hub_token",
     "host_id",
     "host_name",
     "nas_staging_path",
     "default_display",
     "default_iso_folder",
     "default_vm_storage_path",
+    "first_run_completed",
+    "setup_profile",
 }
 
 # Placeholder Hub URL para un entorno de laboratorio doméstico (el Hub corría en
@@ -29,12 +32,15 @@ HUB_URL_PLACEHOLDER = "http://192.168.1.150:8765"
 
 ENV_KEYS = {
     "hub_url": ("HYPERGERY_HUB_URL", "HYPERGERY_REGISTRY_URL"),
+    "hub_token": ("HYPERGERY_HUB_TOKEN",),
     "host_id": ("HYPERGERY_HOST_ID",),
     "host_name": ("HYPERGERY_HOST_NAME",),
     "nas_staging_path": ("HYPERGERY_NAS_STAGING_PATH",),
     "default_display": ("HYPERGERY_DEFAULT_DISPLAY",),
     "default_iso_folder": ("HYPERGERY_DEFAULT_ISO_FOLDER",),
     "default_vm_storage_path": ("HYPERGERY_DEFAULT_VM_STORAGE_PATH",),
+    "first_run_completed": ("HYPERGERY_FIRST_RUN_COMPLETED",),
+    "setup_profile": ("HYPERGERY_SETUP_PROFILE",),
 }
 
 
@@ -55,12 +61,17 @@ def default_config_values() -> dict[str, str]:
         # y hub_is_configured() devuelve False para que la UI muestre
         # "sin configurar" en vez de esta IP ficticia.
         "hub_url": HUB_URL_PLACEHOLDER,
+        "hub_token": "",
         "host_id": socket.gethostname(),
         "host_name": socket.gethostname(),
         "nas_staging_path": str(Path.home() / "hypergery-nas" / "migrations"),
         "default_display": "vnc",
         "default_iso_folder": str(Path.home()),
         "default_vm_storage_path": "",
+        # First Run Setup (v1.5): "" = wizard pendiente; "true" = completado.
+        "first_run_completed": "",
+        # Perfil elegido en el wizard: solo | local-docker | nas-docker | client.
+        "setup_profile": "",
     }
 
 
@@ -73,12 +84,15 @@ class EffectiveValue:
 @dataclass
 class HyperGeryConfig:
     hub_url: str = ""
+    hub_token: str = ""
     host_id: str = ""
     host_name: str = ""
     nas_staging_path: str = ""
     default_display: str = ""
     default_iso_folder: str = ""
     default_vm_storage_path: str = ""
+    first_run_completed: str = ""
+    setup_profile: str = ""
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "HyperGeryConfig":
@@ -101,6 +115,11 @@ class HyperGeryConfig:
         candidate = Path(path).expanduser() if path else config_path()
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        # La config puede contener hub_token: solo legible por el usuario.
+        try:
+            candidate.chmod(0o600)
+        except OSError:
+            pass
         return candidate
 
 

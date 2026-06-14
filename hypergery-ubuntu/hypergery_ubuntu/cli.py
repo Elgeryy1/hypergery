@@ -5,10 +5,12 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .backend import HyperGeryBackend, HyperGeryError
+from .config import HyperGeryConfig
 from .labs import LabStore
 from .templates import TemplateStore
 from .ui_qt.formatting import format_size
@@ -68,6 +70,8 @@ def create_vm(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
         network_mode=args.network,
         display_mode=args.display,
         lab_id=args.lab_id,
+        profile=getattr(args, "profile", ""),
+        migratable_cpu=getattr(args, "migratable_cpu", False),
     )
     print(f"created={vm.name}")
     print(f"state={vm.state}")
@@ -162,6 +166,17 @@ def lab_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
         print(f"deleted_lab={args.lab_id}")
         print(f"delete_vms={args.delete_vms}")
         return 0
+    if args.lab_command == "set-vm-tags":
+        return print_json(store.set_vm_tags(args.lab_id, args.vm_name, args.tags))
+    if args.lab_command == "set-budget":
+        return print_json(
+            store.set_budget(
+                args.lab_id,
+                max_ram_mib=args.max_ram_mib,
+                max_vcpus=args.max_vcpus,
+                max_vms=args.max_vms,
+            )
+        )
     if args.lab_command == "export":
         output = store.export_lab(args.lab_id, args.output)
         print(f"exported_lab={args.lab_id}")
@@ -243,6 +258,7 @@ def registry_action(args: argparse.Namespace) -> int:
             args.port,
             db_path=args.db_path,
             offline_timeout_seconds=args.offline_timeout,
+            auth_token="" if args.no_auth else (args.token or None),
         )
         return 0
     if args.registry_command == "health":
@@ -308,8 +324,16 @@ def hub_action(args: argparse.Namespace) -> int:
             db_path=args.db_path,
             offline_timeout_seconds=args.offline_timeout,
             staging_dir=args.staging_dir or None,
+            auth_token="" if args.no_auth else (args.token or None),
         )
         return 0
+    if args.hub_command == "pairing-info":
+        from .registry.auth import load_or_create_hub_token
+
+        store = RegistryStore(args.db_path or None)
+        token = load_or_create_hub_token(store.db_path)
+        print("ADVERTENCIA: el token es un secreto. Compártelo solo por un canal seguro (TLS/VPN).", file=sys.stderr)
+        return print_json({"hub_url": args.hub_url, "token": token, "pair_uri": f"hypergery://pair?url={args.hub_url}&token={token}"})
     if args.hub_command == "init-db":
         store = RegistryStore(args.db_path)
         return print_json({"ok": True, "db_path": str(store.db_path)})
@@ -464,8 +488,48 @@ def migrate_action(backend: HyperGeryBackend, args: argparse.Namespace) -> int:
     return 2
 
 
+def setup_action(args) -> int:
+    """`hypergery-cli setup …` (v1.5 First Run Setup). Nunca imprime tokens."""
+    from . import firstrun
+
+    if args.setup_command == "status":
+        status = firstrun.setup_status()
+        for key, value in status.items():
+            print(f"{key}: {value}")
+        return 0
+    if args.setup_command == "wizard":
+        from .ui_qt.main import main as qt_main
+
+        return qt_main([sys.argv[0]], force_first_run=True)
+    if args.setup_command == "generate-docker-bundle":
+        written = firstrun.generate_docker_bundle(args.output)
+        print(f"Bundle del Hub generado en {Path(args.output).expanduser()}:")
+        for item in written:
+            print(f"  {item}")
+        print("Siguiente paso: lee README_SETUP.md dentro de la carpeta. (No se ha ejecutado Docker.)")
+        return 0
+    if args.setup_command == "test-hub":
+        config = HyperGeryConfig.load()
+        url = args.url or config.hub_url
+        token = args.token or config.hub_token
+        if not url:
+            print("ERROR: no hay URL del Hub (pásala con --url o configúrala antes).", file=sys.stderr)
+            return 2
+        result = firstrun.test_hub_connection(url, token)
+        print(f"{result['status']}: {result['message']}")
+        return 0 if result["status"] == "ok" else 1
+    if args.setup_command == "reset-first-run":
+        path = firstrun.reset_first_run()
+        print(f"first_run_completed borrado en {path}: el asistente volverá a salir al arrancar la app.")
+        return 0
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
+    from . import __version__
+
     parser = argparse.ArgumentParser(prog="hypergery-cli")
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight", help="Run non-GUI host dependency checks.")
     sub.add_parser("doctor", help="Run v0.6 Hub, agent, NAS, Docker, and libvirt diagnostics without changing the system.")
@@ -488,6 +552,16 @@ def main(argv: list[str] | None = None) -> int:
     create_parser.add_argument("--network", choices=["nat", "isolated"], default="nat")
     create_parser.add_argument("--display", choices=["spice", "vnc"], default="spice")
     create_parser.add_argument("--lab-id", default="default-lab")
+    create_parser.add_argument(
+        "--profile",
+        default="",
+        help="VM profile: linux | linux-uefi | windows11 | windows-legacy | other (overrides --os-type).",
+    )
+    create_parser.add_argument(
+        "--migratable-cpu",
+        action="store_true",
+        help="Use a portable baseline CPU so the running VM can be live-migrated between different hosts (AMD<->Intel).",
+    )
     for command, help_text in (
         ("start", "Start a real libvirt VM."),
         ("shutdown", "Request ACPI shutdown for a real libvirt VM."),
@@ -527,6 +601,15 @@ def main(argv: list[str] | None = None) -> int:
     lab_delete = lab_sub.add_parser("delete")
     lab_delete.add_argument("lab_id")
     lab_delete.add_argument("--delete-vms", action="store_true")
+    lab_tags = lab_sub.add_parser("set-vm-tags", help="Set (or clear with no tags) free-form tags on one lab VM.")
+    lab_tags.add_argument("lab_id")
+    lab_tags.add_argument("vm_name")
+    lab_tags.add_argument("tags", nargs="*")
+    lab_budget = lab_sub.add_parser("set-budget", help="Set the lab resource budget (0 = unlimited).")
+    lab_budget.add_argument("lab_id")
+    lab_budget.add_argument("--max-ram-mib", type=int, default=0)
+    lab_budget.add_argument("--max-vcpus", type=int, default=0)
+    lab_budget.add_argument("--max-vms", type=int, default=0)
     lab_export = lab_sub.add_parser("export")
     lab_export.add_argument("lab_id")
     lab_export.add_argument("output")
@@ -565,6 +648,8 @@ def main(argv: list[str] | None = None) -> int:
     registry_serve.add_argument("--port", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_PORT", "8765")))
     registry_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_REGISTRY_DB", ""))
     registry_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90")))
+    registry_serve.add_argument("--token", default="", help="Hub auth token. Default: HYPERGERY_HUB_TOKEN or auto-generated hub_token file next to the DB.")
+    registry_serve.add_argument("--no-auth", action="store_true", help="DANGEROUS: disable Hub authentication (trusted LAN only).")
     registry_health = registry_sub.add_parser("health")
     registry_health.add_argument("--registry-url", default=default_hub_url())
     hub_parser = sub.add_parser("hub", help="Run or query the HyperGery Hub control plane.")
@@ -575,8 +660,13 @@ def main(argv: list[str] | None = None) -> int:
     hub_serve.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
     hub_serve.add_argument("--offline-timeout", type=int, default=int(os.environ.get("HYPERGERY_HUB_OFFLINE_TIMEOUT", os.environ.get("HYPERGERY_REGISTRY_OFFLINE_TIMEOUT", "90"))))
     hub_serve.add_argument("--staging-dir", default=os.environ.get("HYPERGERY_HUB_STAGING", ""))
+    hub_serve.add_argument("--token", default="", help="Hub auth token. Default: HYPERGERY_HUB_TOKEN or auto-generated hub_token file next to the DB.")
+    hub_serve.add_argument("--no-auth", action="store_true", help="DANGEROUS: disable Hub authentication (trusted LAN only).")
     hub_health = hub_sub.add_parser("health")
     hub_health.add_argument("--hub-url", default=default_hub_url())
+    hub_pairing = hub_sub.add_parser("pairing-info", help="Print the Hub URL and token for pairing another host or the mobile app. The token is a SECRET.")
+    hub_pairing.add_argument("--hub-url", default=default_hub_url())
+    hub_pairing.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
     hub_init = hub_sub.add_parser("init-db")
     hub_init.add_argument("--db-path", default=os.environ.get("HYPERGERY_HUB_DB", os.environ.get("HYPERGERY_REGISTRY_DB", "")))
     hub_vms = hub_sub.add_parser("vms")
@@ -663,6 +753,16 @@ def main(argv: list[str] | None = None) -> int:
     migrate_remote.add_argument("--no-snapshots", action="store_true")
     migrate_remote.add_argument("--start-after-import", action="store_true")
     migrate_remote.add_argument("--hub-url", "--registry-url", dest="registry_url", default=default_hub_url())
+    setup_parser = sub.add_parser("setup", help="First Run Setup: estado, bundle Docker del Hub, prueba de conexión.")
+    setup_sub = setup_parser.add_subparsers(dest="setup_command", required=True)
+    setup_sub.add_parser("status", help="Show first-run status and chosen profile (never prints the token).")
+    setup_sub.add_parser("wizard", help="Launch the graphical First Run wizard (requires a display).")
+    setup_bundle = setup_sub.add_parser("generate-docker-bundle", help="Write the self-contained Hub Docker folder (compose, Dockerfile, source, docs). Runs nothing.")
+    setup_bundle.add_argument("--output", default="dist/hypergery-hub-docker", help="Destination folder (default: dist/hypergery-hub-docker).")
+    setup_test = setup_sub.add_parser("test-hub", help="Test Hub connectivity and token (states: ok / auth_error / unreachable).")
+    setup_test.add_argument("--url", default="", help="Hub URL (default: configured hub_url).")
+    setup_test.add_argument("--token", default="", help="Hub token (default: configured hub_token).")
+    setup_sub.add_parser("reset-first-run", help="Clear first_run_completed so the wizard shows again on next launch.")
     from .v1.cli_v1 import add_v1_parser
 
     add_v1_parser(sub)
@@ -687,6 +787,8 @@ def main(argv: list[str] | None = None) -> int:
             return v1_action(args)
         if args.command == "doctor":
             return doctor_action()
+        if args.command == "setup":
+            return setup_action(args)
         backend = HyperGeryBackend()
         if args.command == "preflight":
             return print_preflight(backend)
@@ -715,7 +817,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "migrate":
             return migrate_action(backend, args)
     except HyperGeryError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        # HG-BUG-0023: humanizar el stderr de virsh también fuera de la UI Qt.
+        from .ui_qt.humanize import humanize_error_message
+
+        print(f"ERROR: {humanize_error_message(str(exc))}", file=sys.stderr)
         return 2
     return 2
 

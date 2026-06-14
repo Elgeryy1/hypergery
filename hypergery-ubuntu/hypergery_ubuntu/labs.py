@@ -86,6 +86,28 @@ def allocate_lab_subnet(lab_id: str, existing_subnets: set[str] | list[str] | tu
     )
 
 
+def check_lab_budget(manifest: dict, vms: list) -> list[str]:
+    """v1.3: violaciones del presupuesto del lab para una lista de VMs
+    (objetos con ram_mib/vcpus, p. ej. VmSummary). Lista vacía = todo OK."""
+    budget = manifest.get("budget") or {}
+    if not budget:
+        return []
+    lab_vms = [vm for vm in vms if getattr(vm, "lab_id", "") == manifest.get("lab_id")]
+    violations: list[str] = []
+    max_vms = int(budget.get("max_vms") or 0)
+    if max_vms and len(lab_vms) > max_vms:
+        violations.append(f"VMs: {len(lab_vms)} > max_vms={max_vms}")
+    max_ram = int(budget.get("max_ram_mib") or 0)
+    total_ram = sum(int(getattr(vm, "ram_mib", 0) or 0) for vm in lab_vms)
+    if max_ram and total_ram > max_ram:
+        violations.append(f"RAM: {total_ram} MiB > max_ram_mib={max_ram}")
+    max_vcpus = int(budget.get("max_vcpus") or 0)
+    total_vcpus = sum(int(getattr(vm, "vcpus", 0) or 0) for vm in lab_vms)
+    if max_vcpus and total_vcpus > max_vcpus:
+        violations.append(f"vCPUs: {total_vcpus} > max_vcpus={max_vcpus}")
+    return violations
+
+
 def subnet_gateway(subnet: str) -> str:
     parts = subnet.split("/")
     octets = parts[0].split(".")
@@ -152,6 +174,9 @@ class LabStore:
             "favorite": False,
             "archived": False,
             "last_started_at": "",
+            # v1.3: etiquetas por VM y presupuesto de recursos del lab.
+            "vm_tags": {},
+            "budget": {},
         }
 
     def migrate_manifest(self, manifest: dict) -> dict:
@@ -191,6 +216,18 @@ class LabStore:
         migrated["favorite"] = bool(migrated.get("favorite"))
         migrated["archived"] = bool(migrated.get("archived"))
         migrated["last_started_at"] = str(migrated.get("last_started_at") or "")
+        raw_vm_tags = migrated.get("vm_tags")
+        migrated["vm_tags"] = {
+            str(vm_name): sorted({str(tag).strip() for tag in tags if str(tag).strip()})
+            for vm_name, tags in (raw_vm_tags.items() if isinstance(raw_vm_tags, dict) else ())
+            if isinstance(tags, (list, tuple, set)) and tags
+        }
+        raw_budget = migrated.get("budget")
+        migrated["budget"] = {
+            key: int(raw_budget[key])
+            for key in ("max_ram_mib", "max_vcpus", "max_vms")
+            if isinstance(raw_budget, dict) and str(raw_budget.get(key, "")).strip().isdigit() and int(raw_budget[key]) > 0
+        }
         return migrated
 
     def read_manifest(self, path: Path) -> dict:
@@ -245,6 +282,36 @@ class LabStore:
         else:
             roles.pop(clean_name, None)
         manifest["vm_roles"] = roles
+        manifest["updated_at"] = now_iso()
+        self.write_lab(manifest)
+        return self.get_lab(lab_id)
+
+    def set_vm_tags(self, lab_id: str, vm_name: str, tags: list[str]) -> dict:
+        """v1.3: etiquetas libres por VM (p. ej. "produccion", "victima")."""
+        manifest = self.get_lab(lab_id)
+        clean_name = validate_vm_name(vm_name)
+        clean_tags = sorted({str(tag).strip() for tag in tags if str(tag).strip()})
+        vm_tags = dict(manifest.get("vm_tags") or {})
+        if clean_tags:
+            vm_tags[clean_name] = clean_tags
+        else:
+            vm_tags.pop(clean_name, None)
+        manifest["vm_tags"] = vm_tags
+        manifest["updated_at"] = now_iso()
+        self.write_lab(manifest)
+        return self.get_lab(lab_id)
+
+    def set_budget(self, lab_id: str, *, max_ram_mib: int = 0, max_vcpus: int = 0, max_vms: int = 0) -> dict:
+        """v1.3: presupuesto de recursos del lab (0 = sin límite)."""
+        manifest = self.get_lab(lab_id)
+        budget = {}
+        for key, value in (("max_ram_mib", max_ram_mib), ("max_vcpus", max_vcpus), ("max_vms", max_vms)):
+            value = int(value)
+            if value < 0:
+                raise HyperGeryError(f"Budget {key} cannot be negative.")
+            if value:
+                budget[key] = value
+        manifest["budget"] = budget
         manifest["updated_at"] = now_iso()
         self.write_lab(manifest)
         return self.get_lab(lab_id)

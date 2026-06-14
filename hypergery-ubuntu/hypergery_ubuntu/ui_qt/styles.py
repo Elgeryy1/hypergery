@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+from .. import __version__ as APP_DISPLAY_VERSION
 from .formatting import format_mib
-
-APP_DISPLAY_VERSION = "1.0.1"
 
 # Tema VirtualBox 7 (modo oscuro). Sustituye al antiguo tema navy/cyan v0.7.
 # El objetivo es parecerse al máximo al gestor de VirtualBox: grises neutros,
@@ -461,6 +460,19 @@ QLabel#pageTitle {
     font-weight: 700;
     letter-spacing: -0.3px;
     color: #f0f0f0;
+}
+QToolButton#sectionHeader {
+    text-align: left;
+    padding: 8px 10px;
+    font-weight: 600;
+    font-size: 11pt;
+    color: #e8e8e8;
+    background: #2a2d31;
+    border: none;
+    border-radius: 6px;
+}
+QToolButton#sectionHeader:hover {
+    background: #32363b;
 }
 QLabel#statBig {
     font-size: 20pt;

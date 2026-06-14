@@ -1,0 +1,19 @@
+[Unit]
+Description=HyperGery host agent (reports this machine to the Hub)
+Documentation=https://github.com/Elgeryy1/hypergery
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Solo arranca para usuarios que ya tienen HyperGery configurado: si no hay
+# config, la condición falla y la unidad se SALTA (no queda en estado fallido,
+# ni molesta a usuarios que no usan HyperGery).
+ExecCondition=/bin/sh -c 'test -f "$HOME/.config/hypergery/config.json"'
+# Lee hub_url/token de ~/.config/hypergery (env HYPERGERY_HUB_URL tiene prioridad).
+ExecStart=/usr/bin/hypergery-agent run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

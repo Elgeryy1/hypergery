@@ -18,7 +18,7 @@ def configure_qt_application() -> None:
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, force_first_run: bool = False) -> int:
     configure_qt_environment()
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
@@ -29,13 +29,26 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    from .. import APP_NAME, __version__
+    from .icons import app_icon
     from .main_window import MainWindow
+    from .screenshot import cleanup_stale_previews
 
+    # HG-BUG-0019: barre capturas de preview huérfanas de una sesión anterior.
+    cleanup_stale_previews()
     configure_qt_application()
     app = QApplication(argv if argv is not None else sys.argv)
     app.setStyle("Fusion")
-    app.setApplicationName("HyperGery")
-    app.setOrganizationName("HyperGery")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(__version__)
+    app.setOrganizationName(APP_NAME)
+    app.setDesktopFileName("hypergery")
+    app.setWindowIcon(app_icon())
+    # v1.5 First Run Setup: en la primera ejecución (o con --first-run) se
+    # ofrece el asistente. Cancelarlo nunca bloquea la app.
+    from .setup_wizard import maybe_run_setup_wizard
+
+    maybe_run_setup_wizard(force=force_first_run)
     try:
         window = MainWindow()
     except Exception as exc:

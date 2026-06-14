@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
@@ -83,6 +83,15 @@ def _keysym(event: QKeyEvent) -> int:
     text = event.text()
     if text and len(text) == 1 and 0x20 <= ord(text) <= 0x7E:
         return ord(text)
+    # Con un modificador (Ctrl/Alt) event.text() es un carácter de control
+    # (Ctrl+C → "\x03") o vacío, así que la rama imprimible de arriba no aplica:
+    # mapeamos la tecla base a su keysym imprimible para que el modificador + la
+    # letra/dígito lleguen juntos al guest (Ctrl+C, Ctrl+D, Ctrl+Z…).
+    key = int(event.key())
+    if 0x41 <= key <= 0x5A:  # Key_A..Key_Z → keysym minúscula 'a'..'z'
+        return key + 0x20
+    if 0x30 <= key <= 0x39:  # Key_0..Key_9 → '0'..'9' (ya son ASCII)
+        return key
     mapping = {
         Qt.Key.Key_Backspace: 0xFF08,
         Qt.Key.Key_Tab: 0xFF09,
@@ -102,6 +111,11 @@ def _keysym(event: QKeyEvent) -> int:
         Qt.Key.Key_Shift: 0xFFE1,
         Qt.Key.Key_Control: 0xFFE3,
         Qt.Key.Key_Alt: 0xFFE9,
+        # AltGr (ISO_Level3_Shift): sin esto, AltGr+1 llegaba como "1" al guest
+        # en vez de "|" — el modificador no se enviaba. Lo manda para que el guest
+        # componga los caracteres del tercer nivel (| @ # ~ \ en español).
+        Qt.Key.Key_AltGr: 0xFE03,
+        Qt.Key.Key_Meta: 0xFFE7,
         Qt.Key.Key_F1: 0xFFBE,
         Qt.Key.Key_F2: 0xFFBF,
         Qt.Key.Key_F3: 0xFFC0,
@@ -176,11 +190,15 @@ class VncScreen(QWidget):
             self.console.release_input()
             event.accept()
             return
-        if self.console.input_captured:
+        # El teclado llega al guest si la pantalla tiene el foco, sin obligar a
+        # capturar el ratón con un clic. Así el «Press any key» del instalador de
+        # Windows funciona en cuanto abres la consola (no hace falta saber que
+        # primero hay que hacer clic dentro).
+        if self.console.input_captured or self.hasFocus():
             self.console.send_key(event, True)
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
-        if self.console.input_captured:
+        if self.console.input_captured or self.hasFocus():
             self.console.send_key(event, False)
 
 
@@ -193,9 +211,21 @@ class IntegratedConsoleWidget(QWidget):
         self.vm_state = ""
         self.graphics = ""
         self.display: dict[str, object] | None = None
+        # Para una VM en otro equipo: el endpoint VNC ya tunelizado (127.0.0.1:
+        # puerto local) en vez de preguntar a la libvirt local. Lo fija
+        # VmConsoleWindow en modo remoto.
+        self.display_override: dict[str, object] | None = None
         self.socket: QTcpSocket | None = None
         self.connect_thread: QThread | None = None
         self.connect_worker: VncConnectWorker | None = None
+        # Cancelled connect threads draining in the background (HG-BUG-0014):
+        # kept referenced until finished so Qt never destroys a running QThread.
+        self._draining_threads: set[QThread] = set()
+        # Instalación: pulsa «espacio» automáticamente unas veces al conectar para
+        # cazar el «Press any key to boot from CD» (ventana de ~5 s) sin que el
+        # usuario tenga que clavar el momento. Lo activa open_console(force).
+        self.nudge_boot_on_connect = False
+        self._boot_nudges_left = 0
         self.connecting = False
         self.buffer = bytearray()
         self.state = "idle"
@@ -404,12 +434,16 @@ class IntegratedConsoleWidget(QWidget):
             self.mode_stack.setCurrentWidget(self.spice_card)
             self.update_controls(False)
             return
-        try:
-            display = self.backend.get_console_display(self.vm_name)
-        except HyperGeryError as exc:
-            self.set_status(f"Consola integrada no disponible: {exc}")
-            self.screen.setText("Consola integrada no disponible.\nUsa «Abrir visor externo».")
-            return
+        if self.display_override is not None:
+            # VM remota: el VNC ya está tunelizado a 127.0.0.1:puerto local.
+            display = self.display_override
+        else:
+            try:
+                display = self.backend.get_console_display(self.vm_name)
+            except HyperGeryError as exc:
+                self.set_status(f"Consola integrada no disponible: {exc}")
+                self.screen.setText("Consola integrada no disponible.\nUsa «Abrir visor externo».")
+                return
         if display.get("type") != "vnc":
             self.set_status(SPICE_INTEGRATED_MESSAGE if display.get("type") == "spice" else "La consola integrada requiere VNC.")
             self.screen.setText(f"{SPICE_INTEGRATED_MESSAGE}\n\nUsa «Abrir visor externo».")
@@ -450,24 +484,46 @@ class IntegratedConsoleWidget(QWidget):
         self.connect_worker = None
 
     def _stop_connect_worker(self) -> None:
+        """Cancela el connect en vuelo SIN bloquear la UI (HG-BUG-0014).
+
+        El connect bloqueante sigue corriendo en su hilo (acotado por el
+        timeout de 10 s), pero se le retira el control de la UI: sus señales
+        de resultado se desconectan, salvo ``connected``, que se recablea a
+        ``_discard_descriptor`` para que un socket tardío se cierre en vez de
+        filtrarse. El hilo queda referenciado en ``_draining_threads`` hasta
+        que termina, evitando el crash «QThread destroyed while thread is
+        still running» sin ningún ``wait()`` síncrono.
+        """
         thread = self.connect_thread
         if thread is None:
             self.connecting = False
             return
-        # Detach our slots so a late result cannot drive the UI after we bailed,
-        # then wait for the blocking connect (bounded by the 10 s timeout) to end.
         worker = self.connect_worker
+        self.connecting = False
+        self.connect_thread = None
+        self.connect_worker = None
         if worker is not None:
             for signal in (worker.connected, worker.failed, worker.timed_out):
                 try:
                     signal.disconnect()
                 except (RuntimeError, TypeError):
                     pass
+            worker.connected.connect(self._discard_descriptor)
+            # El wrapper Python del worker debe sobrevivir hasta que el hilo
+            # termine: si se recolecta, PySide destruye el QObject con señales
+            # aún en vuelo (segfault). El hilo (referenciado abajo) lo ancla.
+            thread._hg_draining_worker = worker
+        # Este hilo cancelado ya no debe tocar el estado del próximo intento.
+        try:
+            thread.finished.disconnect(self._on_connect_thread_finished)
+        except (RuntimeError, TypeError):
+            pass
+        # Sin padre Qt: si este widget muere antes que el hilo, Qt no destruye
+        # un QThread en marcha. La referencia Python lo mantiene vivo.
+        thread.setParent(None)
+        self._draining_threads.add(thread)
+        thread.finished.connect(lambda t=thread: self._draining_threads.discard(t))
         thread.quit()
-        thread.wait()
-        self.connecting = False
-        self.connect_thread = None
-        self.connect_worker = None
 
     def _on_worker_connected(self, descriptor: int) -> None:
         if not self.connecting:
@@ -488,7 +544,13 @@ class IntegratedConsoleWidget(QWidget):
         socket.errorOccurred.connect(self.on_socket_error)
         socket.disconnected.connect(lambda: self.update_controls(True))
         self.mode_stack.setCurrentWidget(self.scroll_area)
-        self.set_status(f"Conectada. Negociando con el servidor VNC… Tecla para soltar: {HOST_KEY_NAME}")
+        # Da el foco del teclado a la pantalla para que el «Press any key» del
+        # instalador funcione sin tener que hacer clic dentro primero.
+        self.screen.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.set_status(
+            f"Conectada. Si arranca un instalador, pulsa una tecla cuando veas «Press any key». "
+            f"Tecla para soltar el ratón: {HOST_KEY_NAME}"
+        )
         self.update_controls(True)
         # The server speaks first in RFB, but if any bytes are already buffered,
         # process them now so the handshake is not stalled waiting for readyRead.
@@ -664,6 +726,8 @@ class IntegratedConsoleWidget(QWidget):
                 self.request_update(False)
                 self.state = "message"
                 self.set_status(f"Conectada - {self.fb_width}x{self.fb_height} - Tecla para soltar: {HOST_KEY_NAME}")
+                if self.nudge_boot_on_connect:
+                    self._start_boot_nudges()
                 self.update_controls(True)
             elif self.state == "message":
                 msg_type = self._take(1)
@@ -748,6 +812,26 @@ class IntegratedConsoleWidget(QWidget):
         for key in (0xFFFF, 0xFFE9, 0xFFE3):
             self.socket.write(struct.pack(">BBxxI", 4, 0, key))
 
+    def _start_boot_nudges(self) -> None:
+        """Pulsa «espacio» repetidamente durante el arranque para cazar el
+        «Press any key to boot from CD». La consola se conecta nada más encender,
+        pero ese prompt no aparece hasta que OVMF termina de inicializar (varios
+        segundos) y solo dura ~5 s — por eso barremos una ventana AMPLIA cada
+        segundo. El espacio es inofensivo en la pantalla de idioma de Windows."""
+        self.nudge_boot_on_connect = False  # solo una vez por conexión
+        self._boot_nudges_left = 25  # ~30 s de barrido (1.2 s + 24×1.2 s)
+        QTimer.singleShot(1200, self._boot_nudge_tick)
+
+    def _boot_nudge_tick(self) -> None:
+        if self._boot_nudges_left <= 0 or not self.socket or self.state == "idle":
+            return
+        # Espacio (keysym 0x20): arranca el CD en el prompt; inofensivo después.
+        self.socket.write(struct.pack(">BBxxI", 4, 1, 0x20))
+        self.socket.write(struct.pack(">BBxxI", 4, 0, 0x20))
+        self._boot_nudges_left -= 1
+        if self._boot_nudges_left > 0:
+            QTimer.singleShot(1200, self._boot_nudge_tick)
+
     def send_pointer(self, event: QMouseEvent) -> None:
         if not self.socket or not self.framebuffer:
             return
@@ -779,15 +863,22 @@ class IntegratedConsoleWidget(QWidget):
 
 
 class VmConsoleWindow(QMainWindow):
-    def __init__(self, backend, vm, parent=None, on_vm_changed: Callable[[str], None] | None = None) -> None:
+    def __init__(self, backend, vm, parent=None, on_vm_changed: Callable[[str], None] | None = None,
+                 remote_display: dict | None = None, remote_process=None) -> None:
         super().__init__(parent)
         self.backend = backend
         self.vm = vm
         self.on_vm_changed = on_vm_changed
-        self.setWindowTitle(f"Consola HyperGery - {getattr(vm, 'name', '')}")
+        # Modo remoto: proceso del túnel SSH al VNC del otro equipo (se cierra al
+        # cerrar la ventana) y el endpoint local ya tunelizado.
+        self._remote_process = remote_process
+        remote_suffix = " (remota)" if remote_display is not None else ""
+        self.setWindowTitle(f"Consola HyperGery - {getattr(vm, 'name', '')}{remote_suffix}")
         self.resize(1024, 768)
         self.setMinimumSize(1024, 768)
         self.console = IntegratedConsoleWidget(backend, self)
+        if remote_display is not None:
+            self.console.display_override = remote_display
         self.console.status_callback = self.set_console_status
         self.console.controls_callback = self.update_action_state
         self.console.vm_updated_callback = self.on_vm_changed
@@ -897,4 +988,12 @@ class VmConsoleWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.console.disconnect_console()
+        # Cierra el túnel SSH de la consola remota, si lo hay.
+        proc = getattr(self, "_remote_process", None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
         event.accept()

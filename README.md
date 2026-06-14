@@ -2,15 +2,26 @@
 
 **A real Ubuntu desktop VM manager powered by KVM/QEMU/libvirt.**
 
-![Version](https://img.shields.io/badge/version-v1.0.1-blue)
+![Version](https://img.shields.io/badge/version-v1.7.0-blue)
 ![Status](https://img.shields.io/badge/status-stable-brightgreen)
+![Install](https://img.shields.io/badge/install-.deb-orange)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu-orange)
 ![Backend](https://img.shields.io/badge/backend-KVM%2FQEMU%2Flibvirt-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 HyperGery is a real desktop virtual machine manager for Ubuntu, functionally inspired by VirtualBox workflows but using KVM/QEMU/libvirt as its real backend through `virsh`, `qemu-img`, and `virt-viewer` or `remote-viewer`.
 
-**Branch status**: **v1.0.1** is the current stable release (tag `v1.0.1` on `main`): a migration-safety bugfix over v1.0.0 — safe rollback when a state export fails, checksum integrity for state packages, explicit "snapshots are not migrated" behavior, repo-hygiene `.gitignore` fixes, and reinforced Hub/API LAN-only security warnings. QA: `compileall` OK, focused suites 95 passed, full suite **668 passed**, and a real KVM-host UAT (`gerard-MS-7E26`) **5/5 PASS** (see [RELEASE_NOTES_v1.0.1.md](RELEASE_NOTES_v1.0.1.md) and [docs/qa/V1_0_1_UAT_RESULT.md](docs/qa/V1_0_1_UAT_RESULT.md)). The previous stable release was **v1.0.0** (see [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md) and the v1.0 UAT evidence in [docs/qa/V1_FINAL_UAT_RESULT.md](docs/qa/V1_FINAL_UAT_RESULT.md)). Live migration is **not** part of v1.0.x and is planned for v1.5 ([docs/roadmap/V1_5_LIVE_MIGRATION.md](docs/roadmap/V1_5_LIVE_MIGRATION.md)). See [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) for the v1 quick start.
+**Current release: v1.7.0** — distributed as a **Debian package (`.deb`)**. Download
+`hypergery_1.7.0_all.deb` from [Releases](https://github.com/Elgeryy1/hypergery/releases)
+and `sudo apt install -y ./hypergery_1.7.0_all.deb` — no clone or pip needed. v1.7.0
+brings **shared 3D acceleration (VirGL)**, **GPU passthrough (VFIO)**, **hot live
+migration (RAM+CPU)** including cross-vendor with a compatibility CPU profile, an
+**integrated remote console** (SSH-tunneled VNC), and a **native Android app**.
+Real-hardware acid test (Ubuntu Server with nginx + PostgreSQL + Redis live-migrated
+AMD→Intel while serving traffic): **0 dropped requests of 1060, ~0.23 s switchover,
+no reboot**. QA: `pytest` **993 passed, 8 skipped**. Full notes:
+[docs/RELEASE_NOTES_v1.7.0.md](docs/RELEASE_NOTES_v1.7.0.md); real UAT evidence:
+[docs/qa/REAL_MULTIHOST_UAT_2026-06-14.md](docs/qa/REAL_MULTIHOST_UAT_2026-06-14.md).
 
 HyperGery v0.5.0 adds Lab Topology visualisation, an improved planned VM editor, ISO reuse in the instantiation wizard, a resource overview panel, and new CLI commands for template update and lab instantiation.
 
@@ -131,7 +142,7 @@ python -m hypergery_ubuntu.cli lab-instantiate asr-lab "ASR Instance" \
 > - **Do not expose the Hub or API to the Internet** or to an untrusted network.
 >   Keep it on a trusted home/lab LAN behind your router; do not port-forward it.
 > - Token authentication and TLS are planned for **v1.2** (see
->   [NEXT_STEPS_V12_SECURITY.md](NEXT_STEPS_V12_SECURITY.md)), not v1.0.x.
+>   [NEXT_STEPS_V12_SECURITY.md](docs/NEXT_STEPS_V12_SECURITY.md)), not v1.0.x.
 
 ### NAS Live Migration (v0.6.0)
 
@@ -194,7 +205,7 @@ python -m hypergery_ubuntu.cli hub cleanup-staging --older-than-hours 24 --confi
 
 ### v0.9 / v1.0 service layer (develop, unreleased)
 
-On top of the closed v0.8 base, `develop` adds the `hypergery_ubuntu/v1/` service layer — everything dry-run-first, injectable, and fully tested. See [CHANGELOG.md](CHANGELOG.md), [ARCHITECTURE_V1.md](ARCHITECTURE_V1.md), [V09_REPORT.md](V09_REPORT.md), [V10_REPORT.md](V10_REPORT.md), and [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md).
+On top of the closed v0.8 base, `develop` adds the `hypergery_ubuntu/v1/` service layer — everything dry-run-first, injectable, and fully tested. See [CHANGELOG.md](docs/CHANGELOG.md), [ARCHITECTURE_V1.md](docs/ARCHITECTURE_V1.md), [V09_REPORT.md](docs/archive/V09_REPORT.md), [V10_REPORT.md](docs/archive/V10_REPORT.md), and [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md).
 
 - **Core (v0.9)**: structured JSONL logging with operation ids, stable error hierarchy with machine codes, central typed `V1Settings`, unified host registry (local + Hub + loopback), real telemetry with alerts, labs workspace v0.9 fields and validation, VM provider abstraction (Local/Agent/Simulated).
 - **NAS commit/restore**: checksum-verified lab packages, atomic staging, dry-run by default, hash-validated restore that never overwrites.
@@ -204,7 +215,7 @@ On top of the closed v0.8 base, `develop` adds the `hypergery_ubuntu/v1/` servic
 - **Per-lab network manager, local RBAC (4 roles, audit log), external node connector.**
 - **Android-ready local API v1**: uniform ok/data/error envelope, 15 GET + 3 POST endpoints, confirm-guarded teleport start, loopback-only by default (`--allow-remote` required otherwise). See [docs/API_V1.md](docs/API_V1.md).
 - **CLI `v1` group** for every workflow and a **Control Center** UI page (8 tabs over real services, read-only/dry-run, export report).
-- Honest scope: no true live-RAM migration, no API/Hub authentication yet (planned for v1.2, see [NEXT_STEPS_V12_SECURITY.md](NEXT_STEPS_V12_SECURITY.md)); rich per-module UI screens planned for v1.1 ([NEXT_STEPS_V11.md](NEXT_STEPS_V11.md)). MemDiff is experimental.
+- Honest scope: no true live-RAM migration, no API/Hub authentication yet (planned for v1.2, see [NEXT_STEPS_V12_SECURITY.md](docs/NEXT_STEPS_V12_SECURITY.md)); rich per-module UI screens planned for v1.1 ([NEXT_STEPS_V11.md](docs/NEXT_STEPS_V11.md)). MemDiff is experimental.
 
 ### Not yet implemented
 
@@ -246,6 +257,33 @@ Python dependency: `PySide6` (installed in the virtualenv, see below).
 The current user must belong to the `kvm` and `libvirt` groups.
 
 ## Installation
+
+### Recommended: install the `.deb` (no clone, no pip)
+
+Download `hypergery_1.7.0_all.deb` from the
+[Releases page](https://github.com/Elgeryy1/hypergery/releases) and install it:
+
+```bash
+sudo apt install -y ./hypergery_1.7.0_all.deb
+```
+
+`apt` pulls the dependencies (PySide6 and friends). Then launch **HyperGery** from
+the applications menu or run `hypergery`. The CLI is `hypergery-cli` and the
+multi-host agent (`hypergery-agent`) auto-enables per user session. Check the
+version with `hypergery --version`.
+
+Upgrades are just installing a newer `.deb`. Uninstall with `sudo apt remove
+hypergery` — your data (`~/.config/hypergery`, `~/.local/share/hypergery`) is kept.
+
+Host prerequisites (installed by apt as recommends, or already present):
+`qemu-system-x86`, `libvirt-daemon-system`, `libvirt-clients`, `virt-viewer`,
+`qemu-utils`, `ovmf`. Add yourself to the `kvm` and `libvirt` groups (log out/in
+afterwards).
+
+### From source (development)
+
+The steps below build/run from a clone — only needed for development; end users
+should use the `.deb` above.
 
 ### First run on a fresh Ubuntu laptop
 

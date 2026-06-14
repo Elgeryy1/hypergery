@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import socket
@@ -32,6 +33,7 @@ VM_POWER_COMMANDS = {
 @dataclass
 class AgentConfig:
     registry_url: str = ""
+    registry_token: str = ""
     host_id: str = ""
     name: str = ""
     nas_staging_path: str = ""
@@ -42,6 +44,8 @@ class AgentConfig:
 
         if not self.registry_url:
             self.registry_url = effective_value("hub_url")
+        if not self.registry_token:
+            self.registry_token = effective_value("hub_token")
         if not self.host_id:
             self.host_id = effective_value("host_id")
         if not self.name:
@@ -65,7 +69,11 @@ class AgentConfig:
         return cls(**merged)
 
     def to_public_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        # Nunca volcar el secreto en `agent config show`/logs.
+        if data.get("registry_token"):
+            data["registry_token"] = "***redacted***"
+        return data
 
 
 def read_meminfo_mib() -> tuple[int, int]:
@@ -92,6 +100,41 @@ def read_cpu_model() -> str:
     except OSError:
         pass
     return ""
+
+
+def _prepare_storage_dirs(dirs: list[str]) -> list[str]:
+    """Intenta crear/verificar las carpetas SIN privilegios. Devuelve las que
+    siguen sin ser escribibles."""
+    failed: list[str] = []
+    for directory in dirs:
+        try:
+            os.makedirs(directory, exist_ok=True)
+            writable = os.access(directory, os.W_OK)
+        except OSError:
+            writable = False
+        if not writable:
+            failed.append(directory)
+    return failed
+
+
+def _current_username() -> str:
+    """Usuario del sistema bajo el que corre el agente (= usuario SSH del host)."""
+    import getpass
+
+    try:
+        return getpass.getuser()
+    except Exception:
+        return os.environ.get("USER", "")
+
+
+def _primary_ip() -> str:
+    """IP local principal (la que usa la ruta por defecto), best effort."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.168.1.150", 80))  # no envía nada; solo elige la ruta
+            return sock.getsockname()[0]
+    except OSError:
+        return ""
 
 
 def vm_interfaces_from_xml(xml: str) -> tuple[list[str], list[str]]:
@@ -136,7 +179,7 @@ class HyperGeryAgent:
     ) -> None:
         self.config = config or AgentConfig.load()
         self.backend = backend or HyperGeryBackend()
-        self.client = client or RegistryClient(self.config.registry_url)
+        self.client = client or RegistryClient(self.config.registry_url, token=self.config.registry_token)
 
     def staging_roots(self) -> list[Path]:
         configured = Path(self.config.nas_staging_path).expanduser().resolve()
@@ -168,10 +211,23 @@ class HyperGeryAgent:
             try:
                 result = self.backend.virsh(["list", "--all"], check=False, timeout=10)
                 libvirt_ok = result.returncode == 0
-            except Exception:
+            except Exception as exc:
+                logging.warning("agent: libvirt probe failed: %s", exc)
                 libvirt_ok = False
         kvm = Path("/dev/kvm")
+        # v1.4: muestra de telemetría en cada heartbeat (nunca rompe el
+        # heartbeat si la telemetría falla).
+        telemetry: dict[str, Any] = {}
+        try:
+            from .v1.settings import V1Settings
+            from .v1.telemetry import TelemetryService
+
+            telemetry = TelemetryService(settings=V1Settings(), host_id=self.config.host_id).sample_local().to_dict()
+        except Exception as exc:
+            logging.warning("agent: telemetry sample failed (heartbeat continues): %s", exc)
+            telemetry = {}
         return {
+            "telemetry": telemetry,
             "host_id": self.config.host_id,
             "name": self.config.name,
             "hostname": socket.gethostname(),
@@ -184,13 +240,18 @@ class HyperGeryAgent:
             "hypergery_version": __version__,
             "active_vms": active_vms,
             "notes": "",
+            # Para que la live migration construya la URI qemu+ssh sin que el
+            # usuario la teclee (el agente corre como el usuario SSH del equipo).
+            "ssh_user": _current_username(),
+            "ssh_address": _primary_ip(),
         }
 
     def vm_inventory_payload(self) -> dict[str, Any]:
         vms = []
         try:
             summaries = self.backend.list_vms()
-        except Exception:
+        except Exception as exc:
+            logging.warning("agent: VM inventory unavailable: %s", exc)
             summaries = []
         for vm in summaries:
             disk_paths = []
@@ -225,8 +286,9 @@ class HyperGeryAgent:
         host = self.client.heartbeat(self.host_payload())
         try:
             self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
-        except Exception:
-            pass
+        except Exception as exc:
+            # HG-BUG-0021: el heartbeat sobrevive, pero el fallo queda registrado.
+            logging.warning("agent: VM report after heartbeat failed: %s", exc)
         return host
 
     def execute_command(self, command: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -236,6 +298,8 @@ class HyperGeryAgent:
             raise HyperGeryError(f"Unsupported command_type: {command_type}")
         if command_type == "ping":
             return "done", {"pong": True, "host_id": self.config.host_id}
+        if command_type == "prepare_storage":
+            return self.prepare_storage(payload)
         if command_type == "preflight":
             if payload.get("vm_name"):
                 from .migration import migration_preflight
@@ -371,8 +435,8 @@ class HyperGeryAgent:
                 shutil.rmtree(downloaded_dir, ignore_errors=True)
             try:
                 self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.warning("agent: VM report after import failed: %s", exc)
             return "done", result
         if command_type == "migration_status":
             from .migration import list_migration_packages, validate_vm_package
@@ -394,6 +458,68 @@ class HyperGeryAgent:
                 "package": match,
             }
         return "failed", {"error": f"Unhandled command_type: {command_type}"}
+
+    def prepare_storage(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Prepara carpetas de discos para recibir una migración en vivo.
+
+        Primero sin privilegios. Si hace falta root, la AUTORIZACIÓN se pide en
+        ESTA máquina (la que recibe): sudo -A con un askpass gráfico (zenity) en
+        la pantalla del usuario local. La contraseña la teclea el usuario del
+        equipo receptor y la consume sudo LOCALMENTE — nunca viaja por la red ni
+        se guarda."""
+        import subprocess
+        import tempfile as _tempfile
+
+        dirs = [str(d) for d in (payload.get("dirs") or []) if str(d).startswith("/")]
+        if not dirs:
+            return "failed", {"error": "prepare_storage requiere una lista 'dirs' de rutas absolutas."}
+        failed = _prepare_storage_dirs(dirs)
+        if not failed:
+            return "done", {"dirs": dirs, "privileged": False}
+
+        if not shutil.which("zenity") or not shutil.which("sudo"):
+            return "failed", {
+                "error": "Faltan carpetas que requieren permisos y este equipo no puede pedir "
+                f"autorización gráfica (zenity/sudo no disponibles): {', '.join(failed)}"
+            }
+        source = str(payload.get("source_host_id") or "otro equipo")
+        vm_name = str(payload.get("vm_name") or "una máquina virtual")
+        text = (
+            f"{source} quiere enviarte {vm_name} (migración en vivo).\\n"
+            f"HyperGery necesita crear: {', '.join(failed)}\\n"
+            "Introduce tu contraseña para autorizarlo (solo esta vez)."
+        )
+        askpass = _tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False, encoding="utf-8")
+        try:
+            askpass.write(
+                "#!/bin/sh\nexec zenity --password --title='HyperGery — autorizar migración' "
+                f"--text=\"{text}\"\n"
+            )
+            askpass.close()
+            os.chmod(askpass.name, 0o700)
+            user = _current_username()
+            quoted = " ".join("'" + d.replace("'", "'\\''") + "'" for d in failed)
+            script = f"mkdir -p {quoted} && chown {user}: {quoted}"
+            env = dict(os.environ)
+            env.setdefault("DISPLAY", ":0")
+            env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+            env["SUDO_ASKPASS"] = askpass.name
+            result = subprocess.run(
+                ["sudo", "-A", "sh", "-c", script],
+                env=env, capture_output=True, text=True, timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            return "failed", {"error": "Nadie autorizó la operación en el equipo receptor (tiempo agotado)."}
+        finally:
+            Path(askpass.name).unlink(missing_ok=True)
+        if result.returncode != 0:
+            return "failed", {
+                "error": "El usuario del equipo receptor canceló o la contraseña no era válida."
+            }
+        still_failed = _prepare_storage_dirs(dirs)
+        if still_failed:
+            return "failed", {"error": f"Las carpetas siguen sin ser escribibles: {', '.join(still_failed)}"}
+        return "done", {"dirs": dirs, "privileged": True}
 
     def execute_vm_power_command(self, command_type: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         action, backend_method, allowed_states = VM_POWER_COMMANDS[command_type]
@@ -430,14 +556,15 @@ class HyperGeryAgent:
             return failure(f"Backend failed to {action.replace('_', ' ')} {vm_name}: {exc}", previous_state)
         try:
             new_state = self.backend.vm_state(vm_name)
-        except Exception:
+        except Exception as exc:
+            logging.warning("agent: cannot read state of %s after action: %s", vm_name, exc)
             new_state = "unknown"
         # Same pattern as heartbeat: refresh the Hub inventory after acting so
         # the UI sees the new state without waiting for the next heartbeat.
         try:
             self.client.report_vms(self.config.host_id, self.vm_inventory_payload()["vms"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("agent: VM report after power action failed: %s", exc)
         return "done", {
             "vm_name": vm_name,
             "action": action,
@@ -475,8 +602,8 @@ class HyperGeryAgent:
                                 "errors": [str(exc)],
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logging.warning("agent: migration status update failed: %s", exc)
             processed.append(self.client.set_command_result(command_id, status, result))
         return {"host": host, "processed": processed}
 
@@ -494,6 +621,7 @@ def print_json(data: object) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hypergery-agent")
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     run_p = sub.add_parser("run")
     run_p.add_argument("--config", default="")
@@ -517,7 +645,10 @@ def main(argv: list[str] | None = None) -> int:
             agent.run_forever()
             return 0
     except HyperGeryError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        # HG-BUG-0023: humanizar el stderr de virsh también en el agente.
+        from .ui_qt.humanize import humanize_error_message
+
+        print(f"ERROR: {humanize_error_message(str(exc))}", file=sys.stderr)
         return 2
     return 2
 

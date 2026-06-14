@@ -6,11 +6,10 @@ venv_dir="${HYPERGERY_VENV:-$HOME/.venvs/hypergery}"
 python_bin="${HYPERGERY_PYTHON:-$venv_dir/bin/python}"
 bootstrap_mode=()
 check_only=0
-legacy_tk=0
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/dev-run.sh [--check-only] [--install] [--no-install] [--legacy-tk] [--help]
+Usage: ./scripts/dev-run.sh [--check-only] [--install] [--no-install] [--help]
 
 First-run friendly launcher for HyperGery on Ubuntu/Linux.
 
@@ -18,7 +17,6 @@ Options:
   --check-only   Check host, services, groups, and Python env; do not install or launch.
   --install      Install/fix missing dependencies without an interactive prompt except sudo/pkexec.
   --no-install   Do not install; fail if anything required is missing.
-  --legacy-tk    Launch the legacy Tk fallback instead of the PySide6 UI.
   --help         Show this help.
 EOF
 }
@@ -34,9 +32,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-install)
       bootstrap_mode=(--no-install)
-      ;;
-    --legacy-tk)
-      legacy_tk=1
       ;;
     --help)
       usage
@@ -78,9 +73,5 @@ EOF
 fi
 
 cd "$repo_root/hypergery-ubuntu"
-
-if [[ "$legacy_tk" -eq 1 ]]; then
-  exec "$python_bin" -m hypergery_ubuntu.app_tk
-fi
 
 exec "$python_bin" -m hypergery_ubuntu

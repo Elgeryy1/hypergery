@@ -48,6 +48,16 @@ class ScriptsStaticTests(unittest.TestCase):
             script = (ROOT / rel_path).read_text(encoding="utf-8")
             self.assertIn("http://192.168.1.150:8765", script, rel_path)
 
+    def test_hub_default_is_parametrized_not_hardcoded(self):
+        # HG-BUG-0020: la IP es el Hub del NAS privado de Gerard y solo puede
+        # ser el VALOR POR DEFECTO; HYPERGERY_HUB_URL debe poder sustituirla
+        # sin editar el script.
+        for rel_path in SCRIPTS:
+            script = (ROOT / rel_path).read_text(encoding="utf-8")
+            self.assertIn(
+                "${HYPERGERY_HUB_URL:-http://192.168.1.150:8765}", script, rel_path
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

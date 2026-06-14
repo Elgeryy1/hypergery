@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -162,6 +163,109 @@ def parse_console_display(uri: str = "", xml: str = "") -> ConsoleDisplay:
     return ConsoleDisplay(display_type, host, port, display, normalized_uri)
 
 
+def pick_render_node(
+    by_path_dir: str | Path = "/dev/dri/by-path",
+    sysfs_devices: str | Path = "/sys/bus/pci/devices",
+) -> str:
+    """Nodo DRM de render para VirGL (ruta by-path, estable entre reinicios).
+
+    Prefiere una GPU con driver Mesa (amdgpu/i915/…): el EGL headless del
+    driver propietario NVIDIA no se inicializa para el usuario libvirt-qemu
+    (necesita /dev/nvidia*, que libvirt no concede). Además, sin rendernode
+    explícito libvirt no añade NINGÚN nodo al cgroup de qemu → EGL_NOT_INITIALIZED.
+    """
+    mesa_drivers = {"amdgpu", "i915", "radeon", "nouveau", "xe"}
+    candidates: list[tuple[str, str]] = []
+    base = Path(by_path_dir)
+    if base.is_dir():
+        for link in sorted(base.glob("pci-*-render")):
+            address = link.name[len("pci-"):-len("-render")]
+            driver_link = Path(sysfs_devices) / address / "driver"
+            driver = driver_link.resolve().name if driver_link.is_symlink() else ""
+            candidates.append((driver, str(link)))
+    for driver, node in candidates:
+        if driver in mesa_drivers:
+            return node
+    return candidates[0][1] if candidates else ""
+
+
+def normalize_render_node_for_host(root: ET.Element, render_node: str | None = None) -> bool:
+    """Adapta el rendernode de VirGL al equipo LOCAL. Devuelve True si cambió algo.
+
+    El XML de una VM con aceleración 3D lleva grabada la ruta del nodo de
+    render del equipo donde se creó (p. ej. pci-0000:11:00.0-render); al
+    importarla en otro equipo esa ruta no existe y qemu no arranca. Aquí se
+    reescribe al mejor nodo local; si el equipo no tiene ninguno utilizable,
+    se degrada con elegancia: virtio sin GL (la VM arranca, sin 3D).
+    """
+    devices = root.find("./devices")
+    if devices is None:
+        return False
+    egl_elements = [g for g in devices.findall("graphics") if g.attrib.get("type") == "egl-headless"]
+    if not egl_elements:
+        return False
+    local = pick_render_node() if render_node is None else render_node
+    changed = False
+    for egl in egl_elements:
+        if not local:
+            devices.remove(egl)
+            changed = True
+            continue
+        gl = egl.find("gl")
+        if gl is None:
+            gl = ET.SubElement(egl, "gl")
+            changed = True
+        if gl.attrib.get("rendernode") != local:
+            gl.set("rendernode", local)
+            changed = True
+    if not local:
+        for accel in devices.findall("./video/model/acceleration"):
+            if accel.attrib.get("accel3d") == "yes":
+                accel.set("accel3d", "no")
+                changed = True
+    return changed
+
+
+def parse_localectl_layout(text: str) -> str:
+    """Primera layout X11 de la salida de ``localectl status`` ("" si no hay).
+
+    "X11 Layout: es,us" → "es"."""
+    for line in (text or "").splitlines():
+        if "X11 Layout:" in line:
+            value = line.split(":", 1)[1].strip()
+            return value.split(",")[0].strip()
+    return ""
+
+
+def host_vnc_keymap() -> str:
+    """Layout de teclado del host para el ``keymap`` del VNC (p. ej. "es").
+
+    Sin esto, QEMU asume teclado en-us y los caracteres con AltGr/Shift de otros
+    layouts (``| @ # ~ \\`` en español) llegan mal al guest. Vacío = no fijar.
+    Override: ``HYPERGERY_VNC_KEYMAP``.
+    """
+    override = os.environ.get("HYPERGERY_VNC_KEYMAP", "").strip()
+    if override:
+        return override
+    if shutil.which("localectl"):
+        try:
+            res = subprocess.run(["localectl", "status"], capture_output=True, text=True, timeout=5)
+            layout = parse_localectl_layout(res.stdout)
+            if layout:
+                return layout
+        except Exception:
+            pass
+    if shutil.which("setxkbmap"):
+        try:
+            res = subprocess.run(["setxkbmap", "-query"], capture_output=True, text=True, timeout=5)
+            for line in res.stdout.splitlines():
+                if line.strip().startswith("layout:"):
+                    return line.split(":", 1)[1].strip().split(",")[0].strip()
+        except Exception:
+            pass
+    return ""
+
+
 def normalize_graphics_audio_for_display(root: ET.Element, display_mode: str) -> None:
     if display_mode not in {"spice", "vnc"}:
         raise HyperGeryError("Display mode must be spice or vnc.")
@@ -174,6 +278,9 @@ def normalize_graphics_audio_for_display(root: ET.Element, display_mode: str) ->
         graphics = ET.SubElement(devices, "graphics")
     graphics.attrib.clear()
     graphics.attrib.update({"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
+    keymap = host_vnc_keymap()
+    if display_mode == "vnc" and keymap:
+        graphics.attrib["keymap"] = keymap
 
     spice_channels = [channel for channel in devices.findall("channel") if channel.attrib.get("type") == "spicevmc"]
     if display_mode == "spice":
@@ -218,6 +325,36 @@ def validate_vm_name(name: str) -> str:
     if ".." in clean or "/" in clean or "\\" in clean:
         raise HyperGeryError("VM name cannot contain path traversal characters.")
     return clean
+
+
+# Espacio de octetos de las redes HyperGery (192.168.X.0/24): 20-199 sin el
+# 122 (libvirt default) más 200-239. HG-BUG-0012: con hash directo dos labs
+# podían colisionar en el mismo octeto; allocate_network_octet sondea el
+# espacio hasta encontrar uno libre.
+HG_NETWORK_OCTETS: tuple[int, ...] = tuple(o for o in range(20, 200) if o != 122) + tuple(range(200, 240))
+
+
+def derive_network_octet(lab_id: str, network_mode: str) -> int:
+    """Octeto base (determinista por hash) de la red de un lab."""
+    digest = hashlib.sha256(f"{validate_lab_id(lab_id)}:{network_mode}".encode()).hexdigest()
+    octet = 20 + (int(digest[:2], 16) % 180)
+    if octet == 122:
+        octet = 200 + (int(digest[2:4], 16) % 40)
+    return octet
+
+
+def allocate_network_octet(lab_id: str, network_mode: str, used_octets: set[int] | frozenset[int]) -> int:
+    """Primer octeto libre empezando por el derivado del hash (HG-BUG-0012)."""
+    base = derive_network_octet(lab_id, network_mode)
+    if base not in used_octets:
+        return base
+    order = HG_NETWORK_OCTETS
+    start = order.index(base)
+    for step in range(1, len(order)):
+        candidate = order[(start + step) % len(order)]
+        if candidate not in used_octets:
+            return candidate
+    raise HyperGeryError(f"No free HyperGery network octet left (all {len(order)} in use).")
 
 
 def validate_lab_id(lab_id: str) -> str:
@@ -475,16 +612,12 @@ class HyperGeryBackend:
         return bridge
 
     def network_ip_address(self, lab_id: str, network_mode: str) -> str:
-        digest = hashlib.sha256(f"{validate_lab_id(lab_id)}:{network_mode}".encode()).hexdigest()
-        octet = 20 + (int(digest[:2], 16) % 180)
-        if octet == 122:
-            octet = 200 + (int(digest[2:4], 16) % 40)
-        return f"192.168.{octet}.1"
+        return f"192.168.{derive_network_octet(lab_id, network_mode)}.1"
 
-    def network_xml(self, lab_id: str, network_mode: str) -> str:
+    def network_xml(self, lab_id: str, network_mode: str, ip_address: str | None = None) -> str:
         name = self.network_name(lab_id, network_mode)
         bridge = self.bridge_name(lab_id, network_mode)
-        ip_address = self.network_ip_address(lab_id, network_mode)
+        ip_address = ip_address or self.network_ip_address(lab_id, network_mode)
         octet = ip_address.split(".")[2]
         forward = "<forward mode='nat'/>" if network_mode == "nat" else ""
         return f"""<network>
@@ -530,7 +663,43 @@ class HyperGeryBackend:
             self.virsh(["net-destroy", name])
         self.virsh(["net-undefine", name])
 
-    def reconcile_existing_network(self, name: str, expected_bridge: str, expected_ip: str) -> None:
+    @staticmethod
+    def _octet_from_ip(ip_address: str) -> int | None:
+        match = re.fullmatch(r"192\.168\.(\d{1,3})\.1", ip_address or "")
+        if not match:
+            return None
+        octet = int(match.group(1))
+        return octet if octet in HG_NETWORK_OCTETS else None
+
+    def list_hypergery_network_octets(self) -> dict[str, int]:
+        """Octeto de cada red hg-net-* definida en libvirt (para HG-BUG-0012)."""
+        listing = self.virsh(["net-list", "--all", "--name"], check=False)
+        if listing.returncode != 0:
+            return {}
+        octets: dict[str, int] = {}
+        for raw in listing.stdout.splitlines():
+            name = raw.strip()
+            if not self.is_hypergery_network_name(name):
+                continue
+            dump = self.virsh(["net-dumpxml", name], check=False)
+            if dump.returncode != 0:
+                continue
+            try:
+                octet = self._octet_from_ip(self.network_ip_from_xml(dump.stdout))
+            except HyperGeryError:
+                continue
+            if octet is not None:
+                octets[name] = octet
+        return octets
+
+    def reconcile_existing_network(
+        self,
+        name: str,
+        expected_bridge: str,
+        expected_ip: str,
+        *,
+        used_octets: set[int] | frozenset[int] = frozenset(),
+    ) -> None:
         dump = self.virsh(["net-dumpxml", name], check=False)
         if dump.returncode != 0:
             return
@@ -538,7 +707,12 @@ class HyperGeryBackend:
         ip_address = self.network_ip_from_xml(dump.stdout)
         invalid_bridge = bridge == "virbr0" or len(bridge) > 15 or not bridge.startswith("hgbr")
         wrong_bridge = bridge and bridge != expected_bridge
-        wrong_ip = ip_address and ip_address != expected_ip
+        # HG-BUG-0012: una IP existente se conserva si está dentro del espacio
+        # HyperGery y no choca con otra red del host (puede venir de una
+        # reasignación anti-colisión); solo IPs inválidas o en conflicto
+        # fuerzan el reciclado.
+        octet = self._octet_from_ip(ip_address) if ip_address else None
+        wrong_ip = bool(ip_address) and ip_address != expected_ip and (octet is None or octet in used_octets)
         if invalid_bridge or wrong_bridge or wrong_ip:
             reason = (
                 f"bridge {bridge or '<missing>'} / ip {ip_address or '<missing>'} "
@@ -551,23 +725,36 @@ class HyperGeryBackend:
             raise HyperGeryError("Network mode must be nat or isolated.")
         name = self.network_name(lab_id, network_mode)
         expected_bridge = self.bridge_name(lab_id, network_mode)
-        expected_ip = self.network_ip_address(lab_id, network_mode)
+        # HG-BUG-0012: evitar colisión de octeto con las demás redes del host.
+        used_octets = {octet for other, octet in self.list_hypergery_network_octets().items() if other != name}
+        expected_ip = f"192.168.{allocate_network_octet(lab_id, network_mode, used_octets)}.1"
         info = self.virsh(["net-info", name], check=False)
         if info.returncode == 0:
-            self.reconcile_existing_network(name, expected_bridge, expected_ip)
+            self.reconcile_existing_network(name, expected_bridge, expected_ip, used_octets=used_octets)
             info = self.virsh(["net-info", name], check=False)
         if info.returncode != 0:
-            xml = self.network_xml(lab_id, network_mode)
+            xml = self.network_xml(lab_id, network_mode, expected_ip)
             with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-8") as tmp:
                 tmp.write(xml)
                 xml_path = tmp.name
             try:
-                self.virsh(["net-define", xml_path])
+                # HG-BUG-0016 (TOCTOU): otro proceso pudo definir la red entre
+                # el net-info y este net-define; el fallo es benigno si la red
+                # ya existe.
+                define = self.virsh(["net-define", xml_path], check=False)
+                if define.returncode != 0 and self.virsh(["net-info", name], check=False).returncode != 0:
+                    raise HyperGeryError(f"Cannot define network {name}: {define.stderr.strip() or define.stdout.strip()}")
             finally:
                 Path(xml_path).unlink(missing_ok=True)
         active = self.virsh(["net-info", name], check=False)
         if not re.search(r"^Active:\s+yes$", active.stdout, re.MULTILINE):
-            self.virsh(["net-start", name])
+            # HG-BUG-0016 (TOCTOU): "already active" por una carrera benigna
+            # con otro proceso no es un error; cualquier otro fallo sí.
+            start = self.virsh(["net-start", name], check=False)
+            if start.returncode != 0:
+                recheck = self.virsh(["net-info", name], check=False)
+                if not re.search(r"^Active:\s+yes$", recheck.stdout, re.MULTILINE):
+                    raise HyperGeryError(f"Cannot start network {name}: {start.stderr.strip() or start.stdout.strip()}")
         self.virsh(["net-autostart", name], check=False)
         logging.info("network ready: %s", name)
         return name
@@ -585,12 +772,27 @@ class HyperGeryBackend:
         network_mode: str,
         display_mode: str = "spice",
         lab_id: str = "default-lab",
+        profile: str = "",
+        migratable_cpu: bool = False,
+        accel_3d: bool = False,
     ) -> VmSummary:
+        from .vm_profiles import preflight_profile, profile_for, validate_iso
+
         name = validate_vm_name(name)
         lab_id = validate_lab_id(lab_id)
+        # B1/B2: perfil explícito (windows11, linux…) o derivado de os_type.
+        vm_profile = profile_for(profile or os_type)
         iso = Path(iso_path).expanduser().resolve()
         if not iso.is_file():
             raise HyperGeryError(f"ISO does not exist: {iso}")
+        iso_check = validate_iso(str(iso))
+        if not iso_check["ok"]:
+            raise HyperGeryError("ISO inválida: " + "; ".join(iso_check["errors"]))
+        # B1: dependencias de firmware/TPM ANTES de crear nada (no bypass).
+        pf = preflight_profile(vm_profile)
+        if not pf.ok:
+            hint = (" Ejecuta: " + " && ".join(pf.suggested_commands)) if pf.suggested_commands else ""
+            raise HyperGeryError("; ".join(pf.errors) + hint)
         if ram_mib < 256 or vcpus < 1 or disk_gb < 1:
             raise HyperGeryError("RAM, vCPU, and disk size must be positive values.")
         base_dir = Path(disk_dir).expanduser().resolve() if disk_dir else self.vms_dir / name
@@ -614,13 +816,16 @@ class HyperGeryBackend:
         xml = self.domain_xml(
             name=name,
             iso_path=str(iso),
-            os_type=os_type,
+            os_type=vm_profile.os_type,
             ram_mib=ram_mib,
             vcpus=vcpus,
             disk_path=str(disk_path),
             network_id=network_id,
             lab_id=lab_id,
             display_mode=display_mode,
+            profile_key=vm_profile.key,
+            migratable_cpu=migratable_cpu,
+            accel_3d=accel_3d,
         )
         self.define_domain_xml(xml)
         self.update_lab_for_vm(lab_id, name, str(disk_path), str(iso), network_id)
@@ -677,9 +882,15 @@ class HyperGeryBackend:
         network_id: str,
         lab_id: str,
         display_mode: str = "spice",
+        profile_key: str = "",
+        migratable_cpu: bool = False,
+        accel_3d: bool = False,
     ) -> str:
+        from .vm_profiles import profile_for, resolve_ovmf
+
         if display_mode not in {"spice", "vnc"}:
             raise HyperGeryError("Display mode must be spice or vnc.")
+        vm_profile = profile_for(profile_key or os_type)
         emulator = shutil.which("qemu-system-x86_64") or "/usr/bin/qemu-system-x86_64"
         domain = ET.Element("domain", {"type": "kvm"})
         ET.SubElement(domain, "name").text = name
@@ -691,21 +902,55 @@ class HyperGeryBackend:
         ET.SubElement(hg, f"{{{HG_NS}}}lab_id").text = lab_id
         ET.SubElement(hg, f"{{{HG_NS}}}created_at").text = now_iso()
         ET.SubElement(hg, f"{{{HG_NS}}}os_type").text = os_type
+        ET.SubElement(hg, f"{{{HG_NS}}}profile").text = vm_profile.key
+        ET.SubElement(hg, f"{{{HG_NS}}}migratable_cpu").text = "true" if migratable_cpu else "false"
         ET.SubElement(hg, f"{{{HG_NS}}}iso_path").text = iso_path
         ET.SubElement(hg, f"{{{HG_NS}}}disk_path").text = disk_path
         ET.SubElement(hg, f"{{{HG_NS}}}network_id").text = network_id
         ET.SubElement(hg, f"{{{HG_NS}}}display_mode").text = display_mode
+        ET.SubElement(hg, f"{{{HG_NS}}}accel_3d").text = "true" if accel_3d else "false"
         ET.SubElement(domain, "memory", {"unit": "MiB"}).text = str(ram_mib)
         ET.SubElement(domain, "currentMemory", {"unit": "MiB"}).text = str(ram_mib)
         ET.SubElement(domain, "vcpu", {"placement": "static"}).text = str(vcpus)
         os_el = ET.SubElement(domain, "os")
-        ET.SubElement(os_el, "type", {"arch": "x86_64", "machine": "q35"}).text = "hvm"
+        ET.SubElement(os_el, "type", {"arch": "x86_64", "machine": vm_profile.machine}).text = "hvm"
+        # B1: firmware UEFI (OVMF) + NVMRAM por VM cuando el perfil lo pide.
+        if vm_profile.firmware in {"uefi", "uefi-secure"}:
+            want_secure = vm_profile.firmware == "uefi-secure"
+            ovmf = resolve_ovmf(secure_boot=want_secure)
+            secure = ovmf.get("secure_boot") == "yes"
+            loader = ET.SubElement(
+                os_el,
+                "loader",
+                {"readonly": "yes", "type": "pflash", "secure": "yes" if secure else "no"},
+            )
+            if ovmf.get("code"):
+                loader.text = ovmf["code"]
+            nvram = ET.SubElement(os_el, "nvram")
+            nvram.text = str(Path(disk_path).with_suffix(".nvram"))
+            if ovmf.get("vars"):
+                nvram.attrib["template"] = ovmf["vars"]
         ET.SubElement(os_el, "boot", {"dev": "cdrom"})
         ET.SubElement(os_el, "boot", {"dev": "hd"})
         features = ET.SubElement(domain, "features")
         ET.SubElement(features, "acpi")
         ET.SubElement(features, "apic")
-        ET.SubElement(domain, "cpu", {"mode": "host-passthrough", "check": "none"})
+        # Secure Boot requiere SMM activado en q35/OVMF.
+        if vm_profile.firmware == "uefi-secure" and resolve_ovmf(secure_boot=True).get("secure_boot") == "yes":
+            ET.SubElement(features, "smm", {"state": "on"})
+        if migratable_cpu:
+            # CPU baseline portable: permite live migration entre equipos con CPU
+            # distinta (p. ej. AMD ↔ Intel). Pierde algo de rendimiento frente a
+            # host-passthrough, pero es la única forma de migrar en caliente
+            # cross-vendor (el invitado no ve features específicas de un fabricante).
+            cpu_el = ET.SubElement(domain, "cpu", {"mode": "custom", "match": "exact", "check": "partial"})
+            ET.SubElement(cpu_el, "model", {"fallback": "allow"}).text = "qemu64"
+            # qemu64 incluye svm (AMD); sin esto, migrar AMD→Intel falla con
+            # «la CPU huésped no coincide: ausencia de características: svm»
+            # (verificado en el UAT físico).
+            ET.SubElement(cpu_el, "feature", {"policy": "disable", "name": "svm"})
+        else:
+            ET.SubElement(domain, "cpu", {"mode": "host-passthrough", "check": "none"})
         ET.SubElement(domain, "clock", {"offset": "utc"})
         on_poweroff = ET.SubElement(domain, "on_poweroff")
         on_poweroff.text = "destroy"
@@ -716,26 +961,59 @@ class HyperGeryBackend:
         disk = ET.SubElement(devices, "disk", {"type": "file", "device": "disk"})
         ET.SubElement(disk, "driver", {"name": "qemu", "type": "qcow2", "discard": "unmap"})
         ET.SubElement(disk, "source", {"file": disk_path})
-        ET.SubElement(disk, "target", {"dev": "vda", "bus": "virtio"})
+        disk_is_sata = vm_profile.disk_bus != "virtio"
+        disk_target_dev = "sda" if disk_is_sata else "vda"
+        ET.SubElement(disk, "target", {"dev": disk_target_dev, "bus": vm_profile.disk_bus})
         cdrom = ET.SubElement(devices, "disk", {"type": "file", "device": "cdrom"})
         ET.SubElement(cdrom, "driver", {"name": "qemu", "type": "raw"})
         ET.SubElement(cdrom, "source", {"file": iso_path})
-        ET.SubElement(cdrom, "target", {"dev": "sda", "bus": "sata"})
+        # El CD-ROM va por SATA; si el disco principal ya ocupa 'sda', el CD usa 'sdb'.
+        ET.SubElement(cdrom, "target", {"dev": "sdb" if disk_is_sata else "sda", "bus": "sata"})
         ET.SubElement(cdrom, "readonly")
         iface = ET.SubElement(devices, "interface", {"type": "network"})
         ET.SubElement(iface, "source", {"network": network_id})
-        ET.SubElement(iface, "model", {"type": "virtio"})
+        ET.SubElement(iface, "model", {"type": vm_profile.net_model})
         ET.SubElement(devices, "input", {"type": "tablet", "bus": "usb"})
-        ET.SubElement(devices, "graphics", {"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"})
+        graphics_attrs = {"type": display_mode, "autoport": "yes", "listen": "127.0.0.1"}
+        keymap = host_vnc_keymap()
+        if display_mode == "vnc" and keymap:
+            # Sin keymap, los caracteres AltGr/Shift de teclados no-US (| @ # ~ \) no llegan.
+            graphics_attrs["keymap"] = keymap
+        ET.SubElement(devices, "graphics", graphics_attrs)
         video = ET.SubElement(devices, "video")
-        ET.SubElement(video, "model", {"type": "qxl", "ram": "65536", "vram": "65536", "vgamem": "16384", "heads": "1"})
+        if accel_3d:
+            # Aceleración 3D compartida (VirGL): la VM recibe una GPU virtio y
+            # el host ejecuta su OpenGL — la GPU física se comparte, sin vfio.
+            # egl-headless renderiza en el host para que la consola SPICE/VNC
+            # normal muestre el contenido acelerado. Una VM así NO puede
+            # live-migrarse (el contexto GL vive en el host de origen).
+            model = ET.SubElement(video, "model", {"type": "virtio", "heads": "1"})
+            ET.SubElement(model, "acceleration", {"accel3d": "yes"})
+            egl = ET.SubElement(devices, "graphics", {"type": "egl-headless"})
+            render_node = pick_render_node()
+            ET.SubElement(egl, "gl", {"rendernode": render_node} if render_node else {})
+        else:
+            ET.SubElement(video, "model", {"type": "qxl", "ram": "65536", "vram": "65536", "vgamem": "16384", "heads": "1"})
         if display_mode == "spice":
             channel = ET.SubElement(devices, "channel", {"type": "spicevmc"})
             ET.SubElement(channel, "target", {"type": "virtio", "name": "com.redhat.spice.0"})
         ET.SubElement(devices, "memballoon", {"model": "virtio"})
+        # B1: vTPM 2.0 (swtpm) — requisito de Windows 11.
+        if vm_profile.tpm:
+            tpm = ET.SubElement(devices, "tpm", {"model": "tpm-crb"})
+            ET.SubElement(tpm, "backend", {"type": "emulator", "version": "2.0"})
         return ET.tostring(domain, encoding="unicode")
 
     def define_domain_xml(self, xml: str) -> None:
+        # VirGL viaja con la ruta del nodo de render del equipo de ORIGEN;
+        # al definir (crear, importar del Hub, restaurar…) se adapta al local.
+        if "egl-headless" in xml:
+            try:
+                root = ET.fromstring(xml)
+            except ET.ParseError:
+                root = None
+            if root is not None and normalize_render_node_for_host(root):
+                xml = ET.tostring(root, encoding="unicode")
         with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-8") as tmp:
             tmp.write(xml)
             xml_path = tmp.name
@@ -864,8 +1142,36 @@ class HyperGeryBackend:
         return f"{value} B"
 
     def start_vm(self, name: str) -> None:
-        self.virsh(["start", validate_vm_name(name)])
+        name = validate_vm_name(name)
+        # HG-BUG-0028: no arrancar una VM con una migración en vuelo sin
+        # confirmar (podría estar ya corriendo en el destino → doble-activa).
+        try:
+            from .migration_journal import MigrationJournal
+        except Exception:  # pragma: no cover - defensivo ante import parcial
+            MigrationJournal = None  # type: ignore[assignment]
+        if MigrationJournal is not None:
+            MigrationJournal().assert_startable(name)
+        self.virsh(["start", name])
         logging.info("started vm: %s", name)
+
+    def press_boot_key(self, name: str) -> None:
+        """Pulsa «espacio» en el guest vía libvirt (independiente del display).
+
+        Caza el «Press any key to boot from CD» del instalador de Windows sin
+        necesitar la consola VNC conectada (funciona también con SPICE)."""
+        self.virsh(["send-key", validate_vm_name(name), "KEY_SPACE"], check=False, timeout=10)
+
+    def boot_keypress_sweep(self, name: str, *, presses: int = 14, interval_seconds: float = 1.2) -> None:
+        """Barrido de pulsaciones durante el arranque (~1.5–18 s tras start).
+
+        El prompt del CD aparece a los ~6–10 s (tras la init de OVMF) y dura
+        ~5 s; el instalador no pinta UI hasta pasados ~25 s, así que este rango
+        lo caza sin provocar clics fantasma en pantallas posteriores. Pensado
+        para ejecutarse en un worker (bloquea ~17 s)."""
+        time.sleep(1.5)
+        for _ in range(max(1, presses)):
+            self.press_boot_key(name)
+            time.sleep(interval_seconds)
 
     def save_vm(self, name: str, state_path: str | Path) -> Path:
         """Freeze a running VM and dump its full RAM+CPU state to a file.
@@ -1002,6 +1308,79 @@ class HyperGeryBackend:
             return
         raise HyperGeryError("No console viewer installed. Install virt-viewer or remote-viewer.")
 
+    def open_remote_console(self, name: str, uri: str) -> None:
+        """Consola de una VM que corre en OTRO equipo: virt-viewer tuneliza el
+        display por la propia conexión libvirt (solo URIs seguras)."""
+        name = validate_vm_name(name)
+        if not uri.startswith(("qemu+ssh://", "qemu+tls://")):
+            raise HyperGeryError("Remote console needs a secure libvirt URI (qemu+ssh:// or qemu+tls://).")
+        virt_viewer = shutil.which("virt-viewer")
+        if not virt_viewer:
+            raise HyperGeryError("No console viewer installed. Install virt-viewer.")
+        self.launch_viewer([virt_viewer, "--connect", uri, name])
+        logging.info("opened remote virt-viewer for vm: %s uri=%s", name, uri)
+
+    def open_remote_vnc_tunnel(self, name: str, uri: str) -> dict[str, object]:
+        """Prepara la consola INTEGRADA de una VM en OTRO equipo.
+
+        Averigua el puerto VNC del host remoto por ``qemu+ssh``, abre un túnel
+        SSH ``local→VNC`` y devuelve el endpoint local (``127.0.0.1:puerto``) más
+        el proceso ssh del túnel (la ventana de consola lo cierra al salir). El
+        VNC remoto escucha en 127.0.0.1 del otro equipo; el túnel lo hace local
+        para que la consola integrada lo pinte como si fuera una VM de aquí.
+        """
+        from .ui_qt.console_helpers import ssh_target_from_libvirt_uri, vnc_port_from_display
+
+        name = validate_vm_name(name)
+        ssh_target = ssh_target_from_libvirt_uri(uri)  # solo qemu+ssh
+        display = self.run(["virsh", "--connect", uri, "vncdisplay", name], check=False)
+        if display.returncode != 0 or not display.stdout.strip():
+            raise HyperGeryError(
+                f"No se pudo leer el display VNC remoto de {name}: "
+                f"{display.stderr.strip() or 'la VM puede no usar VNC o no estar encendida'}"
+            )
+        remote_port = vnc_port_from_display(display.stdout.strip())
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            local_port = probe.getsockname()[1]
+        ssh = shutil.which("ssh")
+        if not ssh:
+            raise HyperGeryError("ssh no está instalado; no se puede abrir la consola remota integrada.")
+        proc = subprocess.Popen(
+            [
+                ssh, "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+                "-o", "StrictHostKeyChecking=accept-new", "-N",
+                "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}", ssh_target,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=self.external_tool_env(),
+        )
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+                raise HyperGeryError(f"El túnel SSH para la consola remota falló: {err.strip() or 'ssh terminó'}")
+            try:
+                with socket.create_connection(("127.0.0.1", local_port), timeout=0.5):
+                    break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            proc.terminate()
+            raise HyperGeryError("El túnel SSH para la consola remota no respondió a tiempo.")
+        logging.info(
+            "opened remote VNC ssh tunnel for vm %s: 127.0.0.1:%s -> %s (remote :%s)",
+            name, local_port, ssh_target, remote_port,
+        )
+        return {
+            "type": "vnc",
+            "host": "127.0.0.1",
+            "port": local_port,
+            "uri": f"vnc://127.0.0.1:{local_port} (túnel SSH a {ssh_target})",
+            "process": proc,
+        }
+
     def get_console_display(self, name: str) -> dict[str, object]:
         name = validate_vm_name(name)
         vm = self.get_vm(name)
@@ -1059,6 +1438,21 @@ class HyperGeryBackend:
     def revert_snapshot(self, name: str, snapshot_name: str) -> None:
         self.virsh(["snapshot-revert", "--domain", validate_vm_name(name), "--snapshotname", validate_vm_name(snapshot_name)], timeout=600)
         logging.info("reverted snapshot vm=%s snapshot=%s", name, snapshot_name)
+
+    def branch_snapshot(self, name: str, from_snapshot: str, new_snapshot: str, description: str = "") -> None:
+        """v1.3 snapshot branching seguro: vuelve a un snapshot conocido y
+        crea ahí una rama nueva. Falla limpio si el origen no existe o el
+        destino ya existe (nunca pisa un snapshot)."""
+        snapshots = self.list_snapshots(name)
+        source = validate_vm_name(from_snapshot)
+        branch = validate_vm_name(new_snapshot)
+        if source not in snapshots:
+            raise HyperGeryError(f"Snapshot does not exist: {source}")
+        if branch in snapshots:
+            raise HyperGeryError(f"Snapshot already exists: {branch}")
+        self.revert_snapshot(name, source)
+        self.create_snapshot(name, branch, description or f"branch of {source}")
+        logging.info("branched snapshot vm=%s from=%s new=%s", name, source, branch)
 
     def delete_snapshot(self, name: str, snapshot_name: str) -> None:
         self.virsh(["snapshot-delete", "--domain", validate_vm_name(name), "--snapshotname", validate_vm_name(snapshot_name)], timeout=600)

@@ -28,16 +28,29 @@ def default_hub_url() -> str:
     return effective_value("hub_url")
 
 
+def default_hub_token() -> str:
+    from ..config import effective_value
+
+    return effective_value("hub_token")
+
+
 class RegistryClient:
-    def __init__(self, base_url: str | None = None, *, timeout: int = 10) -> None:
+    def __init__(self, base_url: str | None = None, *, timeout: int = 10, token: str | None = None) -> None:
         self.base_url = (base_url or default_hub_url()).rstrip("/")
         self.timeout = timeout
+        # HG-BUG-0001: token bearer del Hub (env HYPERGERY_HUB_TOKEN o config).
+        self.token = default_hub_token() if token is None else token
+
+    def _authorize(self, request: Request) -> None:
+        if self.token:
+            request.add_header("Authorization", f"Bearer {self.token}")
 
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         url = self.base_url + path
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         request = Request(url, data=data, method=method)
         request.add_header("Accept", "application/json")
+        self._authorize(request)
         if data is not None:
             request.add_header("Content-Type", "application/json")
         try:
@@ -166,6 +179,7 @@ class RegistryClient:
         size = source.stat().st_size
         with source.open("rb") as handle:
             request = Request(url, data=handle, method="PUT")
+            self._authorize(request)
             request.add_header("Content-Type", "application/octet-stream")
             request.add_header("Content-Length", str(size))
             try:
@@ -196,8 +210,10 @@ class RegistryClient:
         target = Path(destination).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
         url = self._package_url(migration_id, rel_path)
+        request = Request(url)
+        self._authorize(request)
         try:
-            with urlopen(Request(url), timeout=TRANSFER_TIMEOUT_SECONDS) as response, target.open("wb") as handle:
+            with urlopen(request, timeout=TRANSFER_TIMEOUT_SECONDS) as response, target.open("wb") as handle:
                 shutil.copyfileobj(response, handle, TRANSFER_CHUNK_BYTES)
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

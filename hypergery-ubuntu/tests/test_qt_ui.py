@@ -105,7 +105,10 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
-    def test_live_migration_dialog_blocks_running_vm(self):
+    def test_hub_mode_still_blocks_running_vm(self):
+        # Una VM encendida NO se puede copiar por Hub (eso la apagaría); si se
+        # fuerza el modo Hub, el preflight la rechaza. (El modo correcto para una
+        # VM encendida es «migración en vivo», cubierto en otros tests.)
         app = QApplication.instance() or QApplication([])
         from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
         MigrationFakeBackend = migration_fake_backend()
@@ -115,12 +118,31 @@ class QtUiTests(unittest.TestCase):
             with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
                 registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
                 dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
-            dialog.nas_path.setText(str(Path(tmp) / "nas"))
+            dialog.transfer_mode.setCurrentIndex(dialog.transfer_mode.findData("hub"))
             dialog.target_host.setCurrentIndex(0)
             dialog.run_preflight()
 
             self.assertFalse(dialog.package_button.isEnabled())
             self.assertIn("Running VM migration is blocked", dialog.result_view.toPlainText())
+            dialog.close()
+        self.assertIsNotNone(app)
+
+    def test_running_vm_defaults_to_live_mode_and_can_advance(self):
+        # B3/fix: una VM encendida ya no queda bloqueada en el paso 1; entra en
+        # modo «migración en vivo» y puede avanzar para configurarla.
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
+        MigrationFakeBackend = migration_fake_backend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = MigrationFakeBackend(Path(tmp), state="running")
+            with patch("hypergery_ubuntu.registry.RegistryClient") as registry_cls:
+                registry_cls.return_value.list_hosts.return_value = [FAKE_ONLINE_HOST]
+                dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
+            self.assertEqual(str(dialog.transfer_mode.currentData()), "live")
+            self.assertTrue(dialog.next_button.isEnabled())
+            dialog.go_next()
+            self.assertEqual(dialog.current_step(), 1)  # avanzó, no se quedó bloqueado
             dialog.close()
         self.assertIsNotNone(app)
 
@@ -862,6 +884,61 @@ class QtUiTests(unittest.TestCase):
             window.close()
         self.assertIsNotNone(app)
 
+    @patch("hypergery_ubuntu.ui_qt.main_window.VmConsoleWindow")
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_vm_console_opens_integrated_via_ssh_tunnel(self, backend_cls, console_window_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            # El backend abre el túnel SSH al VNC remoto y devuelve el endpoint local.
+            backend_cls.return_value.open_remote_vnc_tunnel.return_value = {
+                "type": "vnc", "host": "127.0.0.1", "port": 5999,
+                "uri": "vnc://127.0.0.1:5999 (túnel SSH a gery@192.168.1.73)", "process": object(),
+            }
+            window = MainWindow()
+            window.remote_hosts = [
+                {"host_id": "gery-lenovo", "ssh_address": "192.168.1.73", "ssh_user": "gery"}
+            ]
+            window._show_remote_vms_dialog(
+                "gery-lenovo",
+                {
+                    "vms": [
+                        {"vm_name": "ubuntu-servicios", "state": "running", "lab_id": "default-lab"},
+                        {"vm_name": "ubuntu-hub-e2e", "state": "shut off", "lab_id": "default-lab"},
+                    ]
+                },
+            )
+            dialog = window._remote_vms_dialog
+            # Sin selección: consola deshabilitada.
+            self.assertFalse(window.remote_vm_console_button.isEnabled())
+            # VM encendida: consola habilitada; apagada: deshabilitada (sin display).
+            window.remote_vms_table.selectRow(0)
+            self.assertTrue(window.remote_vm_console_button.isEnabled())
+            window.remote_vms_table.selectRow(1)
+            self.assertFalse(window.remote_vm_console_button.isEnabled())
+            # Abrir la consola integrada: monta el túnel sobre la URI qemu+ssh y abre la ventana propia.
+            window.remote_vms_table.selectRow(0)
+
+            def fake_run(_desc, fn, on_success=None, **_kw):
+                result = fn()
+                if on_success:
+                    on_success(result)
+
+            window.run_operation = fake_run
+            window._open_remote_console()
+            backend_cls.return_value.open_remote_vnc_tunnel.assert_called_once_with(
+                "ubuntu-servicios", "qemu+ssh://gery@192.168.1.73/system"
+            )
+            # Se abre la consola INTEGRADA de HyperGery (VmConsoleWindow), no un visor externo,
+            # apuntando al endpoint VNC ya tunelizado.
+            console_window_cls.assert_called_once()
+            self.assertEqual(console_window_cls.call_args.kwargs["remote_display"]["port"], 5999)
+            dialog.close()
+            window.close()
+        self.assertIsNotNone(app)
+
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_remote_vm_power_actions_queue_hub_commands(self, backend_cls):
         app = QApplication.instance() or QApplication([])
@@ -1077,13 +1154,13 @@ class QtUiTests(unittest.TestCase):
                 ["Elegir máquina", "Equipo destino", "Opciones", "Comprobación", "Progreso", "Resultado"],
             )
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("no es migración de RAM en vivo", texts)
             self.assertIn("La máquina original y sus discos no se borran.", texts)
-            self.assertIn("Debe estar apagada", texts)
+            # VM apagada → chip de modo «Copia por Hub/NAS».
+            self.assertIn("Copia por Hub/NAS", texts)
             dialog.close()
         self.assertIsNotNone(app)
 
-    def test_migration_wizard_running_vm_blocks_next_with_callout(self):
+    def test_migration_wizard_running_vm_shows_live_mode_callout(self):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QLabel
         from hypergery_ubuntu.ui_qt.dialogs import LiveMigrationDialog
@@ -1096,11 +1173,11 @@ class QtUiTests(unittest.TestCase):
                 dialog = LiveMigrationDialog(backend, backend.get_vm("hg-source"))
 
             self.assertEqual(dialog.current_step(), 0)
-            self.assertFalse(dialog.next_button.isEnabled())
+            # Ya NO se bloquea: el botón Siguiente está activo para una VM encendida.
+            self.assertTrue(dialog.next_button.isEnabled())
             texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
-            self.assertIn("No se puede mover una máquina encendida", texts)
-            dialog.go_next()
-            self.assertEqual(dialog.current_step(), 0)
+            self.assertIn("se usará migración en vivo", texts)
+            self.assertNotIn("No se puede mover una máquina encendida", texts)
             dialog.close()
         self.assertIsNotNone(app)
 
@@ -1662,8 +1739,9 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
             dialog = window._remote_vms_dialog
             console_buttons = [b for b in dialog.findChildren(QPushButton) if b.text() == "Consola"]
             self.assertEqual(len(console_buttons), 1)
+            # Sin selección la consola sigue deshabilitada; el tooltip ya describe la función real.
             self.assertFalse(console_buttons[0].isEnabled())
-            self.assertIn("versión futura", console_buttons[0].toolTip())
+            self.assertIn("virt-viewer", console_buttons[0].toolTip())
             window.remote_vms_table.clearSelection()
             window._update_remote_power_buttons()
             self.assertEqual(window.remote_vm_detail.toPlainText(), "")
@@ -1912,6 +1990,7 @@ class QtControlCenterTests(unittest.TestCase):
             self.assertEqual(
                 tabs,
                 [
+                    "Salud del sistema",
                     "Mi equipo",
                     "Sugerencias",
                     "Batería",
@@ -1919,6 +1998,7 @@ class QtControlCenterTests(unittest.TestCase):
                     "Redes",
                     "Usuarios",
                     "Equipos externos",
+                    "Operaciones",
                     "Historial",
                 ],
             )
@@ -2032,6 +2112,43 @@ class QtControlCenterTests(unittest.TestCase):
             self.assertIn("57", data["sections"]["Battery"])
             self.assertIn("Informe del Centro de control exportado", window.activity_log.toPlainText())
             window.close()
+        self.assertIsNotNone(app)
+
+
+class QtConsoleKeysymTests(unittest.TestCase):
+    def test_ctrl_letter_sends_base_letter_keysym(self):
+        # Regresión: con Ctrl, event.text() es un carácter de control (Ctrl+C → \x03),
+        # así que la letra debe derivarse de la tecla, no del texto. Antes devolvía 0
+        # y Ctrl+C/Ctrl+D no llegaban al guest (no se podía salir de top, etc.).
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        from hypergery_ubuntu.ui_qt.console import _keysym
+
+        ctrl_c = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier, "\x03")
+        self.assertEqual(_keysym(ctrl_c), 0x63)  # 'c'
+        ctrl_d = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_D, Qt.KeyboardModifier.ControlModifier, "\x04")
+        self.assertEqual(_keysym(ctrl_d), 0x64)  # 'd'
+        ctrl_4 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_4, Qt.KeyboardModifier.ControlModifier, "")
+        self.assertEqual(_keysym(ctrl_4), 0x34)  # '4'
+        # Una letra normal (sin Ctrl) sigue saliendo de event.text().
+        plain_c = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.NoModifier, "c")
+        self.assertEqual(_keysym(plain_c), 0x63)
+        self.assertIsNotNone(app)
+
+    def test_altgr_modifier_is_sent_to_guest(self):
+        # Regresión: sin enviar AltGr, AltGr+1 llegaba como "1" en vez de "|".
+        # AltGr (ISO_Level3_Shift, keysym 0xFE03) debe enviarse para que el guest
+        # componga los caracteres de tercer nivel (| @ # ~ \).
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        from hypergery_ubuntu.ui_qt.console import _keysym
+
+        altgr = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_AltGr, Qt.KeyboardModifier.NoModifier, "")
+        self.assertEqual(_keysym(altgr), 0xFE03)
         self.assertIsNotNone(app)
 
 

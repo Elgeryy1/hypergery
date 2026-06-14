@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,6 +60,7 @@ from .dialogs import (
     EditLabTemplateDialog,
     EditVmTemplateDialog,
     FILE_DIALOG_OPTIONS,
+    GpuPassthroughDialog,
     InstantiateLabTemplateWizard,
     LiveMigrationDialog,
     NewLabDialog,
@@ -66,6 +69,7 @@ from .dialogs import (
     RenameLabDialog,
     SettingsDialog,
     SnapshotDialog,
+    VBoxStyleVMCreator,
     VMWizard,
     confirm,
 )
@@ -106,10 +110,17 @@ from .styles import (
     format_mib,
     state_kind,
 )
+from .jobs import JobManager
 from .workers import BackendJob
 
 
 class MainWindow(QMainWindow):
+    # Mínimo intervalo entre dos capturas reales de preview de una misma VM
+    # (HG-BUG-0015): virsh screenshot es caro (subprocess, hasta 8 s).
+    PREVIEW_MIN_INTERVAL_S = 2.0
+    # Espera acotada a los jobs en curso al cerrar la ventana (HG-BUG-0008).
+    CLOSE_WAIT_MS = 5000
+
     def __init__(self) -> None:
         super().__init__()
         self.backend = HyperGeryBackend()
@@ -126,16 +137,29 @@ class MainWindow(QMainWindow):
         self.remote_hosts: list[dict[str, Any]] = []
         self.remote_vms_inventory: list[dict[str, Any]] = []
         self.console_windows: dict[str, VmConsoleWindow] = {}
-        self.jobs: list[BackendJob] = []
-        self.completed_jobs: list[BackendJob] = []
-        self._preview_jobs: list[BackendJob] = []
+        self._remote_console_windows: list[VmConsoleWindow] = []
+        self.job_manager = JobManager(self)
         self._preview_target: str | None = None
+        self._preview_inflight: set[str] = set()
+        self._preview_last_capture: dict[str, float] = {}
+        self._preview_retry_pending: set[str] = set()
+        self._preview_clock = time.monotonic
         self.setWindowTitle(f"HyperGery v{APP_DISPLAY_VERSION}")
         self.resize(1360, 860)
         self.setMinimumSize(1120, 720)
         self.setStyleSheet(APP_STYLESHEET)
         self._build_ui()
         QTimer.singleShot(0, self.refresh_all)
+        # Evacuación por batería: vigila el nivel cada minuto y, al entrar en
+        # «offload» descargando, ofrece pasar las VMs encendidas a otro equipo.
+        from .evacuation import EvacuationMonitor
+
+        self._evac_monitor = EvacuationMonitor()
+        self._evac_dialog_open = False
+        self._battery_mode = "recommend_only"
+        self._battery_timer = QTimer(self)
+        self._battery_timer.timeout.connect(self._battery_tick)
+        self._battery_timer.start(60_000)
 
     def _build_ui(self) -> None:
         # Botones "fantasma": set_busy/update_actions los referencian, pero las
@@ -208,6 +232,7 @@ class MainWindow(QMainWindow):
         maquina.addAction(self.act_snapshots)
         maquina.addAction(self.act_clone)
         maquina.addAction(self.act_migrate)
+        maquina.addAction(self.act_gpu)
         maquina.addSeparator()
         maquina.addAction(self.act_delete)
 
@@ -249,6 +274,8 @@ class MainWindow(QMainWindow):
         self.act_clone.triggered.connect(self.clone_vm)
         self.act_migrate = QAction(self._std_icon("SP_ArrowForward"), "Mover a otro equipo", self)
         self.act_migrate.triggered.connect(self.live_migration_vm)
+        self.act_gpu = QAction(self._std_icon("SP_DesktopIcon"), "GPU física…", self)
+        self.act_gpu.triggered.connect(self.gpu_vm)
         self.act_delete = QAction(self._std_icon("SP_TrashIcon"), "Eliminar", self)
         self.act_delete.triggered.connect(self.delete_vm)
 
@@ -326,15 +353,19 @@ class MainWindow(QMainWindow):
             self.vm_filter_edit.selectAll()
 
     def show_about(self) -> None:
+        from .. import APP_HOMEPAGE
+
         QMessageBox.about(
             self,
             "Acerca de HyperGery",
             f"<b>HyperGery</b> v{APP_DISPLAY_VERSION}<br>"
             "Gestor de máquinas virtuales KVM / QEMU / libvirt.<br><br>"
-            "Interfaz estilo VirtualBox.",
+            "Interfaz estilo VirtualBox.<br>"
+            f'<a href="{APP_HOMEPAGE}">{APP_HOMEPAGE}</a><br>'
+            "Licencia: ver fichero LICENSE.",
         )
 
-    def _update_battery_chip(self) -> None:
+    def _update_battery_chip(self) -> dict:
         try:
             from ..v1.battery import BatteryService
             from ..v1.settings import V1Settings
@@ -343,6 +374,7 @@ class MainWindow(QMainWindow):
                 settings = V1Settings.load()
             except Exception:
                 settings = V1Settings()
+            self._battery_mode = getattr(settings, "battery_mode", "recommend_only")
             state = BatteryService(settings=settings).read()
             data = state.to_dict() if hasattr(state, "to_dict") else {}
             percent = data.get("percent")
@@ -353,8 +385,122 @@ class MainWindow(QMainWindow):
             else:
                 tier_txt = f" · {tier}" if tier else ""
                 self.battery_chip.setText(f"🔋 {int(round(float(percent)))}%{tier_txt}")
+            return data
         except Exception:
             self.battery_chip.setText("🔋 —")
+            return {}
+
+    def _battery_tick(self) -> None:
+        state = self._update_battery_chip()
+        if not state or self._battery_mode == "disabled" or self._evac_dialog_open:
+            return
+        if self._evac_monitor.should_offer(state):
+            self.offer_battery_evacuation(state)
+
+    def offer_battery_evacuation(self, state: dict) -> None:
+        """🔋 nivel «offload» descargando: pregunta si pasar las VMs encendidas
+        a otro equipo (migración en vivo) y seguir usándolas en remoto."""
+        from .dialogs import hub_target_candidates, live_uri_for_host
+        from .evacuation import EvacuationDialog, vm_evacuation_blockers
+
+        try:
+            running = [vm for vm in self.backend.list_vms() if "running" in (vm.state or "").lower()]
+        except HyperGeryError:
+            return
+        if not running:
+            return
+        vm_rows = []
+        for vm in running:
+            xml = vm.xml or ""
+            if not xml:
+                try:
+                    xml = self.backend.get_vm(vm.name).xml
+                except HyperGeryError:
+                    xml = ""
+            vm_rows.append({"name": vm.name, "blockers": vm_evacuation_blockers(xml)})
+        try:
+            from ..registry import RegistryClient
+
+            hosts = RegistryClient(self.registry_url()).list_hosts()
+        except Exception as exc:
+            self.log_activity(f"Evacuación por batería no ofrecida: Hub no accesible ({exc})")
+            return
+        config = effective_config()
+        candidates = hub_target_candidates(hosts, config["host_id"].value, socket.gethostname())
+        self._evac_dialog_open = True
+        try:
+            dialog = EvacuationDialog(state.get("percent"), candidates, vm_rows, self)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            target = dialog.selected_target()
+            names = dialog.evacuable_names()
+        finally:
+            self._evac_dialog_open = False
+        if not accepted or target is None or not names:
+            return
+        uri = live_uri_for_host(target.get("host") or {})
+        if not uri:
+            self.show_error("El Hub no tiene usuario/IP SSH de ese equipo; abre «Mover a otro equipo» una vez.")
+            return
+        self._run_battery_evacuation(names, uri)
+
+    def _run_battery_evacuation(self, names: list[str], uri: str) -> None:
+        from .evacuation import evacuate_running_vms
+        from .workers import BackendJob
+
+        self.log_activity(f"Evacuación por batería: {len(names)} VM(s) → {uri}")
+        holder: dict = {}
+
+        def work() -> dict:
+            # progress emite por señal: llega al hilo de la UI encolado.
+            return evacuate_running_vms(self.backend, names, uri, progress=holder["job"].progress.emit)
+
+        job = BackendJob("battery evacuation", work)
+        holder["job"] = job
+        job.progress.connect(self.log_activity)
+        jobs = [j for j in getattr(self, "_evac_jobs", []) if not j.isFinished()]
+        jobs.append(job)
+        self._evac_jobs = jobs
+
+        def done() -> None:
+            self._show_evacuation_result(job.result or {})
+
+        def failed() -> None:
+            self.show_error(f"La evacuación no pudo ejecutarse: {job.error_message}")
+
+        job.succeeded.connect(done)
+        job.failed.connect(failed)
+        job.start()
+
+    def _show_evacuation_result(self, result: dict) -> None:
+        results = result.get("results") or []
+        migrated = result.get("migrated") or []
+        uri = result.get("target_uri", "")
+        lines = []
+        for entry in results:
+            if entry.get("ok"):
+                downtime = entry.get("downtime_ms")
+                lines.append(f"✅ {entry['vm_name']} — migrada (downtime {downtime if downtime is not None else '—'} ms)")
+            else:
+                lines.append(f"❌ {entry['vm_name']} — sigue AQUÍ intacta: {str(entry.get('error', ''))[:160]}")
+        summary = "\n".join(lines) or "No había máquinas que evacuar."
+        self.refresh_all()
+        if not migrated:
+            QMessageBox.warning(self, "Evacuación por batería", summary)
+            return
+        answer = QMessageBox.question(
+            self,
+            "Evacuación completada",
+            summary + "\n\n¿Abrir las consolas remotas de las máquinas migradas para seguir trabajando?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for name in migrated:
+            try:
+                self.backend.open_remote_console(name, uri)
+            except HyperGeryError as exc:
+                self.show_error(f"Consola remota de {name}: {exc}")
+                break
 
     def _build_vm_actions_bar(self) -> QWidget:
         bar = QWidget()
@@ -857,7 +1003,7 @@ class MainWindow(QMainWindow):
         refresh_button = QPushButton("Actualizar")
         console_button = QPushButton("Consola")
         console_button.setEnabled(False)
-        console_button.setToolTip("La consola remota llegará en una versión futura.")
+        console_button.setToolTip("Abre la consola gráfica de la máquina remota por SSH (virt-viewer tuneliza el display).")
         for button in (start_button, shutdown_button, force_off_button):
             button.setEnabled(False)
         actions.addWidget(start_button)
@@ -879,6 +1025,7 @@ class MainWindow(QMainWindow):
         self.remote_vm_shutdown_button = shutdown_button
         self.remote_vm_force_off_button = force_off_button
         self.remote_vm_refresh_button = refresh_button
+        self.remote_vm_console_button = console_button
         self._remote_vms = []
         self._remote_power_poll_timer = QTimer(dialog)
         self._remote_power_poll_timer.setInterval(3000)
@@ -891,6 +1038,7 @@ class MainWindow(QMainWindow):
         shutdown_button.clicked.connect(lambda: self._queue_remote_power_action("shutdown"))
         force_off_button.clicked.connect(lambda: self._queue_remote_power_action("force_off"))
         refresh_button.clicked.connect(self._refresh_remote_vms)
+        console_button.clicked.connect(self._open_remote_console)
         close_button.clicked.connect(dialog.accept)
         dialog.finished.connect(self._remote_power_poll_timer.stop)
 
@@ -1000,9 +1148,12 @@ class MainWindow(QMainWindow):
     def _update_remote_power_buttons(self) -> None:
         vm = self._selected_remote_vm()
         self._render_remote_vm_details()
+        console_button = getattr(self, "remote_vm_console_button", None)
         if vm is None:
             for button in (self.remote_vm_start_button, self.remote_vm_shutdown_button, self.remote_vm_force_off_button):
                 button.setEnabled(False)
+            if console_button is not None:
+                console_button.setEnabled(False)
             return
         state = str(vm.get("state") or "unknown").lower()
         running_like = state in {"running", "paused"}
@@ -1011,6 +1162,67 @@ class MainWindow(QMainWindow):
         self.remote_vm_shutdown_button.setEnabled(running_like)
         # Force Off also covers stuck/unknown states; it always asks first.
         self.remote_vm_force_off_button.setEnabled(running_like or state == "unknown")
+        # Remote console only makes sense for a running VM (a shut-off VM has no display).
+        if console_button is not None:
+            console_button.setEnabled(running_like)
+
+    def _remote_host_record(self, host_id: str) -> dict[str, Any]:
+        for host in self.remote_hosts:
+            if str(host.get("host_id") or "") == host_id:
+                return host
+        return {"host_id": host_id}
+
+    def _open_remote_console(self) -> None:
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        vm = self._selected_remote_vm()
+        if dialog is None or vm is None:
+            return
+        host_id = str(getattr(dialog, "host_id", ""))
+        vm_name = str(vm.get("vm_name") or vm.get("name") or "")
+        from .dialogs import live_uri_for_host
+
+        uri = live_uri_for_host(self._remote_host_record(host_id))
+        if not uri:
+            self.show_error(
+                f"No puedo abrir la consola de {vm_name}: el Hub no reporta una dirección SSH para «{host_id}»."
+            )
+            return
+
+        # Consola INTEGRADA de HyperGery contra la VM remota: el backend abre un
+        # túnel SSH al VNC del otro equipo y la consola conecta a 127.0.0.1:local.
+        def setup() -> dict[str, Any]:
+            try:
+                return self.backend.open_remote_vnc_tunnel(vm_name, uri)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def on_ready(result: dict[str, Any]) -> None:
+            error = str((result or {}).get("error") or "")
+            if error:
+                self.show_error(f"No se pudo abrir la consola de {vm_name}: {error}")
+                return
+            remote_display = {k: result[k] for k in ("type", "host", "port", "uri") if k in result}
+            vm_summary = VmSummary(name=vm_name, state="running", lab_id=str(vm.get("lab_id") or ""), graphics="vnc")
+            window = VmConsoleWindow(
+                self.backend, vm_summary, self,
+                remote_display=remote_display, remote_process=result.get("process"),
+            )
+            self._remote_console_windows.append(window)
+            window.destroyed.connect(
+                lambda _=None, w=window: w in self._remote_console_windows and self._remote_console_windows.remove(w)
+            )
+            window.show()
+            window.raise_()
+            window.activateWindow()
+            window.console.connect_console()
+
+        self.run_operation(
+            f"Abriendo consola de {vm_name} en {host_id}",
+            setup,
+            on_success=on_ready,
+            refresh_after=False,
+            busy=True,
+        )
 
     def _queue_remote_power_action(self, action: str) -> None:
         dialog = getattr(self, "_remote_vms_dialog", None)
@@ -1186,7 +1398,7 @@ class MainWindow(QMainWindow):
     # Control Center (v0.9/v1 services)                                   #
     # ------------------------------------------------------------------ #
 
-    V1_TAB_KEYS = ("Telemetry", "Orchestrator", "Battery", "NAS", "Network", "Guests", "External Nodes", "Logs")
+    V1_TAB_KEYS = ("Dashboard", "Telemetry", "Orchestrator", "Battery", "NAS", "Network", "Guests", "External Nodes", "Progress", "Logs")
 
     def _build_control_center_page(self) -> QWidget:
         page = QWidget()
@@ -1284,6 +1496,32 @@ class MainWindow(QMainWindow):
 
             return RegistryClient(url)
 
+        if key == "Dashboard":
+            # HG-BUG-0022: misma fuente estructurada que el endpoint /dashboard
+            # de v1.4, renderizada como tarjetas por v1_render.
+            from ..v1.api import ApiContext
+            from ..v1.nas import NasService
+            from ..v1.providers import LocalProvider
+
+            def local_vms():
+                try:
+                    return LocalProvider(self.backend).list_vms()
+                except Exception:
+                    return []
+
+            context = ApiContext(
+                settings=settings,
+                nas=NasService(settings=settings, lab_store=self.lab_store()),
+                lab_store=self.lab_store(),
+                local_vms=local_vms,
+                hub_client=hub_client(),
+                backend=self.backend,
+            )
+            return context.dashboard()
+        if key == "Progress":
+            from ..v1.progress import get_progress_channel
+
+            return {"operations": get_progress_channel().list()}
         if key == "Telemetry":
             from ..v1.telemetry import TelemetryService, evaluate_alerts
 
@@ -1323,10 +1561,10 @@ class MainWindow(QMainWindow):
             service = NasService(settings=settings, lab_store=self.lab_store())
             return {"health": service.health(), "commits": service.list_commits()[-10:]}
         if key == "Network":
-            from ..v1.networks import network_from_lab, validate_networks
+            from ..v1.networks import networks_from_labs, validate_networks
 
             labs = self.lab_store().list_labs()
-            networks = [network_from_lab(lab) for lab in labs]
+            networks = networks_from_labs(labs)
             result = validate_networks(networks)
             return {"networks": [network.to_dict() for network in networks], "validation": result}
         if key == "Guests":
@@ -3300,6 +3538,7 @@ class MainWindow(QMainWindow):
         self.act_snapshots.setEnabled(has_vm)
         self.act_clone.setEnabled(has_vm and shut_off)
         self.act_migrate.setEnabled(has_vm)
+        self.act_gpu.setEnabled(has_vm and shut_off)
         self.act_delete.setEnabled(has_vm and shut_off)
         if hasattr(self, "detail_panel"):
             self.detail_panel.set_console_enabled(has_vm and running)
@@ -3985,28 +4224,49 @@ class MainWindow(QMainWindow):
 
         from PySide6.QtGui import QGuiApplication
 
-        from .screenshot import capture_vm_screenshot
-
         # Solo tiene sentido capturar con un display real; en modo «offscreen»
         # (tests/headless) o sin virsh no se lanza ningún proceso ni hilo.
         if QGuiApplication.platformName() == "offscreen" or shutil.which("virsh") is None:
             self._on_preview_captured(name, None)
             return
-        job = BackendJob(f"preview:{name}", lambda n=name: capture_vm_screenshot(n))
-        self._preview_jobs.append(job)
+        self._throttled_capture(name)
 
-        def done(j: BackendJob = job, n: str = name) -> None:
-            if j in self._preview_jobs:
-                self._preview_jobs.remove(j)
-            self._on_preview_captured(n, j.result)
+    def _throttled_capture(self, name: str) -> None:
+        # HG-BUG-0015: una captura en vuelo por VM y un mínimo entre capturas.
+        # Si llega una petición durante el periodo de enfriamiento se programa
+        # un único reintento al expirar (la vista no se queda obsoleta).
+        if name in self._preview_inflight:
+            return
+        elapsed = self._preview_clock() - self._preview_last_capture.get(name, float("-inf"))
+        if elapsed < self.PREVIEW_MIN_INTERVAL_S:
+            if name not in self._preview_retry_pending:
+                self._preview_retry_pending.add(name)
+                delay_ms = max(0, int((self.PREVIEW_MIN_INTERVAL_S - elapsed) * 1000)) + 50
+                self._schedule_preview_retry(name, delay_ms)
+            return
+        self._preview_last_capture[name] = self._preview_clock()
+        self._preview_inflight.add(name)
+        self._start_preview_capture(name)
 
-        def failed(j: BackendJob = job) -> None:
-            if j in self._preview_jobs:
-                self._preview_jobs.remove(j)
+    def _schedule_preview_retry(self, name: str, delay_ms: int) -> None:
+        QTimer.singleShot(delay_ms, lambda n=name: self._run_preview_retry(n))
 
-        job.succeeded.connect(done)
-        job.failed.connect(failed)
-        job.start()
+    def _run_preview_retry(self, name: str) -> None:
+        self._preview_retry_pending.discard(name)
+        # Solo si la VM sigue siendo la seleccionada.
+        if name == self._preview_target:
+            self._capture_preview(name)
+
+    def _start_preview_capture(self, name: str) -> None:
+        from .screenshot import capture_vm_screenshot
+
+        self.job_manager.submit(
+            f"preview:{name}",
+            lambda n=name: capture_vm_screenshot(n),
+            on_success=lambda job, n=name: self._on_preview_captured(n, job.result),
+            on_finished=lambda job, n=name: self._preview_inflight.discard(n),
+            track_history=False,
+        )
 
     def _on_preview_captured(self, name: str, data: bytes | None) -> None:
         # Ignora resultados de una VM que ya no está seleccionada.
@@ -4059,36 +4319,49 @@ class MainWindow(QMainWindow):
             self.set_busy(True, label)
         else:
             self.status.showMessage(label)
-        job = BackendJob(label, fn)
-        self.jobs.append(job)
 
-        def succeeded() -> None:
-            result = job.result
+        def succeeded(job: BackendJob) -> None:
             if on_success:
-                on_success(result)
+                on_success(job.result)
             if refresh_after:
                 self.refresh_all()
             if busy or refresh_after:
                 self.status.showMessage("Listo")
 
-        def failed() -> None:
+        def failed(job: BackendJob) -> None:
             self.show_error(job.error_message)
             self.status.showMessage("Listo")
 
-        def finished() -> None:
-            if job in self.jobs:
-                self.jobs.remove(job)
-            self.completed_jobs.append(job)
-            self.completed_jobs = self.completed_jobs[-20:]
+        def finished(job: BackendJob) -> None:
             if busy:
                 self.set_busy(False)
             else:
                 self.update_actions()
 
-        job.succeeded.connect(succeeded)
-        job.failed.connect(failed)
-        job.finished.connect(finished)
-        job.start()
+        self.job_manager.submit(
+            label,
+            fn,
+            on_success=succeeded,
+            on_failure=failed,
+            on_finished=finished,
+        )
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (API de Qt)
+        # HG-BUG-0008: sin esto, los BackendJob seguían vivos al cerrar la
+        # ventana y podían emitir señales contra widgets destruidos.
+        for window in list(self.console_windows.values()):
+            try:
+                window.close()
+            except RuntimeError:
+                pass
+        survivors = self.job_manager.shutdown(timeout_ms=self.CLOSE_WAIT_MS)
+        if survivors:
+            logging.warning(
+                "Cerrando con %d job(s) aún en ejecución: %s",
+                len(survivors),
+                ", ".join(survivors),
+            )
+        super().closeEvent(event)
 
     def new_vm_from_empty(self) -> None:
         if self.vm_filter.currentText() == "Laboratorio seleccionado" and self.selected_lab is not None:
@@ -4105,7 +4378,8 @@ class MainWindow(QMainWindow):
         self.new_vm(default_lab_id=str(lab["lab_id"]))
 
     def new_vm(self, default_lab_id: str = "default-lab") -> None:
-        wizard = VMWizard(self, default_lab_id=default_lab_id)
+        # UI estilo VirtualBox: una ventana con secciones plegables y sliders.
+        wizard = VBoxStyleVMCreator(self, default_lab_id=default_lab_id)
         if wizard.exec() != QDialog.DialogCode.Accepted:
             return
         values = wizard.values()
@@ -4156,7 +4430,34 @@ class MainWindow(QMainWindow):
         except HyperGeryError as exc:
             self.show_error(str(exc))
             return
-        self.run_operation(f"Encendiendo {name}", lambda: self.backend.start_vm(name))
+        # Si la VM tiene una ISO conectada (instalación), abre la consola al
+        # encender para que el usuario llegue a tiempo al «Press any key to boot
+        # from CD» (la ventana dura ~5 s; si abres la consola tarde, la pierdes).
+        vm = self.selected_vm
+        has_install_iso = bool(vm and getattr(vm, "iso_path", ""))
+
+        def after_start(_result) -> None:
+            if has_install_iso:
+                self.open_console(force_connect=True)
+                # «Press any key to boot from CD»: pulsa espacio por libvirt
+                # (send-key) durante la ventana de arranque — funciona con
+                # cualquier display (SPICE o VNC), sin depender de la consola.
+                from .workers import BackendJob
+
+                sweep = BackendJob("boot keypress sweep", lambda: self.backend.boot_keypress_sweep(name))
+                # NUNCA soltar la última referencia dentro de `finished` (PySide
+                # destruiría el QThread aún vivo → crash). Se poda en el
+                # siguiente arranque: un QThread terminado en la lista es inocuo.
+                jobs = [job for job in getattr(self, "_boot_sweep_jobs", []) if not job.isFinished()]
+                jobs.append(sweep)
+                self._boot_sweep_jobs = jobs
+                sweep.start()
+
+        self.run_operation(
+            f"Encendiendo {name}",
+            lambda: self.backend.start_vm(name),
+            on_success=after_start,
+        )
 
     def shutdown_vm(self) -> None:
         try:
@@ -4182,7 +4483,7 @@ class MainWindow(QMainWindow):
             return
         self.run_operation(f"Apagando a la fuerza {name}", lambda: self.backend.force_off_vm(name))
 
-    def open_console(self) -> None:
+    def open_console(self, *, force_connect: bool = False) -> None:
         if self.selected_vm is None:
             self.show_error("Selecciona una máquina primero.")
             return
@@ -4197,7 +4498,13 @@ class MainWindow(QMainWindow):
         window.show()
         window.raise_()
         window.activateWindow()
-        if should_autoconnect_console(vm.graphics, vm.state) and not window.console.is_connected():
+        # force_connect: tras encender (instalación), el estado en caché aún es
+        # «apagada»; conectamos igualmente porque la VM ya está arrancando.
+        if not window.console.is_connected() and (
+            force_connect or should_autoconnect_console(vm.graphics, vm.state)
+        ):
+            # (El «Press any key» del instalador lo cubre el barrido send-key
+            # de start_vm, que funciona con cualquier display.)
             window.console.connect_console()
 
     def open_external_console(self) -> None:
@@ -4240,6 +4547,45 @@ class MainWindow(QMainWindow):
                 f"command_id={dialog.last_result.get('command_id', '')} "
                 f"package={dialog.last_result.get('package_dir', '')}"
             )
+
+    def gpu_vm(self) -> None:
+        if self.selected_vm is None:
+            self.show_error("Selecciona una máquina primero.")
+            return
+        vm = self.selected_vm
+        try:
+            dialog = GpuPassthroughDialog(self.backend, vm, self)
+        except HyperGeryError as exc:
+            self.show_error(str(exc))
+            return
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        from ..v1 import gpu_passthrough as gpu_mod
+
+        if dialog.action == "attach":
+            row = dialog.selected_row()
+            if row is None:
+                return
+            address = row["address"]
+            self.run_operation(
+                f"Conectando GPU {address} a {vm.name}",
+                lambda: gpu_mod.attach_gpu_to_vm(self.backend, vm.name, address, confirm=True),
+                on_success=lambda result: self._show_gpu_attach_result(vm.name, result),
+            )
+        elif dialog.action == "detach":
+            self.run_operation(
+                f"Quitando GPU de {vm.name}",
+                lambda: gpu_mod.detach_gpus_from_vm(self.backend, vm.name, confirm=True),
+            )
+
+    def _show_gpu_attach_result(self, vm_name: str, result: dict) -> None:
+        warnings = [w for w in result.get("warnings", []) if w]
+        gpu = result.get("gpu") or {}
+        lines = [f"GPU {gpu.get('address', '')} conectada a {vm_name}."]
+        if warnings:
+            lines.append("")
+            lines.extend(f"• {warning}" for warning in warnings)
+        QMessageBox.information(self, "GPU conectada", "\n".join(lines))
 
     def delete_vm(self) -> None:
         if self.selected_vm is None:

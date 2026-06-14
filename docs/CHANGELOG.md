@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.7.0 — GPU/3D, hot live migration, remote console (2026-06-14)
+
+First release shipped as a **Debian package** (`hypergery_1.7.0_all.deb`); the
+release artifact is the `.deb`, not the source. Full notes:
+[RELEASE_NOTES_v1.7.0.md](RELEASE_NOTES_v1.7.0.md).
+
+- **Shared 3D acceleration (VirGL)**: virtio-gpu `accel3d` + `egl-headless` — 3D
+  on the host GPU, no passthrough/second GPU/reboot. Real-host validated (`+virgl`).
+- **GPU passthrough (VFIO)**: IOMMU detection, preflight hard-stop on the desktop
+  GPU, `vfio-pci` bind with rollback, `<hostdev>` XML, NVIDIA anti-Code-43; host
+  changes only proposed.
+- **Hot live migration (RAM+CPU)** over `virsh migrate` with pre-copy,
+  auto-converge, optional postcopy, block migration, measured downtime, abort with
+  source intact. Cross-vendor (AMD↔Intel) works with a `qemu64` compatibility CPU
+  (svm/vmx hidden); host-CPU VMs are blocked cross-vendor by preflight. Acid test:
+  Ubuntu Server (nginx+PostgreSQL+Redis) migrated AMD→Intel live — 0/1060 dropped,
+  ~0.23 s switchover, no reboot.
+- **Integrated remote console**: opens another host's VM in HyperGery's own console
+  by SSH-tunneling its VNC (`ssh -L`).
+- **Native Android app** against the secure token+TLS API (pairing, inventory,
+  live progress, safe actions).
+- **Console keyboard fixes**: Ctrl+letter now reaches the guest (Ctrl+C/D/Z…);
+  AltGr (ISO_Level3_Shift) is sent so `| @ # ~ \` work; VNC `keymap` is set to the
+  host layout automatically.
+- **Live-migration fix**: block migration pins `--migrateuri tcp://<host>` to avoid
+  `address resolution failed for <hostname>`.
+- QA: `pytest` **993 passed, 8 skipped**; real multi-host UAT all PASS
+  ([REAL_MULTIHOST_UAT_2026-06-14.md](qa/REAL_MULTIHOST_UAT_2026-06-14.md)).
+
 ## v1.0.1 — Migration safety bugfix (2026-06-09)
 
 Bugfix release over v1.0.0 focused on migration safety and repo hygiene. No new
@@ -30,7 +59,7 @@ features; no live-migration changes (still planned for v1.5).
 QA: `compileall` OK, focused suites **95 passed**, full suite **668 passed**
 (661 base + 7 new), 0 skipped. Real KVM-host UAT on `gerard-MS-7E26`
 **5/5 PASS** — see [RELEASE_NOTES_v1.0.1.md](RELEASE_NOTES_v1.0.1.md) and
-[docs/qa/V1_0_1_UAT_RESULT.md](docs/qa/V1_0_1_UAT_RESULT.md). Version metadata
+[docs/qa/V1_0_1_UAT_RESULT.md](qa/V1_0_1_UAT_RESULT.md). Version metadata
 bumped `1.0.0` → `1.0.1` (`pyproject.toml`, `hypergery_ubuntu/__init__.py`,
 `ui_qt/styles.py`).
 
@@ -48,7 +77,7 @@ Final QA: `compileall` OK, focused Qt suite **128 passed**, full suite
 **661 passed, 0 skipped** (Python 3.14.4 · PySide6 6.11.1 · pytest 9.0.3).
 Final UAT (visual + real two-host safe/verifiable migration) **PASS** — see
 [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md),
-[docs/qa/V1_FINAL_UAT_RESULT.md](docs/qa/V1_FINAL_UAT_RESULT.md) and the
+[docs/qa/V1_FINAL_UAT_RESULT.md](qa/V1_FINAL_UAT_RESULT.md) and the
 evidence in `docs/qa/evidence/v1-final/`.
 
 Version metadata bumped from `1.0.0rc1` to `1.0.0` (`pyproject.toml`,
@@ -56,7 +85,7 @@ Version metadata bumped from `1.0.0rc1` to `1.0.0` (`pyproject.toml`,
 to `1.0.0`. Known issues (non-blocking): Control Center → Networks
 DHCP/CIDR/Duplicate Gateway error; Hub/API without strong auth (trusted LAN
 only). Live migration is **out of scope for v1.0** and planned for v1.5
-([docs/roadmap/V1_5_LIVE_MIGRATION.md](docs/roadmap/V1_5_LIVE_MIGRATION.md)).
+([docs/roadmap/V1_5_LIVE_MIGRATION.md](roadmap/V1_5_LIVE_MIGRATION.md)).
 
 ## v1.0-rc1 - Release Candidate 1 (2026-06-06)
 

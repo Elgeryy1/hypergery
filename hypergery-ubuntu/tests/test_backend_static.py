@@ -13,9 +13,34 @@ from hypergery_ubuntu.backend import (
     VmSummary,
     normalize_graphics_audio_for_display,
     parse_console_display,
+    parse_localectl_layout,
     validate_vm_name,
     xdg_data_home,
 )
+
+
+class LocalectlLayoutTests(unittest.TestCase):
+    def test_parse_localectl_layout_takes_first_x11_layout(self):
+        out = "System Locale: LANG=es_ES.UTF-8\n    VC Keymap: (unset)\n   X11 Layout: es,us\n"
+        self.assertEqual(parse_localectl_layout(out), "es")
+        self.assertEqual(parse_localectl_layout("   X11 Layout: us\n"), "us")
+        self.assertEqual(parse_localectl_layout("no layout here"), "")
+        self.assertEqual(parse_localectl_layout(""), "")
+
+
+class GraphicsKeymapTests(unittest.TestCase):
+    def test_switch_display_to_vnc_sets_host_keymap(self):
+        xml = "<domain><devices><graphics type='spice'/></devices></domain>"
+        root = ET.fromstring(xml)
+        with patch("hypergery_ubuntu.backend.host_vnc_keymap", return_value="es"):
+            normalize_graphics_audio_for_display(root, "vnc")
+        graphics = root.find("./devices/graphics")
+        self.assertEqual(graphics.attrib.get("keymap"), "es")
+        # Sin layout detectado, no se fija keymap (QEMU usa en-us).
+        root2 = ET.fromstring(xml)
+        with patch("hypergery_ubuntu.backend.host_vnc_keymap", return_value=""):
+            normalize_graphics_audio_for_display(root2, "vnc")
+        self.assertNotIn("keymap", root2.find("./devices/graphics").attrib)
 
 
 class BackendStaticTests(unittest.TestCase):

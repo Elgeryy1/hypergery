@@ -102,7 +102,7 @@ fixable in code.
 
 - [V1_MANUAL_SMOKE_RESULT.md](V1_MANUAL_SMOKE_RESULT.md) — full PASS/FAIL table and commands
 - [CHANGELOG.md](CHANGELOG.md) — complete change history
-- [docs/QUICK_START_V1.md](docs/QUICK_START_V1.md) — v1 quick start
-- [docs/API_V1.md](docs/API_V1.md) — API v1 reference
+- [docs/QUICK_START_V1.md](QUICK_START_V1.md) — v1 quick start
+- [docs/API_V1.md](API_V1.md) — API v1 reference
 - [ARCHITECTURE_V1.md](ARCHITECTURE_V1.md) — v1 architecture
 - [V1_KNOWN_BUGS.md](V1_KNOWN_BUGS.md) — known bugs and debt targeted at v1.1

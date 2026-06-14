@@ -13,8 +13,38 @@ import os
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 LIBVIRT_URI = os.environ.get("HYPERGERY_LIBVIRT_URI", "qemu:///system")
+
+# HG-BUG-0019: los fotogramas del invitado se escriben bajo XDG_RUNTIME_DIR
+# (tmpfs por usuario, 0700) en vez de /tmp, y al arrancar se barren los restos
+# de un proceso anterior muerto por SIGKILL.
+_PREVIEW_PREFIX = "hg-preview-"
+
+
+def _preview_dir() -> Path:
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    base = Path(runtime) if runtime and Path(runtime).is_dir() else Path(tempfile.gettempdir())
+    target = base / "hypergery-previews"
+    try:
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target.chmod(0o700)
+        return target
+    except OSError:
+        return Path(tempfile.gettempdir())
+
+
+def cleanup_stale_previews() -> int:
+    """Borra capturas dejadas por procesos muertos. Devuelve cuántas quitó."""
+    removed = 0
+    for leftover in _preview_dir().glob(f"{_PREVIEW_PREFIX}*"):
+        try:
+            leftover.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def capture_vm_screenshot(
@@ -32,7 +62,9 @@ def capture_vm_screenshot(
     """
     if not name or shutil.which("virsh") is None:
         return None
-    handle = tempfile.NamedTemporaryFile(prefix="hg-preview-", suffix=".ppm", delete=False)
+    handle = tempfile.NamedTemporaryFile(
+        prefix=_PREVIEW_PREFIX, suffix=".ppm", dir=str(_preview_dir()), delete=False
+    )
     tmp_path = handle.name
     handle.close()
     try:

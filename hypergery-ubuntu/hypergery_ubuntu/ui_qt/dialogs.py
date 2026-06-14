@@ -27,9 +27,12 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QStyle,
+    QToolButton,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -413,8 +416,12 @@ class IdentityPage(QWizardPage):
         self.iso_info_label = QLabel("")
         self.iso_info_label.setObjectName("mutedLabel")
         self.iso_info_label.setWordWrap(True)
+        # B1/B2: el SO se elige como PERFIL (firmware/TPM correctos por sistema).
+        from .. import vm_profiles as _vp
+
         self.os_type = QComboBox()
-        self.os_type.addItems(["Linux", "Windows", "Otro"])
+        for _key in ("linux", "linux-uefi", "windows11", "windows-legacy", "other"):
+            self.os_type.addItem(_vp.PROFILES[_key].label, _key)
 
         iso_row = QHBoxLayout()
         iso_row.addWidget(self.iso_edit, 1)
@@ -433,6 +440,7 @@ class IdentityPage(QWizardPage):
         self.registerField("name*", self.name_edit)
         self.registerField("iso*", self.iso_edit)
         self.registerField("os_type", self.os_type, "currentText", self.os_type.currentTextChanged)
+        self.os_type.currentIndexChanged.connect(lambda _i: self._refresh_iso_info())
         self.name_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
         self.iso_edit.textChanged.connect(lambda _text: self.completeChanged.emit())
         self.iso_edit.textChanged.connect(lambda _text: self._refresh_iso_info())
@@ -466,9 +474,22 @@ class IdentityPage(QWizardPage):
             info = f"Tamaño: {size_text}"
             if message:
                 info += f" · {message}"
-            self.iso_info_label.setText(info)
+            self.iso_info_label.setText(info + self._profile_dependency_note())
         else:
             self.iso_info_label.setText(message)
+
+    def _profile_dependency_note(self) -> str:
+        """B1: avisa en la propia UI si el perfil elegido (p. ej. Windows 11)
+        necesita ovmf/swtpm que no están instalados, con el comando para
+        instalarlos. No bloquea aquí; el preflight de create_vm es el guard real."""
+        from .. import vm_profiles as _vp
+
+        key = str(self.os_type.currentData() or _vp.DEFAULT_PROFILE)
+        pf = _vp.preflight_profile(_vp.PROFILES.get(key, _vp.PROFILES[_vp.DEFAULT_PROFILE]))
+        if pf.ok:
+            return ""
+        cmd = " && ".join(pf.suggested_commands)
+        return f"\n⚠️ {' '.join(pf.errors)}" + (f"\nInstala: {cmd}" if cmd else "")
 
     def isComplete(self) -> bool:
         return bool(self.name_edit.text().strip() and self.iso_edit.text().strip())
@@ -540,6 +561,8 @@ class IntegrationPage(QWizardPage):
             if idx >= 0:
                 self.display.setCurrentIndex(idx)
         self.lab_id = QLineEdit(default_lab_id or "default-lab")
+        # Live migration entre equipos con CPU distinta (AMD↔Intel).
+        self.migratable_cpu = QCheckBox("Preparar para migración en vivo entre equipos (CPU compatible)")
 
         disk_row = QHBoxLayout()
         disk_row.addWidget(self.disk_dir, 1)
@@ -550,6 +573,14 @@ class IntegrationPage(QWizardPage):
         form.addRow("Red", self.network)
         form.addRow("Pantalla", self.display)
         form.addRow("Laboratorio", self.lab_id)
+        form.addRow("Migración", self.migratable_cpu)
+        cpu_hint = QLabel(
+            "Márcalo si vas a mover esta máquina ENCENDIDA entre tu sobremesa y el portátil. "
+            "Usa una CPU compatible (un poco menos rápida) para que funcione entre AMD e Intel."
+        )
+        cpu_hint.setObjectName("mutedLabel")
+        cpu_hint.setWordWrap(True)
+        form.addRow("", cpu_hint)
         hint = QLabel("Si dejas la carpeta vacía se usa ~/.local/share/hypergery/vms/<nombre>/")
         hint.setObjectName("mutedLabel")
         form.addRow("", hint)
@@ -604,6 +635,304 @@ class ReviewPage(QWizardPage):
         )
 
 
+class CollapsibleSection(QWidget):
+    """Sección plegable estilo VirtualBox: cabecera con flecha + cuerpo."""
+
+    def __init__(self, title: str, expanded: bool = False) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.toggle = QToolButton()
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(expanded)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.toggle.setObjectName("sectionHeader")
+        self.toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.toggle.toggled.connect(self._on_toggled)
+        layout.addWidget(self.toggle)
+        self.body = QWidget()
+        self.body_layout = QFormLayout(self.body)
+        self.body_layout.setContentsMargins(28, 8, 12, 12)
+        self.body.setVisible(expanded)
+        layout.addWidget(self.body)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        self.body.setVisible(checked)
+
+    def add_row(self, label: str, widget) -> None:
+        self.body_layout.addRow(label, widget)
+
+
+class _SliderSpin(QWidget):
+    """Slider + spinbox sincronizados, estilo VirtualBox (con min/max)."""
+
+    def __init__(self, minimum: int, maximum: int, value: int, suffix: str = "", step: int = 1) -> None:
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        row = QHBoxLayout()
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setMinimum(minimum)
+        self.slider.setMaximum(maximum)
+        self.slider.setSingleStep(step)
+        self.slider.setValue(value)
+        self.spin = QSpinBox()
+        self.spin.setMinimum(minimum)
+        self.spin.setMaximum(maximum)
+        self.spin.setSingleStep(step)
+        self.spin.setValue(value)
+        if suffix:
+            self.spin.setSuffix(f" {suffix}")
+        self.slider.valueChanged.connect(self.spin.setValue)
+        self.spin.valueChanged.connect(self.slider.setValue)
+        row.addWidget(self.slider, 1)
+        row.addWidget(self.spin)
+        outer.addLayout(row)
+        labels = QHBoxLayout()
+        lo = QLabel(f"{minimum} {suffix}".strip())
+        lo.setObjectName("mutedLabel")
+        hi = QLabel(f"{maximum} {suffix}".strip())
+        hi.setObjectName("mutedLabel")
+        labels.addWidget(lo)
+        labels.addStretch()
+        labels.addWidget(hi)
+        outer.addLayout(labels)
+
+    def value(self) -> int:
+        return self.spin.value()
+
+    def setValue(self, value: int) -> None:  # noqa: N802 (API Qt)
+        self.spin.setValue(value)
+
+
+class VBoxStyleVMCreator(QDialog):
+    """Diálogo de creación de VM al estilo de VirtualBox: una ventana con
+    secciones plegables (Nombre y SO · Hardware · Disco) y sliders. Expone el
+    mismo `values()` que VMWizard, así que `backend.create_vm(**values)` no
+    cambia."""
+
+    # (clave de perfil, etiqueta del combo)
+    OS_ITEMS = (
+        ("linux", "Linux / Ubuntu"),
+        ("windows11", "Windows 11"),
+        ("windows-legacy", "Windows 10 / 8"),
+        ("other", "Otro"),
+    )
+
+    def __init__(self, parent=None, *, default_lab_id: str = "default-lab") -> None:
+        super().__init__(parent)
+        from .. import vm_profiles as _vp
+
+        self._vp = _vp
+        self.setWindowTitle("Nueva máquina virtual")
+        app_defaults = effective_config()
+        root = QVBoxLayout(self)
+
+        # --- Sección 1: Nombre y sistema operativo ---------------------------
+        self.sec_os = CollapsibleSection("Nombre y sistema operativo", expanded=True)
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Nombre de la máquina")
+        self.iso_edit = QLineEdit()
+        self.iso_edit.setPlaceholderText("/ruta/a/la/imagen.iso")
+        iso_browse = QPushButton("Examinar")
+        iso_browse.clicked.connect(self._pick_iso)
+        iso_row = QHBoxLayout()
+        iso_row.addWidget(self.iso_edit, 1)
+        iso_row.addWidget(iso_browse)
+        iso_holder = QWidget()
+        iso_holder.setLayout(iso_row)
+        self.os_combo = QComboBox()
+        for key, label in self.OS_ITEMS:
+            self.os_combo.addItem(label, key)
+        self.os_combo.currentIndexChanged.connect(self._on_os_changed)
+        self.firmware_info = QLabel("")
+        self.firmware_info.setObjectName("mutedLabel")
+        self.firmware_info.setWordWrap(True)
+        self.sec_os.add_row("Nombre", self.name_edit)
+        self.sec_os.add_row("Imagen ISO", iso_holder)
+        self.sec_os.add_row("Sistema operativo", self.os_combo)
+        self.sec_os.add_row("", self.firmware_info)
+        root.addWidget(self.sec_os)
+
+        # --- Sección 2: Hardware --------------------------------------------
+        self.sec_hw = CollapsibleSection("Hardware", expanded=True)
+        self.ram = _SliderSpin(512, 30720, 2048, "MB", step=256)
+        self.cpus = _SliderSpin(1, 16, 2, "CPU")
+        self.use_efi = QCheckBox("Usar EFI (UEFI)")
+        self.use_efi.toggled.connect(self._sync_firmware_info)
+        self.secure_tpm_info = QLabel("")
+        self.secure_tpm_info.setObjectName("mutedLabel")
+        self.secure_tpm_info.setWordWrap(True)
+        self.migratable_cpu = QCheckBox("Preparar para migración en vivo entre equipos (CPU compatible)")
+        self.sec_hw.add_row("Memoria base", self.ram)
+        self.sec_hw.add_row("Número de CPUs", self.cpus)
+        self.sec_hw.add_row("Firmware", self.use_efi)
+        self.sec_hw.add_row("", self.secure_tpm_info)
+        self.sec_hw.add_row("Migración", self.migratable_cpu)
+        root.addWidget(self.sec_hw)
+
+        # --- Sección 3: Disco duro virtual -----------------------------------
+        self.sec_disk = CollapsibleSection("Disco duro virtual", expanded=True)
+        self.disk = _SliderSpin(1, 2048, 25, "GB")
+        self.disk_dir = QLineEdit()
+        self.disk_dir.setText(app_defaults["default_vm_storage_path"].value)
+        self.disk_dir.setPlaceholderText("Carpeta por defecto de HyperGery")
+        disk_browse = QPushButton("Examinar")
+        disk_browse.clicked.connect(self._pick_disk_dir)
+        disk_row = QHBoxLayout()
+        disk_row.addWidget(self.disk_dir, 1)
+        disk_row.addWidget(disk_browse)
+        disk_holder = QWidget()
+        disk_holder.setLayout(disk_row)
+        self.sec_disk.add_row("Tamaño del disco", self.disk)
+        self.sec_disk.add_row("Carpeta", disk_holder)
+        root.addWidget(self.sec_disk)
+
+        # --- Red / pantalla / lab (compacto) ---------------------------------
+        self.sec_more = CollapsibleSection("Red y pantalla", expanded=False)
+        self.network = QComboBox()
+        self.network.addItems(["nat", "isolated"])
+        self.display = QComboBox()
+        self.display.addItems(["spice", "vnc"])
+        default_display = app_defaults["default_display"].value
+        idx = self.display.findText(default_display)
+        if idx >= 0:
+            self.display.setCurrentIndex(idx)
+        self.lab_id = QLineEdit(default_lab_id or "default-lab")
+        self.accel_3d = QCheckBox("Aceleración 3D (VirGL): la VM usa la GPU del equipo, compartida")
+        self.accel_3d.toggled.connect(self._sync_accel_info)
+        self.accel_info = QLabel("")
+        self.accel_info.setWordWrap(True)
+        self.sec_more.add_row("Red", self.network)
+        self.sec_more.add_row("Pantalla", self.display)
+        self.sec_more.add_row("Gráficos", self.accel_3d)
+        self.sec_more.add_row("", self.accel_info)
+        self.sec_more.add_row("Laboratorio", self.lab_id)
+        root.addWidget(self.sec_more)
+
+        root.addStretch()
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("errorLabel")
+        self.error_label.setWordWrap(True)
+        root.addWidget(self.error_label)
+        buttons = QDialogButtonBox()
+        self.finish_button = buttons.addButton("Terminar", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton("Cancelar", QDialogButtonBox.ButtonRole.RejectRole)
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+        self.resize(720, 600)
+
+        self.iso_edit.textChanged.connect(self._sync_firmware_info)
+        self._on_os_changed()
+        self.resize(720, 620)
+
+    # ---- perfil/firmware ----
+    def _current_os_key(self) -> str:
+        return str(self.os_combo.currentData() or "linux")
+
+    def resolved_profile(self) -> str:
+        os_key = self._current_os_key()
+        if os_key == "linux":
+            return "linux-uefi" if self.use_efi.isChecked() else "linux"
+        return os_key
+
+    def _on_os_changed(self, *_a) -> None:
+        os_key = self._current_os_key()
+        profile = self._vp.PROFILES[os_key if os_key != "linux" else "linux"]
+        # EFI: Windows siempre UEFI (bloqueado); Linux elegible; Otro = BIOS.
+        if os_key in {"windows11", "windows-legacy"}:
+            self.use_efi.setChecked(True)
+            self.use_efi.setEnabled(False)
+            # Con VNC la consola integrada muestra el instalador (SPICE
+            # requeriría visor externo y el usuario no vería nada).
+            vnc_idx = self.display.findText("vnc")
+            if vnc_idx >= 0:
+                self.display.setCurrentIndex(vnc_idx)
+        elif os_key == "other":
+            self.use_efi.setChecked(False)
+            self.use_efi.setEnabled(False)
+        else:
+            self.use_efi.setEnabled(True)
+        # Valores recomendados por perfil.
+        self.ram.setValue(max(self.ram.value(), profile.min_ram_mib))
+        self.disk.setValue(max(self.disk.value(), profile.min_disk_gb))
+        self.firmware_info.setText(profile.notes)
+        self._sync_firmware_info()
+
+    def _sync_accel_info(self, checked: bool) -> None:
+        # Sin almuerzo gratis: acelerada O migrable en vivo, no ambas.
+        if checked and self.migratable_cpu.isChecked():
+            self.migratable_cpu.setChecked(False)
+        self.migratable_cpu.setEnabled(not checked)
+        self.accel_info.setText(
+            "⚠ Una máquina con aceleración 3D no puede migrarse en vivo a otro equipo "
+            "(sus gráficos viven en la GPU de este equipo). Si la necesitas en otro equipo, "
+            "apágala y muévela por el Hub." if checked else ""
+        )
+
+    def _sync_firmware_info(self, *_a) -> None:
+        profile = self._vp.profile_for(self.resolved_profile())
+        pf = self._vp.preflight_profile(profile)
+        bits = []
+        if profile.firmware in {"uefi", "uefi-secure"}:
+            bits.append("UEFI")
+        if profile.firmware == "uefi-secure":
+            bits.append("Secure Boot")
+        if profile.tpm:
+            bits.append("TPM 2.0")
+        line = "Firmware: " + (" + ".join(bits) if bits else "BIOS")
+        if not pf.ok:
+            line += "  ⚠️ " + " ".join(pf.errors)
+            if pf.suggested_commands:
+                line += "  → " + " && ".join(pf.suggested_commands)
+        self.secure_tpm_info.setText(line)
+
+    # ---- file pickers ----
+    def _pick_iso(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Elegir ISO", "", "Imágenes (*.iso *.img);;Todos (*)")
+        if path:
+            self.iso_edit.setText(path)
+
+    def _pick_disk_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Carpeta del disco")
+        if path:
+            self.disk_dir.setText(path)
+
+    # ---- contrato ----
+    def values(self) -> dict:
+        profile_key = self.resolved_profile()
+        return {
+            "name": self.name_edit.text().strip(),
+            "iso_path": self.iso_edit.text().strip(),
+            "os_type": self._vp.PROFILES[profile_key].os_type,
+            "profile": profile_key,
+            "ram_mib": self.ram.value(),
+            "vcpus": self.cpus.value(),
+            "disk_gb": self.disk.value(),
+            "disk_dir": self.disk_dir.text().strip() or None,
+            "network_mode": self.network.currentText(),
+            "display_mode": self.display.currentText(),
+            "lab_id": self.lab_id.text().strip() or "default-lab",
+            "migratable_cpu": self.migratable_cpu.isChecked(),
+            "accel_3d": self.accel_3d.isChecked(),
+        }
+
+    def _accept_if_valid(self) -> None:
+        if not self.name_edit.text().strip():
+            self.error_label.setText("Pon un nombre a la máquina.")
+            return
+        if not self.iso_edit.text().strip():
+            self.error_label.setText("Elige una imagen ISO de arranque.")
+            return
+        self.accept()
+
+
 class VMWizard(QWizard):
     def __init__(self, parent=None, *, default_lab_id: str = "default-lab", defaults: dict | None = None) -> None:
         super().__init__(parent)
@@ -649,10 +978,14 @@ class VMWizard(QWizard):
                 self.integration_page.display.setCurrentIndex(idx)
 
     def values(self) -> dict:
+        from .. import vm_profiles as _vp
+
+        profile_key = str(self.identity_page.os_type.currentData() or _vp.DEFAULT_PROFILE)
         return {
             "name": self.identity_page.name_edit.text().strip(),
             "iso_path": self.identity_page.iso_edit.text().strip(),
-            "os_type": self.identity_page.os_type.currentText(),
+            "os_type": _vp.PROFILES.get(profile_key, _vp.PROFILES[_vp.DEFAULT_PROFILE]).os_type,
+            "profile": profile_key,
             "ram_mib": self.resources_page.ram.value(),
             "vcpus": self.resources_page.vcpus.value(),
             "disk_gb": self.resources_page.disk.value(),
@@ -660,6 +993,7 @@ class VMWizard(QWizard):
             "network_mode": self.integration_page.network.currentText(),
             "display_mode": self.integration_page.display.currentText(),
             "lab_id": self.integration_page.lab_id.text().strip() or "default-lab",
+            "migratable_cpu": self.integration_page.migratable_cpu.isChecked(),
         }
 
 
@@ -1113,6 +1447,79 @@ class DeleteConfirmationDialog(QDialog):
         return self.delete_disk.isChecked()
 
 
+def hub_target_candidates(hosts: list[dict], source_host_id: str, source_hostname: str = "") -> list[dict]:
+    """Candidatos de destino para migración mediada por el Hub (B5).
+
+    Lógica pura y testeable: usa SOLO el registro del Hub (list_hosts), NUNCA
+    descubrimiento de red ni conectividad directa PC↔portátil. Excluye el host
+    de origen (por host_id o, si no, por hostname), elimina duplicados, y marca
+    cada candidato como listo/no-listo con la razón concreta. Un destino es
+    apto para el modo Hub si está ONLINE en el Hub y tiene KVM disponible para
+    importar: no hace falta que origen y destino «se vean» entre sí."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for host in hosts:
+        host_id = str(host.get("host_id") or "")
+        if not host_id or host_id in seen:
+            continue
+        seen.add(host_id)
+        hostname = str(host.get("hostname") or "")
+        is_source = host_id == source_host_id or (
+            bool(source_hostname) and hostname == source_hostname and source_host_id in ("", hostname)
+        )
+        if is_source:
+            continue
+        online = str(host.get("status") or "offline") == "online"
+        kvm = bool(host.get("kvm_ok"))
+        libvirt = bool(host.get("libvirt_ok"))
+        if not online:
+            ready, reason = False, "sin conexión con el Hub"
+        elif not kvm:
+            ready, reason = False, "online pero sin KVM disponible para importar"
+        elif not libvirt:
+            ready, reason = False, "online pero libvirt no responde en ese equipo"
+        else:
+            ready, reason = True, ""
+        address = str(host.get("address") or host.get("agent_url") or "")
+        out.append(
+            {
+                "host": host,
+                "host_id": host_id,
+                "hostname": hostname,
+                "address": address,
+                "online": online,
+                "kvm_ok": kvm,
+                "libvirt_ok": libvirt,
+                "ready": ready,
+                "reason": reason,
+                "last_seen": str(host.get("last_seen") or ""),
+            }
+        )
+    return out
+
+
+def live_uri_for_host(host: dict) -> str:
+    """Construye la URI qemu+ssh de un host del Hub SIN que el usuario la teclee.
+
+    El agente reporta su usuario SSH (ssh_user) y su IP (ssh_address); si faltan,
+    cae al hostname (host_id) — el origen ya resuelve el hostname por /etc/hosts.
+    Así la live migration no pide «lo de qemu»: sale rellena del Hub."""
+    address = str(host.get("ssh_address") or host.get("address") or host.get("agent_url") or "").strip()
+    # Quita esquema/puerto si vinieran de un agent_url http://host:port.
+    for prefix in ("http://", "https://"):
+        if address.startswith(prefix):
+            address = address[len(prefix):]
+    address = address.split("/")[0].split(":")[0]
+    if not address:
+        # Sin IP reportada: usa el hostname/host_id (resoluble por /etc/hosts).
+        address = str(host.get("hostname") or host.get("host_id") or "").strip()
+    if not address:
+        return ""
+    user = str(host.get("ssh_user") or host.get("user") or "").strip()
+    prefix = f"{user}@" if user else ""
+    return f"qemu+ssh://{prefix}{address}/system"
+
+
 class LiveMigrationDialog(QDialog):
     """NAS Clone Migration wizard: stepper + stacked pages over the existing v0.6 flow."""
 
@@ -1142,8 +1549,14 @@ class LiveMigrationDialog(QDialog):
         self.target_host = QComboBox()
         self.target_name = QLineEdit(f"{vm.name}-migrated")
         self.transfer_mode = QComboBox()
-        self.transfer_mode.addItem("Por el Hub — se sube al Hub, no hace falta NAS compartido", "hub")
+        self.transfer_mode.addItem("Por el Hub — se sube al Hub, no hace falta NAS compartido (oficial)", "hub")
         self.transfer_mode.addItem("Por carpeta NAS compartida — visible en ambos equipos", "nas")
+        self.transfer_mode.addItem("Migración en vivo — VM ENCENDIDA, modo avanzado (libvirt directo)", "live")
+        # B3: URI del destino para la migración en vivo (qemu+ssh/qemu+tls).
+        self.live_uri = QLineEdit("")
+        self.live_uri.setPlaceholderText("Se rellena solo al elegir el equipo de destino")
+        self._live_uri_manual = False
+        self.live_uri.textEdited.connect(lambda _t: setattr(self, "_live_uri_manual", True))
         self.nas_path = QLineEdit(app_config["nas_staging_path"].value)
         self.include_iso = QCheckBox("Incluir la ISO conectada")
         self.include_iso.setChecked(True)
@@ -1161,8 +1574,9 @@ class LiveMigrationDialog(QDialog):
         title = QLabel(f"Mover a otro equipo · {vm.name}")
         title.setObjectName("pageTitle")
         strategy_note = QLabel(
-            "La máquina se copia a otro equipo (no es migración de RAM en vivo). La máquina original y sus discos "
-            "no se tocan; en el destino se importa una copia con UUID y MAC nuevos."
+            "Si la máquina está APAGADA se copia al otro equipo por el Hub/NAS (el original no se toca, "
+            "se importa una copia con UUID y MAC nuevos). Si está ENCENDIDA se usa migración en vivo: "
+            "la RAM se traspasa en caliente y solo se congela unos milisegundos al final."
         )
         strategy_note.setObjectName("calloutInfo")
         strategy_note.setWordWrap(True)
@@ -1231,18 +1645,44 @@ class LiveMigrationDialog(QDialog):
             widget.toggled.connect(self.invalidate_preflight)
         self.target_host.currentIndexChanged.connect(self.invalidate_preflight)
         self.target_host.currentIndexChanged.connect(self._render_target_summary)
+        self.target_host.currentIndexChanged.connect(lambda _i: self._autofill_live_uri())
         self.transfer_mode.currentIndexChanged.connect(self._on_transfer_mode_changed)
+        # VM encendida → modo «migración en vivo» por defecto; apagada → «Hub».
+        if "running" in (self.vm.state or "").lower():
+            live_idx = self.transfer_mode.findData("live")
+            if live_idx >= 0:
+                self.transfer_mode.setCurrentIndex(live_idx)
         self._on_transfer_mode_changed()
 
         self._set_step(0)
         self.refresh_hosts()
 
     def _on_transfer_mode_changed(self, *_args) -> None:
-        nas_selected = str(self.transfer_mode.currentData() or "") == "nas"
-        self.nas_path.setEnabled(nas_selected)
+        mode = str(self.transfer_mode.currentData() or "")
+        self.nas_path.setEnabled(mode == "nas")
         if hasattr(self, "nas_browse_button"):
-            self.nas_browse_button.setEnabled(nas_selected)
+            self.nas_browse_button.setEnabled(mode == "nas")
+        if hasattr(self, "live_uri"):
+            self.live_uri.setEnabled(mode == "live")
+            self._autofill_live_uri()
         self.invalidate_preflight()
+
+    def _autofill_live_uri(self) -> None:
+        """Rellena SOLO el destino en vivo desde el host elegido en el Hub, para
+        que el usuario no tenga que saber de qemu+ssh. Si el usuario lo editó a
+        mano, respeta su texto."""
+        if not hasattr(self, "live_uri"):
+            return
+        if getattr(self, "_live_uri_manual", False):
+            return
+        if str(self.transfer_mode.currentData() or "") != "live":
+            return
+        target = self._selected_target()
+        if target:
+            uri = live_uri_for_host(target)
+            if uri:
+                # setText no dispara textEdited, así que no se marca como manual.
+                self.live_uri.setText(uri)
 
     # ---------- pages ----------
 
@@ -1267,11 +1707,11 @@ class LiveMigrationDialog(QDialog):
         running = "running" in (self.vm.state or "").lower()
         state_chip = QLabel(humanize_vm_status(self.vm.state, "table"))
         state_chip.setObjectName("statusChipBad" if running else "statusChipOk")
-        must_off = QLabel("Debe estar apagada")
-        must_off.setObjectName("statusChipWarn")
+        mode_chip = QLabel("Migración en vivo" if running else "Copia por Hub/NAS")
+        mode_chip.setObjectName("statusChipWarn")
         head.addWidget(name)
         head.addWidget(state_chip)
-        head.addWidget(must_off)
+        head.addWidget(mode_chip)
         head.addStretch()
         card_layout.addLayout(head)
         detail = QLabel(
@@ -1284,8 +1724,10 @@ class LiveMigrationDialog(QDialog):
         layout.addWidget(card)
         if running:
             layout.addWidget(self._wizard_callout(
-                "No se puede mover una máquina encendida. Apágala primero con «Apagar (suave)».",
-                "calloutDanger",
+                "Máquina ENCENDIDA: se usará migración en vivo (modo avanzado). La VM sigue "
+                "funcionando durante el traslado y solo se congela unos milisegundos al final. "
+                "Necesita conexión libvirt directa (qemu+ssh) entre los equipos.",
+                "calloutInfo",
             ))
         form = QFormLayout()
         form.addRow("URL del Hub", self.registry_url)
@@ -1331,6 +1773,7 @@ class LiveMigrationDialog(QDialog):
         form.addRow("Nombre en el destino", self.target_name)
         form.addRow("Forma de envío", self.transfer_mode)
         form.addRow("Carpeta del NAS", path_row)
+        form.addRow("Destino en vivo (URI)", self.live_uri)
         form.addRow("", self.include_iso)
         form.addRow("", self.include_snapshots)
         form.addRow("", self.allow_paused)
@@ -1440,14 +1883,25 @@ class LiveMigrationDialog(QDialog):
         target_id = str(self.target_host.currentData() or "")
         return next((host for host in self.hosts if host.get("host_id") == target_id), None)
 
+    def _is_live_mode(self) -> bool:
+        return str(self.transfer_mode.currentData() or "") == "live"
+
     def _target_ready(self) -> bool:
         target = self._selected_target()
+        if not target:
+            return False
+        if str(target.get("host_id") or "") == self.source_host_id.text().strip():
+            return False
+        # Modo en vivo: el destino solo necesita estar online en el Hub; la
+        # conectividad qemu+ssh la valida el preflight de la migración en vivo.
+        if self._is_live_mode():
+            return target.get("status") == "online"
+        # Modo Hub/NAS: online + KVM/libvirt en el destino (lo coordina el Hub;
+        # NO hace falta que origen y destino se vean entre sí).
         return bool(
-            target
-            and target.get("status") == "online"
+            target.get("status") == "online"
             and target.get("kvm_ok")
             and target.get("libvirt_ok")
-            and str(target.get("host_id") or "") != self.source_host_id.text().strip()
         )
 
     def _update_buttons(self) -> None:
@@ -1460,8 +1914,10 @@ class LiveMigrationDialog(QDialog):
             step == 5 and bool(self.last_status) and str(self.last_status.get("status")) == "failed"
         )
         if step == 0:
-            self.next_button.setEnabled(not self._vm_running() and not self.allow_paused.isChecked() or self.allow_paused.isChecked() and not self._vm_running())
-            self.next_button.setEnabled(not self._vm_running())
+            # Una VM ENCENDIDA puede avanzar: el único modo válido será la
+            # migración en vivo (los modos Hub/NAS la rechazan en su preflight).
+            # Una VM APAGADA también avanza (modos Hub/NAS). Nunca se bloquea aquí.
+            self.next_button.setEnabled(True)
         elif step == 1:
             self.next_button.setEnabled(self._target_ready())
         elif step == 2:
@@ -1470,11 +1926,25 @@ class LiveMigrationDialog(QDialog):
 
     def go_next(self) -> None:
         step = self.current_step()
+        # VM encendida → fuerza el modo «migración en vivo» (es el único que la
+        # acepta sin apagarla); VM apagada → deja los modos de copia (Hub/NAS).
         if step == 0 and self._vm_running():
-            self.error_label.setText("No se puede mover una máquina encendida: apágala primero.")
-            return
+            live_idx = self.transfer_mode.findData("live")
+            if live_idx >= 0 and str(self.transfer_mode.currentData() or "") != "live":
+                self.transfer_mode.setCurrentIndex(live_idx)
         if step == 1 and not self._target_ready():
-            self.error_label.setText("Elige un equipo de destino en línea, con KVM/libvirt listos y distinto del de origen.")
+            target = self._selected_target()
+            if not target:
+                msg = "Elige un equipo de destino del Hub. Si solo sale este equipo, arranca el agente en el otro."
+            elif str(target.get("host_id") or "") == self.source_host_id.text().strip():
+                msg = "El destino debe ser un equipo distinto del de origen."
+            elif target.get("status") != "online":
+                msg = "Ese equipo está sin conexión con el Hub. Arranca su agente."
+            elif self._is_live_mode():
+                msg = "El destino debe estar en línea en el Hub."
+            else:
+                msg = "El destino está en línea pero su KVM/libvirt no está listo para importar (lo coordina el Hub; no hace falta conectividad directa entre los equipos)."
+            self.error_label.setText(msg)
             return
         if step < 3:
             self.error_label.clear()
@@ -1506,17 +1976,35 @@ class LiveMigrationDialog(QDialog):
             self.invalidate_preflight()
             return
         self.hosts = hosts
-        for host in hosts:
-            host_id = str(host.get("host_id") or "")
-            status = str(host.get("status") or "offline")
-            label = f"{host_id} ({'en línea' if status == 'online' else 'sin conexión'})"
-            if host.get("hostname"):
-                label += f" - {host.get('hostname')}"
-            self.target_host.addItem(label, host_id)
+        import socket as _socket
+
+        # B5: destinos = hosts del Hub (excluido el origen). Sin descubrimiento
+        # de red ni conectividad directa: el Hub coordina.
+        candidates = hub_target_candidates(
+            hosts, self.source_host_id.text().strip(), source_hostname=_socket.gethostname()
+        )
+        self.target_candidates = candidates
+        for cand in candidates:
+            online = "en línea" if cand["online"] else "sin conexión"
+            label = f"{cand['host_id']} ({online})"
+            if cand["hostname"]:
+                label += f" · {cand['hostname']}"
+            if cand["address"]:
+                label += f" · {cand['address']}"
+            if cand["online"] and not cand["ready"]:
+                label += f" — {cand['reason']}"
+            self.target_host.addItem(label, cand["host_id"])
             index = self.target_host.count() - 1
-            self.target_host.model().item(index).setEnabled(status == "online")
+            item = self.target_host.model().item(index)
+            item.setEnabled(cand["ready"])
+            if not cand["ready"]:
+                item.setToolTip(cand["reason"])
         if not hosts:
             self.result_view.setPlainText("El Hub no tiene equipos. Arranca antes los agentes en el origen y el destino.")
+        elif not candidates:
+            self.result_view.setPlainText(
+                "El Hub solo conoce este equipo. Arranca el agente en el OTRO equipo y emparéjalo con el mismo Hub."
+            )
         else:
             self.result_view.setPlainText(self._format_hosts(hosts))
         self._render_target_summary()
@@ -1561,6 +2049,7 @@ class LiveMigrationDialog(QDialog):
             "target_vm_name": self.target_name.text().strip(),
             "transfer": str(self.transfer_mode.currentData() or "nas"),
             "nas_path": self.nas_path.text().strip(),
+            "live_uri": self.live_uri.text().strip() if hasattr(self, "live_uri") else "",
             "include_iso": self.include_iso.isChecked(),
             "include_snapshots": self.include_snapshots.isChecked(),
             "allow_paused": self.allow_paused.isChecked(),
@@ -1590,13 +2079,19 @@ class LiveMigrationDialog(QDialog):
             self.error_label.setText("El destino debe ser distinto del origen.")
             self.package_button.setEnabled(False)
             return
+        if values["transfer"] == "live":
+            self._run_live_preflight(values)
+            return
         target = self._selected_target()
         if not target or target.get("status") != "online":
             self.error_label.setText("El equipo de destino elegido está sin conexión.")
             self.package_button.setEnabled(False)
             return
         if not target.get("kvm_ok") or not target.get("libvirt_ok"):
-            self.error_label.setText("El destino no está listo: falló la comprobación de KVM/libvirt.")
+            self.error_label.setText(
+                "El destino está online en el Hub pero su KVM/libvirt no está listo para importar. "
+                "Esto NO es un problema de conectividad entre los equipos: el Hub coordina el traslado."
+            )
             self.package_button.setEnabled(False)
             return
         if values["transfer"] == "hub":
@@ -1623,6 +2118,191 @@ class LiveMigrationDialog(QDialog):
         self.preflight_result = result
         self.result_view.setPlainText(self._format_preflight(result))
         self.package_button.setEnabled(bool(result.get("ok")))
+
+    def _run_live_preflight(self, values: dict) -> None:
+        """B3 modo B: comprobación ligera antes de la live migration. La VM
+        debe estar ENCENDIDA y la URI ser segura (qemu+ssh/qemu+tls). El
+        preflight profundo lo hace el propio LiveMigrator al arrancar."""
+        from ..v1.live_migration import SECURE_URI_SCHEMES
+
+        uri = values.get("live_uri", "")
+        errors = []
+        if "running" not in (self.vm.state or "").lower():
+            errors.append("La migración en vivo necesita la VM ENCENDIDA (este modo NO la apaga).")
+        if not uri:
+            errors.append("Indica la URI del destino (qemu+ssh://usuario@equipo/system).")
+        elif not uri.startswith(SECURE_URI_SCHEMES):
+            errors.append("Solo se permiten URIs seguras: qemu+ssh:// o qemu+tls:// (qemu+tcp está prohibido).")
+        if errors:
+            self.preflight_result = {"ok": False, "errors": errors, "warnings": [], "assets": []}
+            self.error_label.setText(" ".join(errors))
+            self.result_view.setPlainText("\n".join(f"✗ {e}" for e in errors))
+            self.package_button.setEnabled(False)
+            return
+        # CD conectado: en el destino esa ISO no existe y la migración moriría a
+        # mitad. Ofrecer expulsarlo (tras instalar ya no hace falta).
+        if not self._offer_eject_cdrom():
+            self.package_button.setEnabled(False)
+            return
+        # Comprueba que la carpeta del disco existe/se puede escribir en el
+        # DESTINO; si no, ofrece crearla con sudo (contraseña transitoria).
+        storage_note = self._ensure_live_target_storage(uri)
+        if storage_note is None:
+            self.package_button.setEnabled(False)
+            return
+        self.preflight_result = {"ok": True, "errors": [], "warnings": [], "assets": [], "live": True}
+        self.result_view.setPlainText(
+            "Modo: MIGRACIÓN EN VIVO (avanzado, libvirt directo).\n"
+            f"VM: {self.vm.name} (encendida)\n"
+            f"Destino: {uri}\n"
+            + (storage_note + "\n" if storage_note else "")
+            + "La VM sigue encendida durante el traslado; el downtime real se mide al terminar. "
+            "Si falla, el origen queda intacto y corriendo (rollback)."
+        )
+        self.package_button.setEnabled(True)
+
+    def _ensure_live_target_storage(self, uri: str) -> str | None:
+        """Asegura que las carpetas de los discos existen y son escribibles en
+        el destino. Si hace falta, pide la contraseña de sudo del destino UNA
+        vez (no se guarda, no se loguea; viaja por stdin de ssh). Devuelve una
+        nota informativa, o None si el usuario canceló / falló."""
+        import shlex as _shlex
+        import subprocess as _subprocess
+
+        if not uri.startswith("qemu+ssh://"):
+            return ""  # qemu+tls: no podemos preparar por SSH; lo validará el motor
+        ssh_dest = uri[len("qemu+ssh://"):].split("/", 1)[0]
+        target_user = ssh_dest.split("@", 1)[0] if "@" in ssh_dest else ""
+        # Carpetas de los discos de datos de la VM.
+        dirs: list[str] = []
+        try:
+            import xml.etree.ElementTree as _ET
+
+            root = _ET.fromstring(self.vm.xml or "")
+            for source in root.findall("./devices/disk[@device='disk']/source"):
+                path = source.attrib.get("file", "")
+                if path:
+                    parent = str(Path(path).parent)
+                    if parent not in dirs:
+                        dirs.append(parent)
+        except Exception:
+            return ""  # sin XML no podemos sondear; lo validará el motor
+        if not dirs:
+            return ""
+        quoted = " ".join(_shlex.quote(d) for d in dirs)
+        probe = f"for d in {quoted}; do mkdir -p \"$d\" 2>/dev/null && [ -w \"$d\" ] || exit 1; done"
+        result = _subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ssh_dest, probe],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return "Carpetas de destino: listas."
+        # Hace falta permiso de administrador EN EL EQUIPO RECEPTOR: se encola
+        # un trabajo por el Hub y es ESA máquina la que pide su contraseña en su
+        # propia pantalla (la contraseña nunca viaja por la red).
+        return self._request_target_authorization(dirs)
+
+    def _offer_eject_cdrom(self) -> bool:
+        """Si la VM tiene un CD con ISO conectada, ofrece expulsarlo (la ISO no
+        existirá en el destino y la migración fallaría a mitad). True = puede
+        continuar (no había CD, o se expulsó)."""
+        import xml.etree.ElementTree as _ET
+
+        try:
+            root = _ET.fromstring(self.vm.xml or "")
+        except _ET.ParseError:
+            return True
+        for disk in root.findall("./devices/disk[@device='cdrom']"):
+            source = disk.find("source")
+            target = disk.find("target")
+            if source is None or not source.attrib.get("file") or target is None:
+                continue
+            iso = source.attrib["file"]
+            dev = target.attrib.get("dev", "")
+            if not confirm(
+                self,
+                "CD conectado",
+                (
+                    f"La máquina tiene un CD conectado:\n{iso}\n\n"
+                    "Esa ISO no existirá en el equipo de destino y la migración fallaría a mitad.\n"
+                    "¿Expulsar el CD ahora? (Tras instalar el sistema ya no hace falta.)"
+                ),
+                yes_text="Expulsar y seguir",
+                no_text="Cancelar",
+            ):
+                self.error_label.setText("Migración cancelada: expulsa el CD para poder migrar en vivo.")
+                return False
+            result = self.backend.virsh(
+                ["change-media", self.vm.name, dev, "--eject", "--live", "--config"], check=False
+            )
+            if result.returncode != 0:
+                self.error_label.setText(
+                    f"No se pudo expulsar el CD ({dev}): {(result.stderr or result.stdout or '').strip()[:160]}"
+                )
+                return False
+        return True
+
+    def _request_target_authorization(self, dirs: list[str]) -> str | None:
+        import time as _time
+
+        from ..registry import RegistryClient
+
+        target_id = str(self.target_host.currentData() or "")
+        if not target_id:
+            self.error_label.setText("Elige el equipo de destino en el Hub para poder prepararlo.")
+            return None
+        try:
+            client = RegistryClient(self.registry_url.text().strip())
+            command = client.create_command(
+                target_id,
+                "prepare_storage",
+                {
+                    "dirs": dirs,
+                    "vm_name": self.vm.name,
+                    "source_host_id": self.source_host_id.text().strip(),
+                },
+            )
+        except HyperGeryError as exc:
+            self.error_label.setText(f"No se pudo pedir la preparación al equipo de destino: {exc}")
+            return None
+        command_id = str(command.get("command_id") or "")
+        waiting = QMessageBox(self)
+        waiting.setWindowTitle("Autorización en el equipo de destino")
+        waiting.setText(
+            "El equipo de destino necesita crear las carpetas de la máquina.\n\n"
+            "➡ Ve al OTRO equipo: le está apareciendo una ventana pidiendo SU contraseña.\n"
+            "Cuando la escribas allí, esto continuará solo."
+        )
+        waiting.setStandardButtons(QMessageBox.StandardButton.Cancel)
+        waiting.show()
+        QApplication.processEvents()
+        deadline = _time.monotonic() + 200  # el receptor tiene hasta 3 min para autorizar
+        status, error_detail = "pending", ""
+        while _time.monotonic() < deadline:
+            QApplication.processEvents()
+            if waiting.clickedButton() is not None:
+                status = "cancelled"
+                break
+            try:
+                record = client.command(command_id)
+            except HyperGeryError:
+                record = {}
+            status = str(record.get("status") or "pending")
+            if status in {"done", "failed"}:
+                error_detail = str((record.get("result") or {}).get("error") or "")
+                break
+            _time.sleep(1.0)
+        waiting.close()
+        if status == "done":
+            return "Carpetas de destino: autorizadas y creadas en el equipo receptor."
+        if status == "cancelled":
+            self.error_label.setText("Cancelado: el destino no quedó preparado.")
+            return None
+        self.error_label.setText(
+            error_detail
+            or "El equipo de destino no autorizó la operación a tiempo (¿hay alguien delante de su pantalla?)."
+        )
+        return None
 
     def _format_preflight(self, result: dict) -> str:
         errors = result.get("errors", [])
@@ -1686,6 +2366,9 @@ class LiveMigrationDialog(QDialog):
         self.package_button.setEnabled(False)
         self._set_step(4)
         self.migration_id_label.setText("Empezando el traslado…")
+        if values["transfer"] == "live":
+            self._start_live_migration(values)
+            return
         if values["transfer"] == "hub":
             progress_intro = (
                 f"Empaquetando {values['vm_name']} y subiéndolo por el Hub hacia {values['target_host_id']}.\n"
@@ -1747,6 +2430,73 @@ class LiveMigrationDialog(QDialog):
         job.succeeded.connect(succeeded)
         job.failed.connect(failed)
         job.start()
+
+    def _start_live_migration(self, values: dict) -> None:
+        """B3 modo B: ejecuta la live migration directa (VM encendida) con
+        LiveMigrator. El origen no se toca si falla (rollback del motor)."""
+        uri = values.get("live_uri", "")
+        self.progress_log.setPlainText(
+            f"Migración EN VIVO de {self.vm.name} → {uri}.\n"
+            "La VM sigue encendida; preflight → transferencia → conmutación → activación.\n"
+            "Si algo falla, el origen queda corriendo e intacto."
+        )
+        self._render_progress_states("preflight")
+
+        def do_live() -> dict:
+            from ..v1.live_migration import LiveMigrationPlan, LiveMigrator
+
+            plan = LiveMigrationPlan(
+                vm_name=self.vm.name,
+                target_uri=uri,
+                shared_storage=None,  # autodetecta; el guard CIFS actúa en preflight
+            )
+            return LiveMigrator(self.backend, plan).run()
+
+        from .workers import BackendJob
+
+        job = BackendJob("live migration", do_live)
+        self._jobs.append(job)
+
+        def succeeded() -> None:
+            self.last_result = job.result or {}
+            self._show_live_result(self.last_result)
+
+        def failed() -> None:
+            self.last_status = {"status": "failed", "error": job.error_message}
+            self.progress_log.append(f"\nLa migración en vivo no ha podido empezar: {job.error_message}")
+            self._render_progress_states("failed")
+            self._show_result_failure(job.error_message)
+
+        job.succeeded.connect(succeeded)
+        job.failed.connect(failed)
+        job.start()
+
+    def _show_live_result(self, result: dict) -> None:
+        ok = bool(result.get("ok"))
+        downtime = result.get("measured_downtime_ms")
+        self._render_progress_states("done" if ok else "failed")
+        if ok:
+            self.result_title.setText("Migración en vivo completada")
+            self.result_body.setText(
+                f"Máquina: {self.vm.name}\n"
+                f"Destino: {self.live_uri.text().strip()}\n"
+                f"Downtime medido: {downtime if downtime is not None else '—'} ms\n"
+                "El destino quedó ENCENDIDO; el origen ya no corre (nunca activa en dos equipos)."
+            )
+            self.result_callout.setText("Migración en caliente correcta · journal sin entradas pendientes.")
+            self.result_callout.setObjectName("calloutOk")
+        else:
+            self.result_title.setText("La migración en vivo ha fallado")
+            self.result_body.setText(
+                f"Estado: {result.get('status', 'failed')}\n"
+                f"Error: {result.get('error', '')}\n"
+                f"Fases revertidas: {', '.join(result.get('rolled_back_phases') or []) or 'ninguna'}"
+            )
+            self.result_callout.setText("El origen quedó corriendo e intacto (rollback). Revisa el error y reinténtalo.")
+            self.result_callout.setObjectName("calloutDanger")
+        self.result_callout.style().unpolish(self.result_callout)
+        self.result_callout.style().polish(self.result_callout)
+        self._set_step(5)
 
     def _render_progress_states(self, current: str) -> None:
         while self.progress_states_layout.count():
@@ -2898,3 +3648,169 @@ class CleanupPreviewDialog(QDialog):
         layout.addWidget(QLabel("Resumen de todos los recursos gestionados por HyperGery (solo lectura):"))
         layout.addWidget(text)
         layout.addLayout(btn_row)
+
+
+# --------------------------------------------------------------------------- #
+# GPU passthrough                                                              #
+# --------------------------------------------------------------------------- #
+
+def gpu_choice_rows(gpus: list[dict], preflights: dict[str, dict]) -> list[dict]:
+    """Filas para el selector de GPU: aptitud + motivo, sin tocar Qt (testable)."""
+    from ..v1 import gpu_passthrough as gpu_mod
+
+    rows: list[dict] = []
+    for gpu in gpus:
+        preflight = preflights.get(gpu["address"], {"ok": False, "errors": ["preflight no disponible"], "warnings": []})
+        name = gpu_mod.pci_device_name(gpu.get("vendor_id", ""), gpu.get("device_id", ""))
+        displays = gpu.get("connected_displays", [])
+        rows.append(
+            {
+                "address": gpu["address"],
+                "name": name,
+                "driver": gpu.get("driver", ""),
+                "group": gpu.get("iommu_group", ""),
+                "group_size": len(gpu.get("iommu_group_devices", [])),
+                "displays": displays,
+                "ok": bool(preflight.get("ok")),
+                "reason": "" if preflight.get("ok") else (preflight.get("errors") or ["no apta"])[0],
+                "warnings": list(preflight.get("warnings", [])),
+            }
+        )
+    return rows
+
+
+class GpuPassthroughDialog(QDialog):
+    """Conectar una GPU física a una VM apagada (o quitarla).
+
+    Solo edita el XML del dominio (<hostdev managed='yes'>): libvirt hace el
+    bind a vfio-pci al arrancar la VM y la devuelve al host al apagarla, así
+    que aquí no hace falta sudo. El preflight decide qué GPUs son aptas.
+    """
+
+    def __init__(self, backend: HyperGeryBackend, vm: VmSummary, parent=None, *, gpus=None, preflight_fn=None) -> None:
+        super().__init__(parent)
+        from ..v1 import gpu_passthrough as gpu_mod
+
+        self.backend = backend
+        self.vm = vm
+        self.action = ""  # "attach" | "detach" al aceptar
+        self.setWindowTitle(f"GPU física: {vm.name}")
+        self.setMinimumWidth(640)
+
+        if gpus is None:
+            gpus = gpu_mod.list_pci_gpus()
+        if preflight_fn is None:
+            preflight_fn = gpu_mod.preflight_gpu_passthrough
+        preflights = {}
+        for gpu in gpus:
+            try:
+                preflights[gpu["address"]] = preflight_fn(gpu["address"])
+            except HyperGeryError as exc:
+                preflights[gpu["address"]] = {"ok": False, "errors": [str(exc)], "warnings": []}
+        self.rows = gpu_choice_rows(gpus, preflights)
+
+        try:
+            self.attached = gpu_mod.domain_hostdev_addresses(backend.get_vm(vm.name).xml)
+        except HyperGeryError:
+            self.attached = []
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "La GPU elegida se entrega ENTERA a la máquina mientras esté encendida: "
+            "el equipo deja de poder usarla. Al apagar la máquina, vuelve al equipo. "
+            "Una máquina con GPU física no puede migrarse en vivo."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._shut_off = vm.state.lower() in {"shut off", "shutoff"}
+        if not self._shut_off:
+            state_warning = QLabel("⚠ La máquina debe estar APAGADA para conectar o quitar una GPU.")
+            state_warning.setObjectName("errorLabel")
+            state_warning.setWordWrap(True)
+            layout.addWidget(state_warning)
+
+        if self.attached:
+            attached_label = QLabel("Conectadas ahora: " + ", ".join(self.attached))
+            attached_label.setWordWrap(True)
+            layout.addWidget(attached_label)
+
+        self.gpu_list = QListWidget()
+        for row in self.rows:
+            mark = "✅" if row["ok"] else "⛔"
+            extras = f" · {row['group_size']} funciones (viajan juntas)" if row["group_size"] > 1 else ""
+            displays = f" · pantalla: {', '.join(row['displays'])}" if row["displays"] else ""
+            item = QListWidgetItem(f"{mark} {row['name']}\n     {row['address']} · driver {row['driver'] or '—'}{extras}{displays}")
+            item.setData(Qt.ItemDataRole.UserRole, row)
+            if not row["ok"]:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setToolTip(row["reason"])
+            self.gpu_list.addItem(item)
+        layout.addWidget(self.gpu_list)
+
+        self.detail_label = QLabel("")
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.detail_label)
+        self.gpu_list.currentItemChanged.connect(self._render_detail)
+
+        buttons = QDialogButtonBox()
+        self.attach_button = buttons.addButton("Conectar GPU", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.detach_button = buttons.addButton("Quitar GPU de la máquina", QDialogButtonBox.ButtonRole.DestructiveRole)
+        cancel = buttons.addButton("Cancelar", QDialogButtonBox.ButtonRole.RejectRole)
+        cancel.clicked.connect(self.reject)
+        self.attach_button.clicked.connect(self._accept_attach)
+        self.detach_button.clicked.connect(self._accept_detach)
+        self.detach_button.setVisible(bool(self.attached))
+        self.detach_button.setEnabled(self._shut_off and bool(self.attached))
+        self._sync_attach_enabled()
+        self.gpu_list.itemSelectionChanged.connect(self._sync_attach_enabled)
+        layout.addWidget(buttons)
+
+    # ------------------------------------------------------------------ #
+
+    def selected_row(self) -> dict | None:
+        item = self.gpu_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _sync_attach_enabled(self) -> None:
+        row = self.selected_row()
+        self.attach_button.setEnabled(bool(self._shut_off and row and row["ok"]))
+
+    def _render_detail(self, *_args) -> None:
+        row = self.selected_row()
+        if row is None:
+            self.detail_label.setText("")
+            return
+        if not row["ok"]:
+            self.detail_label.setText(f"⛔ {row['reason']}")
+        else:
+            self.detail_label.setText("\n".join(f"• {warning}" for warning in row["warnings"]))
+        self._sync_attach_enabled()
+
+    def _accept_attach(self) -> None:
+        row = self.selected_row()
+        if row is None or not row["ok"] or not self._shut_off:
+            return
+        if not confirm(
+            self,
+            "Conectar GPU física",
+            f"¿Conectar {row['name']} ({row['address']}) a {self.vm.name}?\n\n"
+            "Mientras la máquina esté encendida, el equipo no podrá usar esa GPU.",
+            no_text="Cancelar",
+        ):
+            return
+        self.action = "attach"
+        self.accept()
+
+    def _accept_detach(self) -> None:
+        if not self.attached or not self._shut_off:
+            return
+        if not confirm(
+            self,
+            "Quitar GPU",
+            f"¿Quitar de {self.vm.name} las GPU conectadas ({', '.join(self.attached)})?",
+            no_text="Cancelar",
+        ):
+            return
+        self.action = "detach"
+        self.accept()

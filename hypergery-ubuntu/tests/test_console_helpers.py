@@ -13,11 +13,28 @@ from hypergery_ubuntu.ui_qt.console_helpers import (
     is_host_key,
     scale_to_fit_size,
     should_autoconnect_console,
+    ssh_target_from_libvirt_uri,
+    vnc_port_from_display,
     widget_to_framebuffer,
 )
 
 
 class ConsoleHelperTests(unittest.TestCase):
+    def test_vnc_port_from_display_maps_index_to_tcp_port(self):
+        self.assertEqual(vnc_port_from_display(":0"), 5900)
+        self.assertEqual(vnc_port_from_display("127.0.0.1:1"), 5901)
+        self.assertEqual(vnc_port_from_display(" 127.0.0.1:9 "), 5909)
+        for bad in ("", "no-colon", "127.0.0.1:x"):
+            with self.assertRaises(ValueError):
+                vnc_port_from_display(bad)
+
+    def test_ssh_target_from_libvirt_uri_only_accepts_qemu_ssh(self):
+        self.assertEqual(ssh_target_from_libvirt_uri("qemu+ssh://gery@192.168.1.73/system"), "gery@192.168.1.73")
+        self.assertEqual(ssh_target_from_libvirt_uri("qemu+ssh://host/system"), "host")
+        for bad in ("qemu+tls://host/system", "qemu:///system", "", "qemu+ssh:///system"):
+            with self.assertRaises(ValueError):
+                ssh_target_from_libvirt_uri(bad)
+
     def test_right_ctrl_host_key_helper(self):
         self.assertEqual(HOST_KEY_NAME, "Ctrl derecho")
         self.assertTrue(is_host_key(0x01000021, 105))

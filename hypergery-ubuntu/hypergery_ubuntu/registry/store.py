@@ -18,6 +18,9 @@ ALLOWED_COMMAND_TYPES = {
     "receive_vm_package",
     "import_vm_package",
     "migration_status",
+    # v1.5: preparar carpetas de discos para live migration; la autorización
+    # (sudo) se pide GRÁFICAMENTE en el equipo receptor, nunca por la red.
+    "prepare_storage",
     # v0.8 remote VM power control. Deliberately excluded: delete, undefine,
     # delete-disks, XML edits, arbitrary shell — nothing destructive on disks.
     "vm_start",
@@ -27,6 +30,18 @@ ALLOWED_COMMAND_TYPES = {
     # RAM+CPU state (continues, not reboot). Still no destructive ops.
     "restore_vm_state_package",
 }
+
+# HG-BUG-0005: el Hub es un ThreadingHTTPServer con varias conexiones SQLite
+# concurrentes; sin busy_timeout cualquier choque de escrituras devolvía
+# "database is locked" inmediatamente.
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
+# HG-BUG-0006: TTL de comandos. Un comando que ningún agente recoge dentro de
+# su TTL caduca y NUNCA se entrega (un vm_force_off encolado horas antes no
+# debe ejecutarse cuando el host vuelva).
+DEFAULT_COMMAND_TTL_SECONDS = 600
+MIN_COMMAND_TTL_SECONDS = 10
+MAX_COMMAND_TTL_SECONDS = 86400
 
 MIGRATION_STATUSES = {
     "created",
@@ -82,8 +97,14 @@ class RegistryStore:
         self._init_db()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+            isolation_level=None,
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -93,6 +114,9 @@ class RegistryStore:
 
     def _init_db(self) -> None:
         with closing(self.connect()) as conn:
+            # WAL es persistente en el fichero: lectores y escritores dejan de
+            # bloquearse entre sí (HG-BUG-0005).
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hosts (
@@ -117,6 +141,11 @@ class RegistryStore:
             )
             self._ensure_column(conn, "hosts", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "hosts", "updated_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "hosts", "telemetry_json", "TEXT NOT NULL DEFAULT ''")
+            # Para construir la URI qemu+ssh de live migration sin que el usuario
+            # la teclee: el agente reporta su usuario SSH y su IP.
+            self._ensure_column(conn, "hosts", "ssh_user", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "hosts", "ssh_address", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS host_vms (
@@ -148,10 +177,12 @@ class RegistryStore:
                     status TEXT NOT NULL,
                     result TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            self._ensure_column(conn, "commands", "expires_at", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS migrations (
@@ -202,6 +233,7 @@ class RegistryStore:
         host["kvm_ok"] = bool(host["kvm_ok"])
         host["libvirt_ok"] = bool(host["libvirt_ok"])
         host["active_vms"] = _json_load(host.get("active_vms"), [])
+        host["telemetry"] = _json_load(host.pop("telemetry_json", ""), {})
         host["status"] = self.effective_host_status(host["last_seen"], host.get("status", "offline"))
         return host
 
@@ -225,6 +257,9 @@ class RegistryStore:
             "notes": str(payload.get("notes") or ""),
             "created_at": timestamp,
             "updated_at": timestamp,
+            "telemetry_json": _json_dump(payload.get("telemetry") or {}),
+            "ssh_user": str(payload.get("ssh_user") or ""),
+            "ssh_address": str(payload.get("ssh_address") or ""),
         }
         with closing(self.connect()) as conn:
             existing = conn.execute("SELECT created_at FROM hosts WHERE host_id = ?", (host_id,)).fetchone()
@@ -236,12 +271,12 @@ class RegistryStore:
                     host_id, name, hostname, status, last_seen, cpu_model,
                     ram_total_mib, ram_free_mib, disk_free_mib, kvm_ok,
                     libvirt_ok, hypergery_version, active_vms, notes,
-                    created_at, updated_at
+                    created_at, updated_at, telemetry_json, ssh_user, ssh_address
                 ) VALUES (
                     :host_id, :name, :hostname, :status, :last_seen, :cpu_model,
                     :ram_total_mib, :ram_free_mib, :disk_free_mib, :kvm_ok,
                     :libvirt_ok, :hypergery_version, :active_vms, :notes,
-                    :created_at, :updated_at
+                    :created_at, :updated_at, :telemetry_json, :ssh_user, :ssh_address
                 )
                 ON CONFLICT(host_id) DO UPDATE SET
                     name=excluded.name,
@@ -257,7 +292,10 @@ class RegistryStore:
                     hypergery_version=excluded.hypergery_version,
                     active_vms=excluded.active_vms,
                     notes=excluded.notes,
-                    updated_at=excluded.updated_at
+                    updated_at=excluded.updated_at,
+                    telemetry_json=excluded.telemetry_json,
+                    ssh_user=excluded.ssh_user,
+                    ssh_address=excluded.ssh_address
                 """,
                 host,
             )
@@ -358,7 +396,13 @@ class RegistryStore:
             raise HyperGeryError(f"Unsupported command_type: {command_type}")
         target_host_id = _host_id(str(payload.get("target_host_id") or ""))
         command_id = str(payload.get("command_id") or f"cmd-{uuid.uuid4().hex}")
-        timestamp = now_iso()
+        try:
+            ttl_seconds = int(payload.get("ttl_seconds") or DEFAULT_COMMAND_TTL_SECONDS)
+        except (TypeError, ValueError) as exc:
+            raise HyperGeryError(f"ttl_seconds must be a number, got: {payload.get('ttl_seconds')!r}") from exc
+        ttl_seconds = max(MIN_COMMAND_TTL_SECONDS, min(ttl_seconds, MAX_COMMAND_TTL_SECONDS))
+        now = datetime.now(UTC).replace(microsecond=0)
+        timestamp = now.isoformat()
         command = {
             "command_id": command_id,
             "target_host_id": target_host_id,
@@ -368,21 +412,39 @@ class RegistryStore:
             "result": _json_dump({}),
             "created_at": timestamp,
             "updated_at": timestamp,
+            "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
         }
         with closing(self.connect()) as conn:
             conn.execute(
                 """
                 INSERT INTO commands (
                     command_id, target_host_id, command_type, payload, status,
-                    result, created_at, updated_at
+                    result, created_at, updated_at, expires_at
                 ) VALUES (
                     :command_id, :target_host_id, :command_type, :payload, :status,
-                    :result, :created_at, :updated_at
+                    :result, :created_at, :updated_at, :expires_at
                 )
                 """,
                 command,
             )
         return self.get_command(command_id)
+
+    def _expire_pending_commands(self, conn: sqlite3.Connection) -> int:
+        """Caduca (status=failed) los comandos pending cuyo TTL venció.
+
+        HG-BUG-0006: la caducidad bloquea la ENTREGA — un comando que ya está
+        running/done no se toca. Se marca con result.expired=true para que
+        set_command_result no pueda resucitarlo.
+        """
+        return conn.execute(
+            "UPDATE commands SET status = 'failed', result = ?, updated_at = ? "
+            "WHERE status = 'pending' AND expires_at != '' AND expires_at <= ?",
+            (
+                _json_dump({"error": "Command expired before delivery (TTL).", "expired": True}),
+                now_iso(),
+                now_iso(),
+            ),
+        ).rowcount
 
     def _command_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         command = dict(row)
@@ -392,6 +454,7 @@ class RegistryStore:
 
     def get_command(self, command_id: str) -> dict[str, Any]:
         with closing(self.connect()) as conn:
+            self._expire_pending_commands(conn)
             row = conn.execute("SELECT * FROM commands WHERE command_id = ?", (command_id,)).fetchone()
         if row is None:
             raise HyperGeryError(f"Command does not exist: {command_id}")
@@ -430,6 +493,7 @@ class RegistryStore:
             raise HyperGeryError(f"limit must be a number, got: {limit!r}") from exc
         params.append(clamped_limit)
         with closing(self.connect()) as conn:
+            self._expire_pending_commands(conn)
             rows = conn.execute(
                 f"SELECT * FROM commands {where} ORDER BY created_at DESC, command_id DESC LIMIT ?",
                 params,
@@ -438,6 +502,7 @@ class RegistryStore:
 
     def pending_commands_for_host(self, host_id: str) -> list[dict[str, Any]]:
         with closing(self.connect()) as conn:
+            self._expire_pending_commands(conn)
             rows = conn.execute(
                 "SELECT * FROM commands WHERE target_host_id = ? AND status = 'pending' ORDER BY created_at",
                 (_host_id(host_id),),
@@ -450,12 +515,18 @@ class RegistryStore:
             raise HyperGeryError("Command result status must be running, done, or failed.")
         result = payload.get("result") or {}
         with closing(self.connect()) as conn:
-            changed = conn.execute(
+            self._expire_pending_commands(conn)
+            row = conn.execute(
+                "SELECT result FROM commands WHERE command_id = ?", (command_id,)
+            ).fetchone()
+            if row is None:
+                raise HyperGeryError(f"Command does not exist: {command_id}")
+            if _json_load(row["result"], {}).get("expired"):
+                raise HyperGeryError(f"Command expired before delivery (TTL): {command_id}")
+            conn.execute(
                 "UPDATE commands SET status = ?, result = ?, updated_at = ? WHERE command_id = ?",
                 (status, _json_dump(result), now_iso(), command_id),
-            ).rowcount
-        if not changed:
-            raise HyperGeryError(f"Command does not exist: {command_id}")
+            )
         return self.get_command(command_id)
 
     def _migration_from_row(self, row: sqlite3.Row) -> dict[str, Any]:

@@ -233,3 +233,45 @@ class OrchestratorService:
             },
         )
         return plans
+
+
+def apply_plan(plan: dict[str, Any] | PlacementPlan, *, teleport_engine: Any, confirm: bool = False) -> dict[str, Any]:
+    """v1.4: aplica UN plan de colocación, con confirmación explícita.
+
+    - ``stay`` → no-op (resultado informativo).
+    - ``teleport`` → delega en el TeleportEngine (que ya aplica todas las
+      salvaguardas de origen/destino).
+    Nunca aplica nada sin ``confirm=True``.
+    """
+    data = plan.to_dict() if isinstance(plan, PlacementPlan) else dict(plan)
+    vm_id = str(data.get("vm_id") or "")
+    if not vm_id:
+        raise OrchestratorError("Plan has no vm_id.")
+    if not confirm:
+        raise OrchestratorError("Applying a placement plan requires confirm=True (use dry-run to preview).")
+    log = get_logger()
+    operation_id = new_operation_id("orch-apply")
+    results: list[dict[str, Any]] = []
+    for action in data.get("actions") or []:
+        kind = str(action.get("kind") or "")
+        if kind == "stay":
+            results.append({"kind": "stay", "vm_id": vm_id, "ok": True, "detail": f"{vm_id} stays on {action.get('host')}"})
+            continue
+        if kind == "teleport":
+            if teleport_engine is None:
+                raise OrchestratorError("Teleport engine is not configured; cannot apply a move plan.")
+            outcome = teleport_engine.teleport_vm(
+                vm_id,
+                mode=str(action.get("mode") or "") or None,
+                target_host_id=str(action.get("to_host") or ""),
+            )
+            results.append({"kind": "teleport", "vm_id": vm_id, "ok": True, "result": outcome})
+            continue
+        raise OrchestratorError(f"Unsupported plan action kind: {kind!r}")
+    log.info(
+        "orchestrator",
+        f"applied plan for {vm_id} → {data.get('target_host')}",
+        vm_id=vm_id,
+        operation_id=operation_id,
+    )
+    return {"vm_id": vm_id, "target_host": data.get("target_host"), "applied": results, "operation_id": operation_id}
