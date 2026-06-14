@@ -1002,7 +1002,7 @@ class MainWindow(QMainWindow):
         refresh_button = QPushButton("Actualizar")
         console_button = QPushButton("Consola")
         console_button.setEnabled(False)
-        console_button.setToolTip("La consola remota llegará en una versión futura.")
+        console_button.setToolTip("Abre la consola gráfica de la máquina remota por SSH (virt-viewer tuneliza el display).")
         for button in (start_button, shutdown_button, force_off_button):
             button.setEnabled(False)
         actions.addWidget(start_button)
@@ -1024,6 +1024,7 @@ class MainWindow(QMainWindow):
         self.remote_vm_shutdown_button = shutdown_button
         self.remote_vm_force_off_button = force_off_button
         self.remote_vm_refresh_button = refresh_button
+        self.remote_vm_console_button = console_button
         self._remote_vms = []
         self._remote_power_poll_timer = QTimer(dialog)
         self._remote_power_poll_timer.setInterval(3000)
@@ -1036,6 +1037,7 @@ class MainWindow(QMainWindow):
         shutdown_button.clicked.connect(lambda: self._queue_remote_power_action("shutdown"))
         force_off_button.clicked.connect(lambda: self._queue_remote_power_action("force_off"))
         refresh_button.clicked.connect(self._refresh_remote_vms)
+        console_button.clicked.connect(self._open_remote_console)
         close_button.clicked.connect(dialog.accept)
         dialog.finished.connect(self._remote_power_poll_timer.stop)
 
@@ -1145,9 +1147,12 @@ class MainWindow(QMainWindow):
     def _update_remote_power_buttons(self) -> None:
         vm = self._selected_remote_vm()
         self._render_remote_vm_details()
+        console_button = getattr(self, "remote_vm_console_button", None)
         if vm is None:
             for button in (self.remote_vm_start_button, self.remote_vm_shutdown_button, self.remote_vm_force_off_button):
                 button.setEnabled(False)
+            if console_button is not None:
+                console_button.setEnabled(False)
             return
         state = str(vm.get("state") or "unknown").lower()
         running_like = state in {"running", "paused"}
@@ -1156,6 +1161,39 @@ class MainWindow(QMainWindow):
         self.remote_vm_shutdown_button.setEnabled(running_like)
         # Force Off also covers stuck/unknown states; it always asks first.
         self.remote_vm_force_off_button.setEnabled(running_like or state == "unknown")
+        # Remote console only makes sense for a running VM (a shut-off VM has no display).
+        if console_button is not None:
+            console_button.setEnabled(running_like)
+
+    def _remote_host_record(self, host_id: str) -> dict[str, Any]:
+        for host in self.remote_hosts:
+            if str(host.get("host_id") or "") == host_id:
+                return host
+        return {"host_id": host_id}
+
+    def _open_remote_console(self) -> None:
+        dialog = getattr(self, "_remote_vms_dialog", None)
+        vm = self._selected_remote_vm()
+        if dialog is None or vm is None:
+            return
+        host_id = str(getattr(dialog, "host_id", ""))
+        vm_name = str(vm.get("vm_name") or vm.get("name") or "")
+        from .dialogs import live_uri_for_host
+
+        # virt-viewer abre el display de la VM remota tunelizándolo por la propia
+        # conexión libvirt (qemu+ssh); el backend rechaza URIs no seguras.
+        uri = live_uri_for_host(self._remote_host_record(host_id))
+        if not uri:
+            self.show_error(
+                f"No puedo abrir la consola de {vm_name}: el Hub no reporta una dirección SSH para «{host_id}»."
+            )
+            return
+        self.run_operation(
+            f"Abriendo consola remota de {vm_name} en {host_id}",
+            lambda: self.backend.open_remote_console(vm_name, uri),
+            refresh_after=False,
+            busy=False,
+        )
 
     def _queue_remote_power_action(self, action: str) -> None:
         dialog = getattr(self, "_remote_vms_dialog", None)

@@ -885,6 +885,46 @@ class QtUiTests(unittest.TestCase):
         self.assertIsNotNone(app)
 
     @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
+    def test_remote_vm_console_opens_secure_uri_for_running_vm(self, backend_cls):
+        app = QApplication.instance() or QApplication([])
+        from hypergery_ubuntu.ui_qt.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend_cls.return_value.data_dir = Path(tmp) / "hypergery"
+            window = MainWindow()
+            # El registro del host (del Hub) aporta usuario/IP SSH para el túnel.
+            window.remote_hosts = [
+                {"host_id": "gery-lenovo", "ssh_address": "192.168.1.73", "ssh_user": "gery"}
+            ]
+            window._show_remote_vms_dialog(
+                "gery-lenovo",
+                {
+                    "vms": [
+                        {"vm_name": "ubuntu-servicios", "state": "running", "lab_id": "default-lab"},
+                        {"vm_name": "ubuntu-hub-e2e", "state": "shut off", "lab_id": "default-lab"},
+                    ]
+                },
+            )
+            dialog = window._remote_vms_dialog
+            # Sin selección: consola deshabilitada.
+            self.assertFalse(window.remote_vm_console_button.isEnabled())
+            # VM encendida: consola habilitada; apagada: deshabilitada (sin display).
+            window.remote_vms_table.selectRow(0)
+            self.assertTrue(window.remote_vm_console_button.isEnabled())
+            window.remote_vms_table.selectRow(1)
+            self.assertFalse(window.remote_vm_console_button.isEnabled())
+            # Abrir la consola de la VM encendida lanza virt-viewer con la URI qemu+ssh segura.
+            window.remote_vms_table.selectRow(0)
+            window.run_operation = lambda _desc, fn, **_kw: fn()
+            window._open_remote_console()
+            backend_cls.return_value.open_remote_console.assert_called_once_with(
+                "ubuntu-servicios", "qemu+ssh://gery@192.168.1.73/system"
+            )
+            dialog.close()
+            window.close()
+        self.assertIsNotNone(app)
+
+    @patch("hypergery_ubuntu.ui_qt.main_window.HyperGeryBackend")
     def test_remote_vm_power_actions_queue_hub_commands(self, backend_cls):
         app = QApplication.instance() or QApplication([])
         from PySide6.QtWidgets import QMessageBox
@@ -1684,8 +1724,9 @@ class QtRemoteVmDetailsTests(unittest.TestCase):
             dialog = window._remote_vms_dialog
             console_buttons = [b for b in dialog.findChildren(QPushButton) if b.text() == "Consola"]
             self.assertEqual(len(console_buttons), 1)
+            # Sin selección la consola sigue deshabilitada; el tooltip ya describe la función real.
             self.assertFalse(console_buttons[0].isEnabled())
-            self.assertIn("versión futura", console_buttons[0].toolTip())
+            self.assertIn("virt-viewer", console_buttons[0].toolTip())
             window.remote_vms_table.clearSelection()
             window._update_remote_power_buttons()
             self.assertEqual(window.remote_vm_detail.toPlainText(), "")
