@@ -1,18 +1,24 @@
 from __future__ import annotations
 
-"""Iconos dibujados por código (sin ficheros): bolas de estado y badges de SO.
+"""Iconos de la app: bolas de estado y badges de SO dibujados por código, más
+el logo oficial cargado de ``assets/logohypergery.png``.
 
-Mantenerlo sin assets evita problemas de empaquetado y de rutas. Todas las
-funciones se llaman en tiempo de ejecución (con QApplication ya creada).
+Las bolas/badges se dibujan en tiempo de ejecución (con QApplication ya creada);
+el icono de la aplicación (``app_icon``) usa el PNG empaquetado y solo cae al
+dibujo si el asset no está.
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 
 from .formatting import os_icon_key
 from .styles import STATE_COLORS, state_kind
+
+# Logo oficial de la app, empaquetado junto al código (también lo instala el .deb).
+APP_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logohypergery.png"
 
 # Colores de marca aproximados por familia de SO.
 _OS_STYLE = {
@@ -84,7 +90,15 @@ def lab_icon(size: int = 18) -> QIcon:
 
 @lru_cache(maxsize=8)
 def app_icon(size: int = 64) -> QIcon:
-    """Icono de la aplicación: cuadrado azul HyperGery con las iniciales HG."""
+    """Icono de la aplicación: el logo oficial de HyperGery (logohypergery.png).
+
+    Si el asset faltara (instalación incompleta), cae al cuadrado azul con las
+    iniciales HG para no quedarse sin icono.
+    """
+    if APP_LOGO_PATH.exists():
+        logo = QPixmap(str(APP_LOGO_PATH))
+        if not logo.isNull():
+            return QIcon(logo)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)

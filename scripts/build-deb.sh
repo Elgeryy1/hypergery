@@ -5,7 +5,7 @@
 #   /usr/lib/hypergery/hypergery_ubuntu/   código Python (puro, arch "all")
 #   /usr/bin/hypergery{,-cli,-agent}       lanzadores
 #   /usr/share/applications/hypergery.desktop
-#   /usr/share/icons/hicolor/scalable/apps/hypergery.svg
+#   /usr/share/icons/hicolor/512x512/apps/hypergery.png  (logo oficial)
 #   /usr/share/doc/hypergery/copyright
 #
 # No toca datos de usuario (~/.config/hypergery, ~/.local/share/hypergery):
@@ -39,7 +39,7 @@ install -d "$STAGE/DEBIAN" \
   "$STAGE/usr/bin" \
   "$STAGE/usr/lib/systemd/user" \
   "$STAGE/usr/share/applications" \
-  "$STAGE/usr/share/icons/hicolor/scalable/apps" \
+  "$STAGE/usr/share/icons/hicolor/512x512/apps" \
   "$STAGE/usr/share/doc/hypergery"
 
 # Código fuente (sin caches ni metadatos de build).
@@ -62,7 +62,7 @@ done
 # en postinst). Solo corre para usuarios con HyperGery configurado (ExecCondition).
 install -m 0644 "$PKG_DIR/hypergery-agent.service" "$STAGE/usr/lib/systemd/user/hypergery-agent.service"
 install -m 0644 "$PKG_DIR/hypergery.desktop" "$STAGE/usr/share/applications/hypergery.desktop"
-install -m 0644 "$PKG_DIR/hypergery.svg" "$STAGE/usr/share/icons/hicolor/scalable/apps/hypergery.svg"
+install -m 0644 "$SRC_DIR/hypergery_ubuntu/ui_qt/assets/logohypergery.png" "$STAGE/usr/share/icons/hicolor/512x512/apps/hypergery.png"
 install -m 0644 "$PROJECT_ROOT/LICENSE" "$STAGE/usr/share/doc/hypergery/copyright"
 
 INSTALLED_SIZE="$(du -ks "$STAGE/usr" | cut -f1)"

@@ -93,9 +93,12 @@ class DesktopEntryTests(unittest.TestCase):
         self.assertEqual(entries["Terminal"], "false")
         self.assertIn("System;", entries["Categories"])
 
-    def test_icon_svg_exists(self):
-        svg = (SRC / "packaging" / "hypergery.svg").read_text(encoding="utf-8")
-        self.assertIn("<svg", svg)
+    def test_app_logo_png_exists(self):
+        # El logo oficial vive empaquetado junto al código (lo carga app_icon()
+        # en runtime y lo instala el .deb como icono del escritorio).
+        logo = SRC / "hypergery_ubuntu" / "ui_qt" / "assets" / "logohypergery.png"
+        self.assertTrue(logo.is_file(), logo)
+        self.assertEqual(logo.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
 
 class BuildDebTests(unittest.TestCase):
@@ -149,7 +152,8 @@ class BuildDebTests(unittest.TestCase):
                 "./usr/lib/hypergery/hypergery_ubuntu/app.py",
                 "./usr/lib/systemd/user/hypergery-agent.service",
                 "./usr/share/applications/hypergery.desktop",
-                "./usr/share/icons/hicolor/scalable/apps/hypergery.svg",
+                "./usr/share/icons/hicolor/512x512/apps/hypergery.png",
+                "./usr/lib/hypergery/hypergery_ubuntu/ui_qt/assets/logohypergery.png",
                 "./usr/share/doc/hypergery/copyright",
             ):
                 self.assertIn(expected, contents)

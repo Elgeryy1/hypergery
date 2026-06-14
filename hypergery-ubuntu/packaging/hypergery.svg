@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <!-- Icono de HyperGery: mismo motivo que ui_qt.icons.app_icon (cuadrado azul + HG). -->
-  <rect x="2" y="2" width="124" height="124" rx="26" fill="#2a82da"/>
-  <rect x="2" y="2" width="124" height="124" rx="26" fill="none" stroke="#1c5fa3" stroke-width="3"/>
-  <text x="64" y="64" text-anchor="middle" dominant-baseline="central"
-        font-family="DejaVu Sans, Ubuntu, sans-serif" font-weight="bold"
-        font-size="54" fill="#ffffff">HG</text>
-</svg>
