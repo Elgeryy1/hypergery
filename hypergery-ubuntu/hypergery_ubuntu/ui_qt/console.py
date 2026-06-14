@@ -111,6 +111,11 @@ def _keysym(event: QKeyEvent) -> int:
         Qt.Key.Key_Shift: 0xFFE1,
         Qt.Key.Key_Control: 0xFFE3,
         Qt.Key.Key_Alt: 0xFFE9,
+        # AltGr (ISO_Level3_Shift): sin esto, AltGr+1 llegaba como "1" al guest
+        # en vez de "|" — el modificador no se enviaba. Lo manda para que el guest
+        # componga los caracteres del tercer nivel (| @ # ~ \ en español).
+        Qt.Key.Key_AltGr: 0xFE03,
+        Qt.Key.Key_Meta: 0xFFE7,
         Qt.Key.Key_F1: 0xFFBE,
         Qt.Key.Key_F2: 0xFFBF,
         Qt.Key.Key_F3: 0xFFC0,

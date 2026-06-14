@@ -2137,6 +2137,20 @@ class QtConsoleKeysymTests(unittest.TestCase):
         self.assertEqual(_keysym(plain_c), 0x63)
         self.assertIsNotNone(app)
 
+    def test_altgr_modifier_is_sent_to_guest(self):
+        # Regresión: sin enviar AltGr, AltGr+1 llegaba como "1" en vez de "|".
+        # AltGr (ISO_Level3_Shift, keysym 0xFE03) debe enviarse para que el guest
+        # componga los caracteres de tercer nivel (| @ # ~ \).
+        app = QApplication.instance() or QApplication([])
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        from hypergery_ubuntu.ui_qt.console import _keysym
+
+        altgr = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_AltGr, Qt.KeyboardModifier.NoModifier, "")
+        self.assertEqual(_keysym(altgr), 0xFE03)
+        self.assertIsNotNone(app)
+
 
 if __name__ == "__main__":
     unittest.main()
