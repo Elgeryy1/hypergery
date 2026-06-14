@@ -149,6 +149,43 @@ allowlist: `vm_start`/`vm_shutdown`/`vm_force_off`; nada de delete/undefine/shel
 
 ---
 
+## Test 5 — PRUEBA DE FUEGO: Ubuntu Server con servicios + live migration · ✅ PASS
+
+**Objetivo:** el caso real de producción — un servidor con servicios con estado,
+migrado en caliente entre fabricantes distintos **sin caída de servicio**.
+
+**VM:** Ubuntu Server 24.04 (cloud image, 12 GiB, 2 GiB RAM, CPU compat
+`qemu64` + `svm`/`vmx` deshabilitados) aprovisionada con cloud-init:
+- **nginx** sirviendo una web,
+- **PostgreSQL**: base `acid`, tabla `notas`, fila `estado-antes-de-migrar`,
+- **Redis**: clave `migracion:clave = valor-persistente`.
+
+**Método de medición (independiente del NAT del host):** una sonda **dentro del
+guest** golpea `http://localhost/` cada ~0,1 s y registra timestamp + código HTTP.
+El mayor hueco entre peticiones ≈ congelación del switchover. Se registró el
+`boot_id` del kernel antes y después (si no cambia, la VM no se reinició).
+
+**Migración:** PC(AMD) → portátil(Intel), `--live --copy-storage-all` (block
+migration, sin almacenamiento compartido), CD del seed expulsado antes de migrar,
+ruta de disco remapeada con `--xml`. Duración ≈ 44 s.
+
+**Resultados (verificados en el portátil tras migrar):**
+
+| Métrica | Valor |
+|---|---|
+| Peticiones HTTP durante la migración | **1060, 0 fallidas** (todas 200) |
+| Corte del switchover (mayor hueco de la sonda) | **0,232 s** |
+| `boot_id` antes / después | **`c6f53df6-1dc3-47c7-a32b-9e2168bbaf27` (idéntico → sin reinicio)** |
+| uptime | continuo (no se reseteó) |
+| nginx / PostgreSQL / Redis tras migrar | `active` / `active` / `active` |
+| Fila PostgreSQL en destino | `estado-antes-de-migrar` (intacta) |
+| Clave Redis en destino | `valor-persistente` (intacta) |
+
+**Veredicto:** un servidor con servicios con estado se migró en caliente
+AMD→Intel con **cero peticiones perdidas**, un parpadeo de ~230 ms y **sin
+reinicio** (RAM+CPU movidos en vivo, `boot_id` estable). Caso de uso real
+demostrado de extremo a extremo.
+
 ## Hallazgo clave y mejora propuesta
 
 La migración cross-vendor (en vivo **y** en frío) **funciona** con la receta:
@@ -192,6 +229,15 @@ AMD↔Intel. Eso convierte el par PC↔portátil de Gerard en plenamente migrabl
 ## Limpieza
 
 Todas las VMs `hgtest-*` y sus discos borrados en ambos equipos. Verificado al
-cierre: PC con 0 VMs; portátil con sus 4 VMs originales (`ubuntu-hub-e2e`,
+cierre: PC con 0 VMs `hgtest-`; portátil con sus 4 VMs originales (`ubuntu-hub-e2e`,
 `ubuntu-test-v07`, `ubuntuserver`, `windowss`) intactas. Imagen base
 `noble-cloud.img` conservada en el PC para la próxima prueba a full.
+
+**VM dejada en marcha a propósito (petición de Gerard):** se recreó el servidor de
+servicios como `ubuntu-servicios` **corriendo en el portátil** (192.168.1.73),
+persistente (`define`+`start`, sin autostart). Servicios `active`: nginx (HTTP 200),
+PostgreSQL (base `acid`, fila `servidor-vivo`), Redis (`demo:estado=ok`). CPU de
+compatibilidad (`qemu64` + sin `svm`/`vmx`), por lo que sigue siendo migrable
+cross-vendor. Acceso: usuario `ubuntu` / contraseña `hgtest123` y clave
+`~/vms/servicios/srv_key` en el portátil; IP del guest en la NAT del portátil
+192.168.122.157. Disco y seed en `~gery/vms/servicios/`.
