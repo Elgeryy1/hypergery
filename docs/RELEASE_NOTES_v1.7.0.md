@@ -21,7 +21,27 @@ Requisitos del host (los instala `apt` como recomendados o ya los tienes):
 `qemu-system-x86`, `libvirt-daemon-system`, `libvirt-clients`, `virt-viewer`,
 `qemu-utils`, `ovmf`. El usuario debe estar en los grupos `kvm` y `libvirt`.
 
-## Novedades destacadas (desde v1.5)
+## Novedades desde v1.0.1 (último release público)
+
+Las versiones v1.1–v1.6 se desarrollaron pero **nunca se publicaron** como release;
+este v1.7.0 es el primer release desde v1.0.1, así que si vienes de v1.0.1 lo
+recibes **todo de golpe**. Resumen acumulado por versión:
+
+- **v1.1 — App instalable + robustez:** identidad de app y empaquetado **`.deb`**,
+  JobManager (cierre sin colgarse), Hub robusto (WAL/busy_timeout, TTL de comandos,
+  límite de upload), redes coherentes con libvirt, suite `needsRealLibvirt`.
+- **v1.2 — Seguridad Hub/API:** token bearer obligatorio (ficheros `0600`,
+  rate-limit), RBAC aplicado en el API, pairing, tokens por usuario.
+- **v1.3 — Backups y plantillas:** políticas de backup al NAS con retención,
+  **Backup Verifier** (restaura y arranca para validar), snapshot branching, tags
+  y presupuestos por lab.
+- **v1.4 — Orquestación y telemetría:** telemetría en cada heartbeat, orchestrator
+  aplicable con confirmación, `GET /dashboard`, API companion (acciones seguras).
+- **v1.5 — Live migration en caliente** (detalle abajo).
+- **v1.6 — App Android nativa** (detalle abajo).
+- **v1.7 — GPU/3D + consola remota** (detalle abajo).
+
+## Novedades destacadas de v1.7 (y de los hitos no publicados)
 
 ### Aceleración 3D compartida (VirGL)
 GPU virtio con `accel3d` + `egl-headless`: el guest obtiene 3D acelerado por la

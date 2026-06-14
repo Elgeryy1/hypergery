@@ -13,10 +13,14 @@ HyperGery is a real desktop virtual machine manager for Ubuntu, functionally ins
 
 **Current release: v1.7.0** — distributed as a **Debian package (`.deb`)**. Download
 `hypergery_1.7.0_all.deb` from [Releases](https://github.com/Elgeryy1/hypergery/releases)
-and `sudo apt install -y ./hypergery_1.7.0_all.deb` — no clone or pip needed. v1.7.0
-brings **shared 3D acceleration (VirGL)**, **GPU passthrough (VFIO)**, **hot live
-migration (RAM+CPU)** including cross-vendor with a compatibility CPU profile, an
-**integrated remote console** (SSH-tunneled VNC), and a **native Android app**.
+and `sudo apt install -y ./hypergery_1.7.0_all.deb` — no clone or pip needed. This is
+the **first public release since v1.0.1** (v1.1–v1.6 were developed but never
+published), so it bundles everything from v1.1 to v1.7: `.deb`-installable app +
+JobManager (v1.1), Hub/API token auth + RBAC (v1.2), NAS backups + verifier (v1.3),
+orchestration + telemetry (v1.4), plus the v1.5–v1.7 headliners — **shared 3D
+acceleration (VirGL)**, **GPU passthrough (VFIO)**, **hot live migration (RAM+CPU)**
+including cross-vendor with a compatibility CPU profile, an **integrated remote
+console** (SSH-tunneled VNC), and a **native Android app**.
 Real-hardware acid test (Ubuntu Server with nginx + PostgreSQL + Redis live-migrated
 AMD→Intel while serving traffic): **0 dropped requests of 1060, ~0.23 s switchover,
 no reboot**. QA: `pytest` **993 passed, 8 skipped**. Full notes:
