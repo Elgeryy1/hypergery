@@ -331,7 +331,9 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
             if item.is_file():
                 files.append(
                     {
-                        "path": str(item.relative_to(package_dir)),
+                        # Keep the HTTP response portable across Hub/agent
+                        # hosts; package paths are always slash-delimited.
+                        "path": item.relative_to(package_dir).as_posix(),
                         "size_bytes": item.stat().st_size,
                     }
                 )

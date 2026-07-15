@@ -348,6 +348,10 @@ class PackageStagingTests(unittest.TestCase):
         package = self.make_package()
         uploaded = self.client.upload_package("mig-test", package)
         self.assertEqual(len(uploaded["files"]), 2)
+        self.assertEqual(
+            {item["path"] for item in uploaded["files"]},
+            {"manifest.json", "disks/vm.qcow2"},
+        )
         self.assertTrue((self.staging / "mig-test" / "disks" / "vm.qcow2").is_file())
 
         files = self.client.list_package_files("mig-test")
