@@ -161,7 +161,7 @@ class FakeRegistryClient:
         files = {}
         for item in sorted(package.rglob("*")):
             if item.is_file():
-                files[str(item.relative_to(package))] = item.read_bytes()
+                files[item.relative_to(package).as_posix()] = item.read_bytes()
         if not files:
             raise AssertionError(f"empty package upload: {package}")
         self.uploaded_packages = getattr(self, "uploaded_packages", {})
@@ -261,6 +261,17 @@ class MigrationTests(unittest.TestCase):
             validation = validate_vm_package(package_dir)
             self.assertFalse(validation["ok"])
             self.assertIn("checksum mismatch", "; ".join(validation["errors"]))
+
+    def test_exported_package_paths_use_posix_separators(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = FakeBackend(root)
+            result = export_vm_package(backend, "hg-source", root / "nas")
+            manifest = json.loads((Path(result["package_dir"]) / "manifest.json").read_text(encoding="utf-8"))
+
+            paths = [asset["relative_path"] for asset in manifest["assets"] if asset.get("relative_path")]
+            self.assertTrue(paths)
+            self.assertTrue(all("\\" not in path for path in paths))
 
     def _build_package(self, root: Path) -> Path:
         backend = FakeBackend(root)

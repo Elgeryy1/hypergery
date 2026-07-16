@@ -200,7 +200,10 @@ class RegistryClient:
         for item in sorted(package.rglob("*")):
             if not item.is_file():
                 continue
-            rel_path = str(item.relative_to(package))
+            # URLs and the Hub package format always use POSIX separators.
+            # ``str(Path)`` would send backslashes from a Windows client,
+            # which a Unix Hub treats as part of the filename.
+            rel_path = item.relative_to(package).as_posix()
             uploaded.append(self.upload_package_file(migration_id, rel_path, item))
         if not uploaded:
             raise HyperGeryError(f"Package directory is empty: {package}")

@@ -467,7 +467,9 @@ def export_vm_package(
             filename = _unique_name(used_names[asset_type], source.name)
             destination = package_dir / subdir / filename
             copied = _copy_file(source, destination)
-            asset["relative_path"] = str(destination.relative_to(package_dir))
+            # Package metadata may be moved between hosts, so its member
+            # paths are a protocol format rather than host-local paths.
+            asset["relative_path"] = destination.relative_to(package_dir).as_posix()
             asset["package_size_bytes"] = copied["size_bytes"]
             asset["sha256"] = copied["sha256"]
 
